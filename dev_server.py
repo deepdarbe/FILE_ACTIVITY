@@ -611,6 +611,47 @@ async def mit_naming_report(source_id: int):
         }
     }
 
+@app.get("/api/reports/mit-naming/{source_id}/files")
+async def mit_naming_files(source_id: int, code: str = "R1", page: int = 1, page_size: int = 100):
+    files = [
+        {"id": i+1, "file_name": f"{'Annual Report 2024' if code=='R1' else '2024_report' if code=='R2' else 'rapor_özet' if code=='R3' else 'Makefile'}_{i+1}.{'xlsx' if code!='R4' else ''}",
+         "file_path": f"\\\\fileserver01\\shared\\finance\\reports\\sample_{i+1}.xlsx",
+         "file_size": 1024*1024*(i+1), "file_size_formatted": _mock_format_size(1024*1024*(i+1)),
+         "owner": ["ahmet.yilmaz","elif.demir","mehmet.kaya"][i%3],
+         "last_modify_time": f"2025-{(i%12)+1:02d}-15",
+         "directory": "\\\\fileserver01\\shared\\finance\\reports"}
+        for i in range(min(page_size, 50))
+    ]
+    return {"code": code, "total": 500, "page": page, "page_size": page_size, "total_pages": 5, "files": files}
+
+@app.get("/api/reports/mit-naming/{source_id}/export")
+async def mit_naming_export(source_id: int):
+    from fastapi.responses import StreamingResponse
+    import io
+    csv = '\ufeffIhlal Kodu,Ihlal Turu,Dosya Adi,Tam Yol,Boyut,Sahip,Son Degisiklik\n'
+    csv += 'R1,Bosluk Iceren,"Annual Report 2024.xlsx","\\\\server\\share\\docs\\Annual Report 2024.xlsx",2457600,"ahmet.yilmaz",2025-06-15\n'
+    csv += 'R3,Yasak Karakter,"rapor_özet.pdf","\\\\server\\share\\docs\\rapor_özet.pdf",1048576,"elif.demir",2025-03-20\n'
+    return StreamingResponse(io.BytesIO(csv.encode('utf-8-sig')), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=MIT_Naming_Report.csv"})
+
+@app.get("/api/insights/{source_id}/files")
+async def insight_files(source_id: int, insight_type: str = "stale_1year", page: int = 1, page_size: int = 100):
+    files = [
+        {"id": i+1, "file_name": f"old_document_{i+1}.xlsx",
+         "file_path": f"\\\\fileserver01\\shared\\archive\\2020\\old_document_{i+1}.xlsx",
+         "file_size": 1024*1024*(i%10+1), "file_size_formatted": _mock_format_size(1024*1024*(i%10+1)),
+         "owner": ["ahmet.yilmaz","elif.demir","mehmet.kaya","burak.celik"][i%4],
+         "last_access_time": f"2024-{(i%12)+1:02d}-{(i%28)+1:02d}",
+         "last_modify_time": f"2023-{(i%12)+1:02d}-15",
+         "directory": f"\\\\fileserver01\\shared\\archive\\{2020+i%4}"}
+        for i in range(min(page_size, 50))
+    ]
+    return {"insight_type": insight_type, "total": 1200, "page": page, "page_size": page_size, "total_pages": 12, "files": files}
+
+@app.post("/api/system/open-folder")
+async def open_folder(request):
+    body = await request.json()
+    return {"success": True, "path": body.get("path", "")}
+
 @app.get("/api/system/health")
 async def health():
     return {"status": "ok", "mode": "demo", "time": datetime.now().isoformat()}

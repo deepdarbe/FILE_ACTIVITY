@@ -603,6 +603,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <select id="naming-source" onchange="loadNaming()" style="width:200px">
                 <option value="">Kaynak secin...</option>
             </select>
+            <button class="btn btn-outline" onclick="exportNamingReport()" id="naming-export-btn" style="display:none">Excel Export</button>
         </div>
     </div>
     <!-- Skor ve ozet kartlar -->
@@ -1162,6 +1163,7 @@ async function loadOverview() {
                         <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${i.description}</div>
                     </div>
                     ${i.impact_size ? `<span style="font-size:12px;color:var(--text-muted);flex-shrink:0">${formatSize(i.impact_size)}</span>` : ''}
+                    <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'large_files','duplicates':'duplicates','security':'temp_files','growth':'stale_3year'}[i.category] || 'stale_1year')}', ${sid})" style="flex-shrink:0">Incele</button>
                     ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
                 </div>
             `).join('');
@@ -2198,7 +2200,7 @@ async function loadNaming() {
         const reqTable = document.getElementById('naming-req-table');
         if (reqs.length) {
             reqTable.innerHTML = `
-                <thead><tr><th>Kod</th><th>Kural</th><th>Ihlal Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th></tr></thead>
+                <thead><tr><th>Kod</th><th>Kural</th><th>Ihlal Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
                 <tbody>${reqs.map(r => `<tr>
                     <td><strong>${r.code}</strong></td>
                     <td>${r.label}</td>
@@ -2213,6 +2215,7 @@ async function loadNaming() {
                     </td>
                     <td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='warning'?'badge-warning':'badge-info'}">${r.severity}</span></td>
                     <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(r.samples||[]).slice(0,3).join('<br>')}</td>
+                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${r.code}', ${sourceId})">Dosyalari Gor</button></td>
                 </tr>`).join('')}</tbody>
             `;
         } else {
@@ -2224,7 +2227,7 @@ async function loadNaming() {
         const bpTable = document.getElementById('naming-bp-table');
         if (bps.length) {
             bpTable.innerHTML = `
-                <thead><tr><th>Kod</th><th>Uygulama</th><th>Sapma Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th></tr></thead>
+                <thead><tr><th>Kod</th><th>Uygulama</th><th>Sapma Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
                 <tbody>${bps.map(b => `<tr>
                     <td><strong>${b.code}</strong></td>
                     <td>${b.label}</td>
@@ -2239,12 +2242,143 @@ async function loadNaming() {
                     </td>
                     <td><span class="badge ${b.severity==='warning'?'badge-warning':'badge-info'}">${b.severity}</span></td>
                     <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(b.samples||[]).slice(0,3).join('<br>')}</td>
+                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${b.code}', ${sourceId})">Dosyalari Gor</button></td>
                 </tr>`).join('')}</tbody>
             `;
         } else {
             bpTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--success);font-size:13px">Tum dosyalar en iyi uygulamalara uyumlu!</div>';
         }
+        // Export butonunu goster
+        document.getElementById('naming-export-btn').style.display = '';
     } catch(e) { console.error('MIT naming load error:', e); }
+}
+
+async function showNamingFiles(code, sourceId) {
+    try {
+        const data = await api(`/reports/mit-naming/${sourceId}/files?code=${code}&page=1&page_size=200`);
+        const files = data.files || [];
+        const filesHtml = files.length ? files.map((f, i) => `
+            <tr>
+                <td>${i+1}</td>
+                <td style="max-width:200px;word-break:break-all;font-size:11px">${f.file_name}</td>
+                <td style="max-width:300px;word-break:break-all;font-size:11px" title="${f.file_path}">${f.file_path}</td>
+                <td>${f.file_size_formatted || formatSize(f.file_size)}</td>
+                <td>${f.owner || '-'}</td>
+                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${(f.directory||'').replace(/\\/g,'\\\\\\\\')}')">Konuma Git</button></td>
+            </tr>
+        `).join('') : '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
+
+        const modalContent = `
+            <div style="padding:20px">
+                <h3 style="margin:0 0 16px 0">${code} Ihlali - ${data.total} Dosya</h3>
+                <div style="max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
+                    <table style="width:100%;font-size:12px">
+                        <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>#</th><th>Dosya Adi</th><th>Tam Yol</th><th>Boyut</th><th>Sahip</th><th>Islem</th></tr></thead>
+                        <tbody>${filesHtml}</tbody>
+                    </table>
+                </div>
+                ${data.total > 200 ? `<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:11px">Ilk 200 dosya gosteriliyor (toplam ${data.total}). Tum liste icin Excel Export kullanin.</div>` : ''}
+                <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
+                    <button class="btn btn-outline" onclick="closeModal('modal-naming-files')">Kapat</button>
+                    <button class="btn btn-primary" onclick="exportNamingReport()">Tum Ihlalleri Excel Export</button>
+                </div>
+            </div>
+        `;
+
+        let modal = document.getElementById('modal-naming-files');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'modal-naming-files';
+            modal.className = 'modal-overlay';
+            modal.onclick = (e) => { if(e.target===modal) modal.classList.remove('active'); };
+            modal.innerHTML = '<div class="modal" style="max-width:1100px;width:95%"></div>';
+            document.body.appendChild(modal);
+        }
+        modal.querySelector('.modal').innerHTML = modalContent;
+        modal.classList.add('active');
+    } catch(e) { notify('Dosya listesi yuklenemedi: ' + e.message, 'error'); }
+}
+
+function exportNamingReport() {
+    const sourceId = document.getElementById('naming-source')?.value;
+    if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
+    window.open(`/api/reports/mit-naming/${sourceId}/export`, '_blank');
+    notify('Excel raporu indiriliyor...', 'info');
+}
+
+function openFolder(path) {
+    // Backend'e dizin acma istegi gonder
+    api('/system/open-folder', {
+        method: 'POST',
+        body: JSON.stringify({ path: path })
+    }).then(() => {
+        notify('Dizin aciliyor: ' + path, 'info');
+    }).catch(() => {
+        // Fallback: yolu kopyala
+        navigator.clipboard?.writeText(path).then(() => {
+            notify('Yol panoya kopyalandi: ' + path, 'info');
+        }).catch(() => {
+            notify('Dizin yolu: ' + path, 'info');
+        });
+    });
+}
+
+// ═══════════════════════════════════════════════════
+// AI INSIGHTS DOSYA LISTELEME
+// ═══════════════════════════════════════════════════
+
+async function showInsightFiles(insightType, sourceId) {
+    try {
+        const data = await api(`/insights/${sourceId}/files?insight_type=${insightType}&page=1&page_size=200`);
+        const files = data.files || [];
+        const filesHtml = files.length ? files.map((f, i) => `
+            <tr>
+                <td>${i+1}</td>
+                <td style="max-width:200px;word-break:break-all;font-size:11px">${f.file_name}</td>
+                <td style="max-width:250px;word-break:break-all;font-size:11px" title="${f.file_path}">${f.file_path}</td>
+                <td>${f.file_size_formatted || formatSize(f.file_size)}</td>
+                <td>${f.owner || '-'}</td>
+                <td>${(f.last_access_time||'').substring(0,10)}</td>
+                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${(f.directory||'').replace(/\\/g,'\\\\\\\\')}')">Konuma Git</button></td>
+            </tr>
+        `).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
+
+        const typeLabels = {
+            stale_1year: '1 Yildan Eski Dosyalar',
+            stale_3year: '3+ Yillik Eski Dosyalar',
+            large_files: 'Buyuk Dosyalar (>100MB)',
+            temp_files: 'Gecici/Yedek Dosyalar',
+            duplicates: 'Kopya Dosyalar'
+        };
+
+        const modalContent = `
+            <div style="padding:20px">
+                <h3 style="margin:0 0 16px 0">${typeLabels[insightType] || insightType} - ${data.total} Dosya</h3>
+                <div style="max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
+                    <table style="width:100%;font-size:12px">
+                        <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>#</th><th>Dosya Adi</th><th>Tam Yol</th><th>Boyut</th><th>Sahip</th><th>Son Erisim</th><th>Islem</th></tr></thead>
+                        <tbody>${filesHtml}</tbody>
+                    </table>
+                </div>
+                ${data.total > 200 ? `<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:11px">Ilk 200 dosya (toplam ${data.total})</div>` : ''}
+                <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
+                    <button class="btn btn-outline" onclick="closeModal('modal-insight-files')">Kapat</button>
+                </div>
+            </div>
+        `;
+
+        let modal = document.getElementById('modal-insight-files');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'modal-insight-files';
+            modal.className = 'modal-overlay';
+            modal.onclick = (e) => { if(e.target===modal) modal.classList.remove('active'); };
+            modal.innerHTML = '<div class="modal" style="max-width:1100px;width:95%"></div>';
+            document.body.appendChild(modal);
+        }
+        modal.querySelector('.modal').innerHTML = modalContent;
+        modal.classList.add('active');
+    } catch(e) { notify('Dosya listesi yuklenemedi: ' + e.message, 'error'); }
 }
 
 // ═══════════════════════════════════════════════════

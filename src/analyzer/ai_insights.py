@@ -409,3 +409,57 @@ class InsightsEngine:
             elif sev == "info":
                 score -= 2
         return max(0, min(100, score))
+
+
+def get_insight_files(db: Database, scan_id: int, insight_type: str) -> list:
+    """Insight tipine gore dosya listesi dondur."""
+    queries = {
+        "stale_1year": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            AND last_access_time < datetime('now', '-365 days')
+            ORDER BY file_size DESC
+        """,
+        "stale_3year": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            AND last_access_time < datetime('now', '-1095 days')
+            ORDER BY file_size DESC
+        """,
+        "large_files": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            AND file_size > 104857600
+            ORDER BY file_size DESC
+        """,
+        "temp_files": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            AND (extension IN ('tmp','temp','bak','old','cache','log')
+                 OR file_name LIKE '~$%' OR file_name LIKE '%.tmp')
+            ORDER BY file_size DESC
+        """,
+        "duplicates": """
+            SELECT sf.id, sf.file_path, sf.file_name, sf.file_size, sf.owner,
+                   sf.last_access_time, sf.last_modify_time
+            FROM scanned_files sf
+            INNER JOIN (
+                SELECT file_name, file_size
+                FROM scanned_files WHERE scan_id=? AND file_size > 1048576
+                GROUP BY file_name, file_size HAVING COUNT(*) > 1
+            ) dup ON sf.file_name = dup.file_name AND sf.file_size = dup.file_size
+            WHERE sf.scan_id=?
+            ORDER BY sf.file_size DESC
+        """,
+    }
+
+    query = queries.get(insight_type)
+    if not query:
+        return []
+
+    with db.get_cursor() as cur:
+        if insight_type == "duplicates":
+            cur.execute(query, (scan_id, scan_id))
+        else:
+            cur.execute(query, (scan_id,))
+        return [dict(r) for r in cur.fetchall()]

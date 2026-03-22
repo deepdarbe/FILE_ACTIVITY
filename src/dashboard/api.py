@@ -720,6 +720,144 @@ def create_app(db, config):
 
         return analyzer.get_report()
 
+    @app.get("/api/reports/mit-naming/{source_id}/files")
+    async def mit_naming_files(source_id: int, code: str = "R1", page: int = 1, page_size: int = 100):
+        """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6)."""
+        import re as re_mod
+        from src.utils.size_formatter import format_size
+
+        scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama bulunamadi")
+
+        # Kural tanimlar
+        checks = {
+            "R1": lambda p, n: bool(re_mod.search(r'\s', n)),
+            "R2": lambda p, n: bool(n) and not re_mod.match(r'^[a-zA-Z]', n),
+            "R3": lambda p, n: bool(n) and '.' in n and not re_mod.match(r'^[a-zA-Z0-9._-]+$', n[:n.rfind('.')]),
+            "R4": lambda p, n: '.' not in n or not n.rsplit('.', 1)[-1].isalpha(),
+            "B1": lambda p, n: len(n) > 31,
+            "B2": lambda p, n: len(p) > 256,
+            "B3": lambda p, n: '.' in n and n[:n.rfind('.')].count('.') > 0,
+            "B4": lambda p, n: bool(re_mod.search(r'[A-Z]', n[:n.rfind('.')] if '.' in n else n)),
+            "B5": lambda p, n: len(n) > 10 and '_' not in n and '-' not in n,
+            "B6": lambda p, n: any('.' in part and part not in ('', '.', '..') for part in p.replace('\\', '/').split('/')),
+        }
+
+        check_fn = checks.get(code.upper())
+        if not check_fn:
+            raise HTTPException(400, f"Gecersiz kod: {code}. Gecerli: {', '.join(checks.keys())}")
+
+        # Dosyalari tara ve ihlal edenleri topla
+        matching = []
+        with db.get_cursor() as cur:
+            cur.execute("""
+                SELECT id, file_path, file_name, file_size, owner, last_modify_time
+                FROM scanned_files WHERE scan_id=?
+            """, (scan_id,))
+            for row in cur:
+                if check_fn(row["file_path"], row["file_name"]):
+                    matching.append(dict(row))
+
+        total = len(matching)
+        offset = (page - 1) * page_size
+        page_files = matching[offset:offset + page_size]
+        for f in page_files:
+            f["file_size_formatted"] = format_size(f.get("file_size", 0))
+            f["directory"] = f["file_path"].rsplit('\\', 1)[0] if '\\' in f["file_path"] else f["file_path"].rsplit('/', 1)[0]
+
+        return {
+            "code": code.upper(),
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, -(-total // page_size)),
+            "files": page_files
+        }
+
+    @app.get("/api/reports/mit-naming/{source_id}/export")
+    async def mit_naming_export(source_id: int):
+        """MIT ihlal raporunu Excel olarak export et."""
+        import re as re_mod
+        from fastapi.responses import StreamingResponse
+        import io
+
+        scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama bulunamadi")
+
+        checks = {
+            "R1": ("Bosluk Iceren", lambda p, n: bool(re_mod.search(r'\s', n))),
+            "R2": ("Ilk Karakter Harf Degil", lambda p, n: bool(n) and not re_mod.match(r'^[a-zA-Z]', n)),
+            "R3": ("Yasak Karakter", lambda p, n: bool(n) and '.' in n and not re_mod.match(r'^[a-zA-Z0-9._-]+$', n[:n.rfind('.')])),
+            "R4": ("Uzanti Sorunu", lambda p, n: '.' not in n or not n.rsplit('.', 1)[-1].isalpha()),
+            "B1": ("Uzun Ad (>31)", lambda p, n: len(n) > 31),
+            "B3": ("Base Nokta", lambda p, n: '.' in n and n[:n.rfind('.')].count('.') > 0),
+            "B4": ("Buyuk Harf", lambda p, n: bool(re_mod.search(r'[A-Z]', n[:n.rfind('.')] if '.' in n else n))),
+            "B5": ("Ayirici Yok", lambda p, n: len(n) > 10 and '_' not in n and '-' not in n),
+        }
+
+        # Tum dosyalari tara
+        violations = {code: [] for code in checks}
+        with db.get_cursor() as cur:
+            cur.execute("""
+                SELECT file_path, file_name, file_size, owner, last_modify_time
+                FROM scanned_files WHERE scan_id=?
+            """, (scan_id,))
+            for row in cur:
+                for code, (label, fn) in checks.items():
+                    if fn(row["file_path"], row["file_name"]):
+                        violations[code].append(dict(row))
+
+        # CSV olustur (Excel uyumlu)
+        output = io.StringIO()
+        output.write('\ufeff')  # BOM for Excel UTF-8
+        output.write('Ihlal Kodu,Ihlal Turu,Dosya Adi,Tam Yol,Boyut,Sahip,Son Degisiklik\n')
+        for code, (label, _) in checks.items():
+            for f in violations[code][:5000]:  # Her kod icin max 5000
+                path = f["file_path"].replace('"', '""')
+                name = f["file_name"].replace('"', '""')
+                owner = (f.get("owner") or "").replace('"', '""')
+                output.write(f'{code},{label},"{name}","{path}",{f.get("file_size",0)},"{owner}",{f.get("last_modify_time","")}\n')
+
+        output.seek(0)
+        from datetime import datetime
+        filename = f"MIT_Naming_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode('utf-8-sig')),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    @app.get("/api/insights/{source_id}/files")
+    async def insight_files(source_id: int, insight_type: str = "stale_1year",
+                            page: int = 1, page_size: int = 100):
+        """AI insight tipine gore dosya listesi."""
+        from src.utils.size_formatter import format_size
+        from src.analyzer.ai_insights import get_insight_files
+
+        scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama bulunamadi")
+
+        files = get_insight_files(db, scan_id, insight_type)
+        total = len(files)
+        offset = (page - 1) * page_size
+        page_files = files[offset:offset + page_size]
+
+        for f in page_files:
+            f["file_size_formatted"] = format_size(f.get("file_size", 0))
+            f["directory"] = f["file_path"].rsplit('\\', 1)[0] if '\\' in f["file_path"] else f["file_path"].rsplit('/', 1)[0]
+
+        return {
+            "insight_type": insight_type,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, -(-total // page_size)),
+            "files": page_files
+        }
+
     @app.get("/api/risk-score/{source_id}")
     async def risk_score(source_id: int):
         """Supervisor risk score with 7 KPIs."""
@@ -1178,6 +1316,25 @@ def create_app(db, config):
         return result
 
     # --- SYSTEM API ---
+
+    @app.post("/api/system/open-folder")
+    async def open_folder(request):
+        """Dizini Windows Explorer'da ac."""
+        import subprocess
+        body = await request.json()
+        folder = body.get("path", "")
+        if not folder:
+            raise HTTPException(400, "path gerekli")
+        # Guvenlik: sadece mevcut dizinleri ac
+        folder = os.path.normpath(folder)
+        if os.path.isdir(folder):
+            subprocess.Popen(f'explorer "{folder}"', shell=True)
+            return {"success": True, "path": folder}
+        elif os.path.isfile(folder):
+            subprocess.Popen(f'explorer /select,"{folder}"', shell=True)
+            return {"success": True, "path": folder}
+        else:
+            raise HTTPException(404, f"Dizin bulunamadi: {folder}")
 
     @app.get("/api/system/health")
     async def health():
