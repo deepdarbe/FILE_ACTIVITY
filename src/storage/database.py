@@ -233,8 +233,12 @@ class Database:
         # Migration: operation_id sutunu ekle (v2)
         try:
             cur.execute("ALTER TABLE archived_files ADD COLUMN operation_id INTEGER REFERENCES archive_operations(id)")
-        except Exception:
-            pass  # Sutun zaten var
+            logger.info("Migration: operation_id sutunu eklendi")
+        except Exception as e:
+            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                pass  # Sutun zaten var
+            else:
+                logger.warning("Migration operation_id: %s", e)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_af_operation ON archived_files(operation_id)")
 
         # Arsiv politikalari
@@ -398,6 +402,19 @@ class Database:
             END;
         """)
 
+        # Migration: Startup'ta yarim kalmis taramalari temizle
+        # (uygulama crash olursa status='running' kalir ve yeni taramalari engeller)
+        try:
+            cur.execute("""
+                UPDATE scan_runs SET status = 'interrupted', completed_at = datetime('now','localtime')
+                WHERE status = 'running' AND started_at < datetime('now', '-1 hour', 'localtime')
+            """)
+            fixed = cur.rowcount
+            if fixed:
+                logger.info("Migration: %d yarim kalmis tarama 'interrupted' olarak isaretlendi", fixed)
+        except Exception as e:
+            logger.warning("Yarim tarama temizleme hatasi: %s", e)
+
         conn.commit()
         cur.close()
         logger.info("Veritabani tablolari olusturuldu")
@@ -497,13 +514,13 @@ class Database:
             if include_running:
                 cur.execute("""
                     SELECT id FROM scan_runs
-                    WHERE source_id = ? AND status IN ('completed', 'running')
+                    WHERE source_id = ? AND status IN ('completed', 'running', 'interrupted')
                     ORDER BY started_at DESC LIMIT 1
                 """, (source_id,))
             else:
                 cur.execute("""
                     SELECT id FROM scan_runs
-                    WHERE source_id = ? AND status = 'completed'
+                    WHERE source_id = ? AND status IN ('completed', 'interrupted')
                     ORDER BY completed_at DESC LIMIT 1
                 """, (source_id,))
             row = cur.fetchone()

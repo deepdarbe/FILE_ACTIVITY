@@ -280,6 +280,20 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('schedules')"><span class="icon">⏰</span> <span>Zamanlama</span></div>
     </div>
     <div class="sidebar-footer">
+        <!-- Global scan progress mini bar -->
+        <div id="global-scan-bar" style="display:none;margin-bottom:10px">
+            <div style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--accent-light);margin-bottom:4px">
+                <span class="scan-pulse" style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:pulse 1.5s infinite"></span>
+                <span id="gsb-label">Taraniyor...</span>
+            </div>
+            <div style="height:4px;background:var(--bg-primary);border-radius:2px;overflow:hidden">
+                <div id="gsb-bar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent-light));border-radius:2px;transition:width 0.5s ease"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:2px">
+                <span id="gsb-files">0 dosya</span>
+                <span id="gsb-size">0 B</span>
+            </div>
+        </div>
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
     </div>
 </nav>
@@ -991,6 +1005,7 @@ async function pollScanProgress(sourceId) {
                 notify('Tarama tamamlandi ancak dosya bulunamadi.', 'warning');
             }
 
+            hideGlobalScanBar();
             setTimeout(() => { loadSources(); }, 1000);
             setTimeout(() => {
                 const prog = document.getElementById('scan-progress');
@@ -1008,10 +1023,18 @@ async function pollScanProgress(sourceId) {
             document.getElementById('scan-elapsed').textContent = p.elapsed || '';
             const dir = p.current_dir || '';
             document.getElementById('sp-dir').textContent = dir.length > 60 ? '...' + dir.slice(-57) : dir;
-            // Animated progress (indeterminate since we don't know total)
+
+            // Better progress: logarithmic scale for unknown total
             const bar = document.getElementById('scan-progress-bar');
-            const w = Math.min(90, 5 + (p.file_count / 100));
+            const fc = p.file_count || 0;
+            let w;
+            if (p.status === 'generating_report') w = 95;
+            else if (p.status === 'connecting' || p.status === 'resuming') w = 3;
+            else w = Math.min(90, Math.log10(fc + 1) * 18);
             bar.style.width = w + '%';
+
+            // Update global mini progress bar in sidebar
+            updateGlobalScanBar(p);
 
             // Auto-refresh current analysis page every 10 seconds during scan
             if (p.file_count > 0 && p.file_count % 5000 < 500) {
@@ -2807,12 +2830,62 @@ async function loadGrowth() {
 }
 
 // ═══════════════════════════════════════════════════
+// GLOBAL SCAN PROGRESS BAR
+// ═══════════════════════════════════════════════════
+function updateGlobalScanBar(p) {
+    const bar = document.getElementById('global-scan-bar');
+    if (!bar) return;
+    bar.style.display = 'block';
+    const statusLabels = { scanning: 'Taraniyor...', generating_report: 'Rapor uretiliyor...', connecting: 'Baglaniyor...', resuming: 'Devam ettiriliyor...' };
+    document.getElementById('gsb-label').textContent = statusLabels[p.status] || 'Taraniyor...';
+    document.getElementById('gsb-files').textContent = formatNum(p.file_count || 0) + ' dosya';
+    document.getElementById('gsb-size').textContent = p.total_size_formatted || formatSize(p.total_size || 0);
+    const fc = p.file_count || 0;
+    let w;
+    if (p.status === 'generating_report') w = 95;
+    else if (p.status === 'connecting' || p.status === 'resuming') w = 3;
+    else w = Math.min(90, Math.log10(fc + 1) * 18);
+    document.getElementById('gsb-bar').style.width = w + '%';
+}
+
+function hideGlobalScanBar() {
+    const bar = document.getElementById('global-scan-bar');
+    if (bar) {
+        document.getElementById('gsb-bar').style.width = '100%';
+        document.getElementById('gsb-label').textContent = 'Tamamlandi!';
+        setTimeout(() => { bar.style.display = 'none'; }, 3000);
+    }
+}
+
+// Detect running scans on page load
+async function detectRunningScans() {
+    if (!sources.length) return;
+    for (const s of sources) {
+        try {
+            const p = await fetch(`${API}/scan/progress/${s.id}`).then(r => r.json());
+            if (p && p.status && p.status !== 'idle' && !p.finished) {
+                // A scan is running for this source - start polling
+                activeScanSourceId = s.id;
+                const prog = document.getElementById('scan-progress');
+                if (prog) prog.classList.add('active');
+                if (scanPollingInterval) clearInterval(scanPollingInterval);
+                scanPollingInterval = setInterval(() => pollScanProgress(s.id), 3000);
+                updateGlobalScanBar(p);
+                notify(`"${s.name}" taramasi devam ediyor...`, 'info');
+                break; // Only one scan at a time
+            }
+        } catch(e) { /* silent */ }
+    }
+}
+
+// ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
 (async function init() {
     await loadSources();
     loadOverview();
     loadAnomalies();
+    detectRunningScans();
 })();
 </script>
 
