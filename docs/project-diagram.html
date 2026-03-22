@@ -1,0 +1,1722 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FILE ACTIVITY - Proje Akış Şeması ve Dokümantasyon</title>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --bg-card: #1e293b;
+            --bg-card-hover: #334155;
+            --border: #334155;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --accent-orange: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-purple: #8b5cf6;
+            --accent-cyan: #06b6d4;
+            --accent-pink: #ec4899;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 40px 20px;
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            border-bottom: 2px solid var(--accent-blue);
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .header .subtitle {
+            color: var(--text-muted);
+            font-size: 1.2em;
+        }
+
+        .header .version {
+            display: inline-block;
+            background: var(--accent-blue);
+            color: white;
+            padding: 4px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            margin-top: 10px;
+        }
+
+        /* Navigation */
+        .nav {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            margin-bottom: 40px;
+            position: sticky;
+            top: 0;
+            background: var(--bg-dark);
+            padding: 15px 0;
+            z-index: 100;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav a {
+            color: var(--text-muted);
+            text-decoration: none;
+            padding: 8px 18px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            transition: all 0.3s;
+            font-size: 0.9em;
+        }
+
+        .nav a:hover {
+            background: var(--accent-blue);
+            color: white;
+            border-color: var(--accent-blue);
+        }
+
+        /* Section */
+        .section {
+            margin-bottom: 50px;
+        }
+
+        .section-title {
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .section-title .icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2em;
+        }
+
+        /* Architecture Diagram */
+        .arch-diagram {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 40px;
+            border: 1px solid var(--border);
+            overflow-x: auto;
+        }
+
+        .arch-layers {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            min-width: 900px;
+        }
+
+        .arch-layer {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            position: relative;
+        }
+
+        .arch-layer .layer-label {
+            position: absolute;
+            top: -12px;
+            left: 20px;
+            background: var(--bg-dark);
+            padding: 0 12px;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .arch-boxes {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .arch-box {
+            padding: 14px 20px;
+            border-radius: 10px;
+            text-align: center;
+            min-width: 140px;
+            font-weight: 500;
+            font-size: 0.9em;
+            border: 1px solid;
+            transition: transform 0.2s;
+        }
+
+        .arch-box:hover { transform: translateY(-3px); }
+
+        .arch-box.blue { background: rgba(59,130,246,0.15); border-color: var(--accent-blue); color: var(--accent-blue); }
+        .arch-box.green { background: rgba(16,185,129,0.15); border-color: var(--accent-green); color: var(--accent-green); }
+        .arch-box.orange { background: rgba(245,158,11,0.15); border-color: var(--accent-orange); color: var(--accent-orange); }
+        .arch-box.red { background: rgba(239,68,68,0.15); border-color: var(--accent-red); color: var(--accent-red); }
+        .arch-box.purple { background: rgba(139,92,246,0.15); border-color: var(--accent-purple); color: var(--accent-purple); }
+        .arch-box.cyan { background: rgba(6,182,212,0.15); border-color: var(--accent-cyan); color: var(--accent-cyan); }
+        .arch-box.pink { background: rgba(236,72,153,0.15); border-color: var(--accent-pink); color: var(--accent-pink); }
+
+        .arch-arrow {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 1.5em;
+            padding: 5px 0;
+        }
+
+        /* Flow Diagram */
+        .flow-container {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 40px;
+            border: 1px solid var(--border);
+            overflow-x: auto;
+        }
+
+        .flow {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0;
+            min-width: 800px;
+        }
+
+        .flow-node {
+            padding: 16px 30px;
+            border-radius: 12px;
+            text-align: center;
+            font-weight: 500;
+            min-width: 280px;
+            position: relative;
+        }
+
+        .flow-node.start { background: var(--accent-green); color: #000; border-radius: 30px; }
+        .flow-node.process { background: var(--accent-blue); color: white; }
+        .flow-node.decision {
+            background: var(--accent-orange);
+            color: #000;
+            transform: rotate(0deg);
+            border-radius: 8px;
+            border: 3px solid var(--accent-orange);
+            background: rgba(245,158,11,0.2);
+            color: var(--accent-orange);
+        }
+        .flow-node.action { background: var(--accent-purple); color: white; }
+        .flow-node.end { background: var(--accent-red); color: white; border-radius: 30px; }
+        .flow-node.data { background: rgba(6,182,212,0.2); border: 2px solid var(--accent-cyan); color: var(--accent-cyan); }
+
+        .flow-arrow {
+            width: 2px;
+            height: 30px;
+            background: var(--text-muted);
+            position: relative;
+        }
+        .flow-arrow::after {
+            content: '▼';
+            position: absolute;
+            bottom: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: var(--text-muted);
+            font-size: 10px;
+        }
+
+        .flow-branch {
+            display: flex;
+            gap: 40px;
+            align-items: flex-start;
+            justify-content: center;
+            width: 100%;
+        }
+
+        .flow-branch-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0;
+        }
+
+        .flow-branch-label {
+            color: var(--text-muted);
+            font-size: 0.85em;
+            margin-bottom: 5px;
+            font-weight: 600;
+        }
+
+        /* Cards Grid */
+        .cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid var(--border);
+            transition: border-color 0.3s, transform 0.2s;
+        }
+
+        .card:hover {
+            border-color: var(--accent-blue);
+            transform: translateY(-2px);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .card-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.3em;
+        }
+
+        .card-icon.blue { background: rgba(59,130,246,0.2); }
+        .card-icon.green { background: rgba(16,185,129,0.2); }
+        .card-icon.orange { background: rgba(245,158,11,0.2); }
+        .card-icon.red { background: rgba(239,68,68,0.2); }
+        .card-icon.purple { background: rgba(139,92,246,0.2); }
+        .card-icon.cyan { background: rgba(6,182,212,0.2); }
+
+        .card h3 { font-size: 1.1em; }
+        .card p { color: var(--text-muted); font-size: 0.9em; margin-top: 8px; }
+
+        .card ul {
+            list-style: none;
+            margin-top: 12px;
+        }
+
+        .card ul li {
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card ul li:last-child { border-bottom: none; }
+
+        .card ul li::before {
+            content: '▸';
+            color: var(--accent-blue);
+            font-weight: bold;
+        }
+
+        /* File Tree */
+        .file-tree {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 30px;
+            border: 1px solid var(--border);
+            font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+            font-size: 0.88em;
+            overflow-x: auto;
+        }
+
+        .file-tree .dir { color: var(--accent-blue); font-weight: 600; }
+        .file-tree .file { color: var(--text-muted); }
+        .file-tree .file-py { color: var(--accent-green); }
+        .file-tree .file-yaml { color: var(--accent-orange); }
+        .file-tree .file-html { color: var(--accent-pink); }
+        .file-tree .file-db { color: var(--accent-purple); }
+        .file-tree .comment { color: #475569; font-style: italic; }
+        .file-tree .line { padding: 2px 0; white-space: pre; }
+
+        /* DB Schema */
+        .db-schema {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 20px;
+        }
+
+        .db-table {
+            background: var(--bg-card);
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .db-table-header {
+            padding: 14px 20px;
+            font-weight: 700;
+            font-size: 1em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .db-table-header.blue { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
+        .db-table-header.green { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+        .db-table-header.orange { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+        .db-table-header.purple { background: rgba(139,92,246,0.15); color: var(--accent-purple); }
+        .db-table-header.cyan { background: rgba(6,182,212,0.15); color: var(--accent-cyan); }
+        .db-table-header.red { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+
+        .db-columns {
+            padding: 10px 0;
+        }
+
+        .db-col {
+            display: flex;
+            align-items: center;
+            padding: 8px 20px;
+            font-size: 0.85em;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .db-col:last-child { border-bottom: none; }
+
+        .db-col-name { flex: 1; font-weight: 500; }
+        .db-col-type {
+            color: var(--accent-cyan);
+            font-family: monospace;
+            font-size: 0.85em;
+            background: rgba(6,182,212,0.1);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .db-col-key {
+            margin-left: 8px;
+            font-size: 0.75em;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 700;
+        }
+
+        .db-col-key.pk { background: rgba(245,158,11,0.2); color: var(--accent-orange); }
+        .db-col-key.fk { background: rgba(139,92,246,0.2); color: var(--accent-purple); }
+        .db-col-key.idx { background: rgba(59,130,246,0.2); color: var(--accent-blue); }
+
+        /* CLI Table */
+        .cli-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-card);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .cli-table th {
+            background: rgba(59,130,246,0.15);
+            color: var(--accent-blue);
+            padding: 14px 20px;
+            text-align: left;
+            font-size: 0.9em;
+        }
+
+        .cli-table td {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.88em;
+        }
+
+        .cli-table tr:last-child td { border-bottom: none; }
+
+        .cli-table code {
+            background: rgba(59,130,246,0.1);
+            color: var(--accent-cyan);
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: 'Cascadia Code', monospace;
+            font-size: 0.9em;
+        }
+
+        /* Phase Timeline */
+        .timeline {
+            position: relative;
+            padding-left: 40px;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 18px;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--border);
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 30px;
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid var(--border);
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -30px;
+            top: 28px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 3px solid;
+        }
+
+        .timeline-item:nth-child(1)::before { border-color: var(--accent-green); background: rgba(16,185,129,0.3); }
+        .timeline-item:nth-child(2)::before { border-color: var(--accent-blue); background: rgba(59,130,246,0.3); }
+        .timeline-item:nth-child(3)::before { border-color: var(--accent-orange); background: rgba(245,158,11,0.3); }
+        .timeline-item:nth-child(4)::before { border-color: var(--accent-purple); background: rgba(139,92,246,0.3); }
+        .timeline-item:nth-child(5)::before { border-color: var(--accent-cyan); background: rgba(6,182,212,0.3); }
+        .timeline-item:nth-child(6)::before { border-color: var(--accent-pink); background: rgba(236,72,153,0.3); }
+        .timeline-item:nth-child(7)::before { border-color: var(--accent-red); background: rgba(239,68,68,0.3); }
+
+        .timeline-item h3 {
+            font-size: 1.1em;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .timeline-item .phase-badge {
+            font-size: 0.75em;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+
+        .timeline-item ul { list-style: none; margin-top: 8px; }
+        .timeline-item ul li {
+            padding: 4px 0;
+            font-size: 0.9em;
+            color: var(--text-muted);
+        }
+        .timeline-item ul li::before {
+            content: '✦ ';
+            color: var(--accent-blue);
+        }
+
+        /* API Section */
+        .api-group {
+            background: var(--bg-card);
+            border-radius: 16px;
+            margin-bottom: 15px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .api-group-header {
+            padding: 14px 20px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: background 0.2s;
+        }
+
+        .api-group-header:hover { background: var(--bg-card-hover); }
+
+        .api-endpoint {
+            padding: 10px 20px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.88em;
+        }
+
+        .api-method {
+            font-family: monospace;
+            font-weight: 700;
+            font-size: 0.8em;
+            padding: 3px 8px;
+            border-radius: 4px;
+            min-width: 55px;
+            text-align: center;
+        }
+
+        .api-method.get { background: rgba(16,185,129,0.2); color: var(--accent-green); }
+        .api-method.post { background: rgba(59,130,246,0.2); color: var(--accent-blue); }
+        .api-method.put { background: rgba(245,158,11,0.2); color: var(--accent-orange); }
+        .api-method.delete { background: rgba(239,68,68,0.2); color: var(--accent-red); }
+
+        .api-path { font-family: monospace; color: var(--text); }
+        .api-desc { color: var(--text-muted); margin-left: auto; font-size: 0.85em; }
+
+        /* Relation diagram */
+        .relation-svg {
+            width: 100%;
+            max-width: 1000px;
+            margin: 0 auto;
+            display: block;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .header h1 { font-size: 1.8em; }
+            .cards-grid { grid-template-columns: 1fr; }
+            .db-schema { grid-template-columns: 1fr; }
+            .nav { gap: 5px; }
+            .nav a { padding: 6px 12px; font-size: 0.8em; }
+        }
+
+        /* Print */
+        @media print {
+            body { background: white; color: #1a1a1a; }
+            .nav { display: none; }
+            .card, .arch-diagram, .flow-container, .file-tree, .db-table, .timeline-item {
+                break-inside: avoid;
+                border-color: #ccc;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>FILE ACTIVITY</h1>
+    <div class="subtitle">Windows Dosya Paylasim Analiz ve Arsivleme Sistemi</div>
+    <div class="version">v1.0 - Proje Dokumantasyonu</div>
+</div>
+
+<div class="container">
+
+    <nav class="nav">
+        <a href="#overview">Genel Bakis</a>
+        <a href="#architecture">Mimari</a>
+        <a href="#flow">Akis Semasi</a>
+        <a href="#modules">Moduller</a>
+        <a href="#structure">Dizin Yapisi</a>
+        <a href="#database">Veritabani</a>
+        <a href="#cli">CLI Komutlari</a>
+        <a href="#api">API Endpointleri</a>
+        <a href="#phases">Gelistirme Fazlari</a>
+        <a href="#config">Konfigürasyon</a>
+    </nav>
+
+    <!-- ==================== OVERVIEW ==================== -->
+    <section class="section" id="overview">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(59,130,246,0.2)">&#x1F4CA;</span>
+            Genel Bakis
+        </h2>
+        <div class="cards-grid">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon blue">&#x1F50D;</div>
+                    <h3>Dosya Tarama ve Analiz</h3>
+                </div>
+                <p>Windows dosya paylasimlarini (UNC yollari) tarar, dosya erisim zamanlarini, boyutlarini ve turlerini analiz eder.</p>
+                <ul>
+                    <li>Win32 API ile dosya ozelliklerini okuma</li>
+                    <li>Artimsal (incremental) tarama destegi</li>
+                    <li>Coklu dosya sunucu kaynak destegi</li>
+                    <li>Gizli ve sistem dosyalarini filtreleme</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon green">&#x1F4C8;</div>
+                    <h3>Detayli Raporlama</h3>
+                </div>
+                <p>Dosya erisim sikligi, dosya turu dagilimi ve boyut dagilimi raporlari olusturur.</p>
+                <ul>
+                    <li>30/60/90/180/365 gun erisim sikligi</li>
+                    <li>Dosya turu bazinda analiz</li>
+                    <li>Boyut kategorisine gore dagilim</li>
+                    <li>HTML, JSON ve CSV cikti formatlari</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon orange">&#x1F4E6;</div>
+                    <h3>Akilli Arsivleme</h3>
+                </div>
+                <p>Belirlenen politikalara gore dosyalari arsiv hedefine tasir, dizin yapisini tamamen korur.</p>
+                <ul>
+                    <li>Kopyala-Dogrula-Sil guvenligi</li>
+                    <li>SHA-256 checksum dogrulamasi</li>
+                    <li>Dizin yapisi tam koruma</li>
+                    <li>Manuel ve zamanlanmis arsivleme</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon purple">&#x1F50E;</div>
+                    <h3>Arsiv Indeksi ve Geri Yukleme</h3>
+                </div>
+                <p>Arsivlenen dosyalar icin aranabilir indeks olusturur, ihtiyac halinde hizlica geri yukleme yapar.</p>
+                <ul>
+                    <li>SQLite FTS5 tam metin arama</li>
+                    <li>Dosya adi, yol, uzanti ile arama</li>
+                    <li>Tek tikla geri yukleme</li>
+                    <li>Arsiv istatistikleri</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon cyan">&#x23F0;</div>
+                    <h3>Zamanlama ve Otomasyon</h3>
+                </div>
+                <p>Tarama ve arsivleme islemlerini otomatik olarak zamanlanmis gorevlerle calistirir.</p>
+                <ul>
+                    <li>Dahili APScheduler zamanlayici</li>
+                    <li>Windows Task Scheduler entegrasyonu</li>
+                    <li>Cron ifadesi destegi</li>
+                    <li>Windows Service olarak calistirma</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon red">&#x1F310;</div>
+                    <h3>Web Dashboard</h3>
+                </div>
+                <p>FastAPI tabanli web arayuzu ile tum islemleri goruntuleyebilir ve yonetebilirsiniz.</p>
+                <ul>
+                    <li>Canli durum raporu</li>
+                    <li>Interaktif grafikler ve tablolar</li>
+                    <li>Arsiv arama ve geri yukleme</li>
+                    <li>Kaynak ve politika yonetimi</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== ARCHITECTURE ==================== -->
+    <section class="section" id="architecture">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(139,92,246,0.2)">&#x1F3D7;</span>
+            Sistem Mimarisi
+        </h2>
+        <div class="arch-diagram">
+            <div class="arch-layers">
+
+                <!-- Layer: Sources -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-orange)">VERI KAYNAKLARI</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box orange">&#x1F4C1; Dosya Sunucu 1<br><small>\\server1\share</small></div>
+                        <div class="arch-box orange">&#x1F4C1; Dosya Sunucu 2<br><small>\\server2\share</small></div>
+                        <div class="arch-box orange">&#x1F4C1; Dosya Sunucu N<br><small>\\serverN\share</small></div>
+                    </div>
+                </div>
+
+                <div class="arch-arrow">&#x2193; &#x2193; &#x2193;</div>
+
+                <!-- Layer: Scanner -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-blue)">TARAMA KATMANI</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box blue">&#x1F50D; File Scanner<br><small>os.scandir() recursive</small></div>
+                        <div class="arch-box blue">&#x2699; Win Attributes<br><small>pywin32 API</small></div>
+                        <div class="arch-box blue">&#x1F517; Share Resolver<br><small>UNC dogrulama</small></div>
+                    </div>
+                </div>
+
+                <div class="arch-arrow">&#x2193; &#x2193; &#x2193;</div>
+
+                <!-- Layer: Event Collection -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-pink)">KULLANICI IZLEME</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box pink">&#x1F4DD; Event Collector<br><small>Win Event Log 4663/5145</small></div>
+                        <div class="arch-box pink">&#x1F464; User Analyzer<br><small>Aktivite analizi</small></div>
+                        <div class="arch-box pink">&#x26A0; Anomaly Detector<br><small>Anormal davranis</small></div>
+                    </div>
+                </div>
+
+                <div class="arch-arrow">&#x2193; &#x2193; &#x2193;</div>
+
+                <!-- Layer: Storage -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-purple)">DEPOLAMA KATMANI</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box purple">&#x1F4BE; SQLite<br><small>WAL Mode + FTS5</small></div>
+                        <div class="arch-box purple">&#x1F4CB; Scan Results<br><small>scanned_files</small></div>
+                        <div class="arch-box purple">&#x1F4C2; Archive Index<br><small>archived_files</small></div>
+                        <div class="arch-box purple">&#x1F464; User Logs<br><small>user_access_logs</small></div>
+                        <div class="arch-box purple">&#x26A0; Anomalies<br><small>anomaly_alerts</small></div>
+                    </div>
+                </div>
+
+                <div class="arch-arrow">&#x2193; &#x2193; &#x2193;</div>
+
+                <!-- Layer: Processing -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-green)">ISLEME KATMANI</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box green">&#x1F4CA; Frequency<br>Analyzer</div>
+                        <div class="arch-box green">&#x1F4C4; Type<br>Analyzer</div>
+                        <div class="arch-box green">&#x1F4CF; Size<br>Analyzer</div>
+                        <div class="arch-box cyan">&#x1F4E6; Archive<br>Engine</div>
+                        <div class="arch-box cyan">&#x267B; Restore<br>Engine</div>
+                        <div class="arch-box pink">&#x1F4DC; Policy<br>Engine</div>
+                        <div class="arch-box green">&#x1F4C3; Report<br>Exporter</div>
+                    </div>
+                </div>
+
+                <div class="arch-arrow">&#x2193; &#x2193; &#x2193;</div>
+
+                <!-- Layer: Interface -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-cyan)">ARAYUZ KATMANI</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box red">&#x1F5A5; CLI<br><small>click komutlari</small></div>
+                        <div class="arch-box red">&#x1F310; Web Dashboard<br><small>FastAPI + HTML</small></div>
+                        <div class="arch-box red">&#x23F0; Scheduler<br><small>APScheduler + WinTask</small></div>
+                        <div class="arch-box red">&#x2699; Win Service<br><small>NSSM service</small></div>
+                    </div>
+                </div>
+
+                <div class="arch-arrow">&#x2193;</div>
+
+                <!-- Layer: Deployment -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-orange)">DAGITIM</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box orange">&#x1F4E6; PyInstaller EXE<br><small>build.bat</small></div>
+                        <div class="arch-box orange">&#x1F4BB; Installer<br><small>install.bat</small></div>
+                        <div class="arch-box orange">&#x1F680; PS Remote Deploy<br><small>deploy.ps1 + CSV</small></div>
+                    </div>
+                </div>
+
+                <div class="arch-arrow">&#x2193;</div>
+
+                <!-- Layer: Archive Destination -->
+                <div class="arch-layer">
+                    <span class="layer-label" style="color:var(--accent-red)">ARSIV HEDEFI</span>
+                    <div class="arch-boxes">
+                        <div class="arch-box red">&#x1F4BE; Yerel Disk<br><small>D:\Archive</small></div>
+                        <div class="arch-box red">&#x1F4BE; NAS / SAN<br><small>\\nas\archive</small></div>
+                        <div class="arch-box red">&#x1F4BE; USB / Harici<br><small>E:\Backup</small></div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== FLOW ==================== -->
+    <section class="section" id="flow">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(16,185,129,0.2)">&#x27A1;</span>
+            Ana Islem Akis Semasi
+        </h2>
+
+        <!-- Scan Flow -->
+        <h3 style="margin-bottom:15px; color:var(--accent-blue)">1. Tarama ve Analiz Akisi</h3>
+        <div class="flow-container" style="margin-bottom:30px">
+            <div class="flow">
+                <div class="flow-node start">BASLANGIC: Tarama Tetiklenir</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node data">Kaynak dogrulanir (UNC erisim kontrolu)</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node decision">&#x2753; Artimsal tarama mi?</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-branch">
+                    <div class="flow-branch-item">
+                        <div class="flow-branch-label">EVET</div>
+                        <div class="flow-node process" style="font-size:0.85em">Sadece degisen dosyalari tara</div>
+                    </div>
+                    <div class="flow-branch-item">
+                        <div class="flow-branch-label">HAYIR</div>
+                        <div class="flow-node process" style="font-size:0.85em">Tum dosyalari tara</div>
+                    </div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node process">os.scandir() ile recursive dizin taramasi</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node process">Win32 API: creation_time, access_time, modify_time, size</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node data">Batch INSERT (500 kayit) &#x2192; SQLite DB</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node process">Frekans / Tur / Boyut Analizi Calistirilir</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node data">Raporlar Olusturulur (HTML/JSON/CSV)</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node end">TAMAMLANDI</div>
+            </div>
+        </div>
+
+        <!-- Archive Flow -->
+        <h3 style="margin-bottom:15px; color:var(--accent-orange)">2. Arsivleme Akisi</h3>
+        <div class="flow-container" style="margin-bottom:30px">
+            <div class="flow">
+                <div class="flow-node start">BASLANGIC: Arsivleme Tetiklenir</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node data">Arsiv politikasi yuklenir (kurallar)</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node process">Tarama verileri uzerinde politika uygulanir</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node decision">&#x2753; Dry-run modu mu?</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-branch">
+                    <div class="flow-branch-item">
+                        <div class="flow-branch-label">EVET</div>
+                        <div class="flow-node data" style="font-size:0.85em">Sadece rapor olustur</div>
+                    </div>
+                    <div class="flow-branch-item">
+                        <div class="flow-branch-label">HAYIR</div>
+                        <div class="flow-node action" style="font-size:0.85em">Arsivleme baslatilir</div>
+                    </div>
+                </div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node process">Her dosya icin:</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node action">1. Hedef dizin olustur (yapi korunur)</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node action">2. Dosyayi arsiv hedefine kopyala</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node decision">&#x2753; Checksum dogrulama?</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node action">3. SHA-256 eslesmesi kontrol et</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node data">4. Arsiv indeksine kaydet</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node action">5. Kaynak dosyayi sil</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node process">6. Bos dizinleri temizle (opsiyonel)</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node end">ARSIVLEME TAMAMLANDI</div>
+            </div>
+        </div>
+
+        <!-- Restore Flow -->
+        <h3 style="margin-bottom:15px; color:var(--accent-green)">3. Geri Yukleme Akisi</h3>
+        <div class="flow-container">
+            <div class="flow">
+                <div class="flow-node start">BASLANGIC: Geri Yukleme Istegi</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node data">Arsiv indeksinde arama (FTS5)</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node process">Dosya arsiv konumunda bulunur</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node action">Orijinal dizin yapisi yeniden olusturulur</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node action">Dosya orijinal konumuna kopyalanir</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node data">Arsiv indeksi guncellenir (restored_at)</div>
+                <div class="flow-arrow"></div>
+                <div class="flow-node end">GERI YUKLEME TAMAMLANDI</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== MODULES ==================== -->
+    <section class="section" id="modules">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(245,158,11,0.2)">&#x1F9E9;</span>
+            Modul Detaylari
+        </h2>
+        <div class="cards-grid">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon blue">&#x1F50D;</div>
+                    <h3>scanner/file_scanner.py</h3>
+                </div>
+                <p>Dosya paylasimlarini recursive olarak tarar.</p>
+                <ul>
+                    <li><code>scan_source(source)</code> - Ana tarama fonksiyonu</li>
+                    <li><code>recursive_scandir(path)</code> - os.scandir jeneratoru</li>
+                    <li><code>should_skip(entry)</code> - Filtre kontrolu</li>
+                    <li>Batch INSERT (500 kayit/islem)</li>
+                    <li>Artimsal tarama destegi</li>
+                    <li>PermissionError toleransli</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon blue">&#x2699;</div>
+                    <h3>scanner/win_attributes.py</h3>
+                </div>
+                <p>Windows dosya ozelliklerini pywin32 ile okur.</p>
+                <ul>
+                    <li><code>get_file_times(path)</code> - FileTimesInfo dondurur</li>
+                    <li>GetFileAttributesEx API kullanimi</li>
+                    <li>creation_time, access_time, modify_time</li>
+                    <li>Dosya boyutu (high+low DWORD)</li>
+                    <li>os.stat() fallback destegi</li>
+                    <li>NtfsDisableLastAccessUpdate kontrolu</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon green">&#x1F4CA;</div>
+                    <h3>analyzer/frequency_analyzer.py</h3>
+                </div>
+                <p>Dosya erisim sikligini gun araligina gore analiz eder.</p>
+                <ul>
+                    <li><code>analyze_frequency(source_id, buckets)</code></li>
+                    <li>Yapilandirılabilir gun araliklari: 30/60/90/180/365</li>
+                    <li>SQL GROUP BY tabanli verimli sorgular</li>
+                    <li>Son erisim vs. son degisiklik zamani</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon green">&#x1F4C4;</div>
+                    <h3>analyzer/type_analyzer.py</h3>
+                </div>
+                <p>Dosya turlerine gore dagilim analizi.</p>
+                <ul>
+                    <li><code>analyze_types(source_id)</code></li>
+                    <li>Uzanti bazinda: sayi, toplam boyut, ortalama</li>
+                    <li>En buyuk, en kucuk, en eski, en yeni</li>
+                    <li>Grafik verisi olarak cikti</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon green">&#x1F4CF;</div>
+                    <h3>analyzer/size_analyzer.py</h3>
+                </div>
+                <p>Dosya boyutu dagilimi analizi.</p>
+                <ul>
+                    <li><code>analyze_sizes(source_id)</code></li>
+                    <li>tiny (&lt;100KB), small (&lt;1MB), medium (&lt;100MB)</li>
+                    <li>large (&lt;1GB), huge (&gt;1GB)</li>
+                    <li>Kumulatif boyut ve dosya sayisi</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon orange">&#x1F4E6;</div>
+                    <h3>archiver/archive_engine.py</h3>
+                </div>
+                <p>Guvenli arsivleme motoru.</p>
+                <ul>
+                    <li><code>archive_file(source, file, dest)</code></li>
+                    <li>Kopyala &#x2192; Dogrula &#x2192; Kaydet &#x2192; Sil</li>
+                    <li>SHA-256 butunluk kontrolu</li>
+                    <li>Dizin yapisi tam koruma</li>
+                    <li>Bos dizin temizligi</li>
+                    <li>Dry-run onizleme modu</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon purple">&#x1F4DC;</div>
+                    <h3>archiver/archive_policy.py</h3>
+                </div>
+                <p>Arsiv politika kural motoru.</p>
+                <ul>
+                    <li><code>evaluate(file, policy)</code> - Kural degerlendirme</li>
+                    <li>last_access_older_than_days</li>
+                    <li>last_modified_older_than_days</li>
+                    <li>file_size_greater_than / less_than</li>
+                    <li>extension_in / extension_not_in</li>
+                    <li>path_pattern (glob eslesme)</li>
+                    <li>AND/OR kural birlestirme</li>
+                </ul>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon cyan">&#x267B;</div>
+                    <h3>archiver/restore_engine.py</h3>
+                </div>
+                <p>Arsivden geri yukleme motoru.</p>
+                <ul>
+                    <li><code>restore_by_id(archive_id)</code></li>
+                    <li><code>restore_by_path(original_path)</code></li>
+                    <li>Orijinal dizin yapisini yeniden olusturur</li>
+                    <li>Arsiv indeksini gunceller</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== FILE STRUCTURE ==================== -->
+    <section class="section" id="structure">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(6,182,212,0.2)">&#x1F4C2;</span>
+            Proje Dizin Yapisi
+        </h2>
+        <div class="file-tree">
+<div class="line"><span class="dir">FILE_ACTIVITY/</span></div>
+<div class="line">  ├── <span class="file-py">main.py</span>                        <span class="comment"># CLI giris noktasi (click)</span></div>
+<div class="line">  ├── <span class="file-yaml">config.yaml</span>                    <span class="comment"># Varsayilan konfigürasyon</span></div>
+<div class="line">  ├── <span class="file">requirements.txt</span>               <span class="comment"># Python bagimliklar</span></div>
+<div class="line">  ├── <span class="file">README.md</span>                      <span class="comment"># Dokümantasyon</span></div>
+<div class="line">  │</div>
+<div class="line">  ├── <span class="dir">src/</span></div>
+<div class="line">  │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">scanner/</span>                   <span class="comment"># Dosya tarama modulu</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   ├── <span class="file-py">file_scanner.py</span>    <span class="comment"># Recursive dizin tarama</span></div>
+<div class="line">  │   │   ├── <span class="file-py">win_attributes.py</span>  <span class="comment"># pywin32 dosya ozellikleri</span></div>
+<div class="line">  │   │   └── <span class="file-py">share_resolver.py</span>  <span class="comment"># UNC yol dogrulama</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">analyzer/</span>                  <span class="comment"># Analiz modulu</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   ├── <span class="file-py">frequency_analyzer.py</span> <span class="comment"># Erisim sikligi analizi</span></div>
+<div class="line">  │   │   ├── <span class="file-py">type_analyzer.py</span>   <span class="comment"># Dosya turu analizi</span></div>
+<div class="line">  │   │   ├── <span class="file-py">size_analyzer.py</span>   <span class="comment"># Boyut dagilimi analizi</span></div>
+<div class="line">  │   │   ├── <span class="file-py">report_generator.py</span> <span class="comment"># Birlestirici rapor motoru</span></div>
+<div class="line">  │   │   └── <span class="file-py">report_exporter.py</span> <span class="comment"># HTML/JSON rapor ciktisi</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">archiver/</span>                  <span class="comment"># Arsivleme modulu</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   ├── <span class="file-py">archive_engine.py</span>  <span class="comment"># Kopyala-Dogrula-Sil motoru</span></div>
+<div class="line">  │   │   ├── <span class="file-py">archive_policy.py</span>  <span class="comment"># Politika kural motoru</span></div>
+<div class="line">  │   │   └── <span class="file-py">restore_engine.py</span>  <span class="comment"># Geri yukleme motoru</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">storage/</span>                   <span class="comment"># Veritabani katmani</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   ├── <span class="file-py">database.py</span>        <span class="comment"># SQLite yonetici (WAL + FTS5)</span></div>
+<div class="line">  │   │   └── <span class="file-py">models.py</span>          <span class="comment"># Dataclass tanimlari</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">scheduler/</span>                 <span class="comment"># Zamanlama modulu</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   ├── <span class="file-py">task_scheduler.py</span>  <span class="comment"># APScheduler zamanlayici</span></div>
+<div class="line">  │   │   └── <span class="file-py">win_task_scheduler.py</span> <span class="comment"># Windows Task Scheduler</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">user_activity/</span>             <span class="comment"># Kullanici aktivite izleme</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   ├── <span class="file-py">event_collector.py</span> <span class="comment"># Win Event Log 4663/5145</span></div>
+<div class="line">  │   │   └── <span class="file-py">user_analyzer.py</span>   <span class="comment"># Analiz + Anomali tespit</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">dashboard/</span>                 <span class="comment"># Web arayuz</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   ├── <span class="file-py">api.py</span>             <span class="comment"># FastAPI REST API</span></div>
+<div class="line">  │   │   └── <span class="dir">static/</span></div>
+<div class="line">  │   │       └── <span class="file-html">index.html</span>     <span class="comment"># Dark-theme SPA dashboard</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   ├── <span class="dir">i18n/</span>                      <span class="comment"># Dil destegi</span></div>
+<div class="line">  │   │   ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │   │   └── <span class="file-py">messages.py</span>        <span class="comment"># TR/EN mesaj katalogu</span></div>
+<div class="line">  │   │</div>
+<div class="line">  │   └── <span class="dir">utils/</span>                     <span class="comment"># Yardimci moduller</span></div>
+<div class="line">  │       ├── <span class="file-py">__init__.py</span></div>
+<div class="line">  │       ├── <span class="file-py">config_loader.py</span>   <span class="comment"># YAML konfigürasyon yukleme</span></div>
+<div class="line">  │       ├── <span class="file-py">logging_setup.py</span>   <span class="comment"># Log yapilandirma</span></div>
+<div class="line">  │       └── <span class="file-py">size_formatter.py</span>  <span class="comment"># Boyut formatlama</span></div>
+<div class="line">  │</div>
+<div class="line">  ├── <span class="dir">scripts/</span>                       <span class="comment"># Kurulum scriptleri</span></div>
+<div class="line">  │   └── <span class="file-py">init_db.py</span>            <span class="comment"># SQLite veritabani olustur</span></div>
+<div class="line">  │</div>
+<div class="line">  ├── <span class="dir">deploy/</span>                        <span class="comment"># Dagitim dosyalari</span></div>
+<div class="line">  │   ├── <span class="file">install.bat</span>            <span class="comment"># Sunucu kurulum sihirbazi</span></div>
+<div class="line">  │   ├── <span class="file">uninstall.bat</span>          <span class="comment"># Kaldirma scripti</span></div>
+<div class="line">  │   ├── <span class="file">service_install.bat</span>    <span class="comment"># Windows servisi kur</span></div>
+<div class="line">  │   ├── <span class="file-py">deploy.ps1</span>            <span class="comment"># PS uzak dagitim (tek/toplu)</span></div>
+<div class="line">  │   └── <span class="file">servers_template.csv</span>   <span class="comment"># Toplu dagitim CSV sablonu</span></div>
+<div class="line">  │</div>
+<div class="line">  ├── <span class="dir">reports/</span>                       <span class="comment"># Otomatik rapor ciktilari</span></div>
+<div class="line">  ├── <span class="dir">logs/</span>                          <span class="comment"># Log dosyalari</span></div>
+<div class="line">  │</div>
+<div class="line">  ├── <span class="dir">docs/</span>                          <span class="comment"># Dokümantasyon</span></div>
+<div class="line">  │   └── <span class="file-html">project-diagram.html</span>  <span class="comment"># Bu dosya</span></div>
+<div class="line">  │</div>
+<div class="line">  ├── <span class="file-py">dev_server.py</span>                  <span class="comment"># Demo mod dev server</span></div>
+<div class="line">  ├── <span class="file-py">setup.py</span>                       <span class="comment"># Paket kurulum</span></div>
+<div class="line">  ├── <span class="file">build.bat</span>                      <span class="comment"># PyInstaller EXE build</span></div>
+<div class="line">  └── <span class="file">file_activity.spec</span>             <span class="comment"># PyInstaller spec dosyasi</span></div>
+        </div>
+    </section>
+
+    <!-- ==================== DATABASE ==================== -->
+    <section class="section" id="database">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(139,92,246,0.2)">&#x1F4BE;</span>
+            Veritabani Semasi
+        </h2>
+
+        <!-- ER Diagram SVG -->
+        <div style="background:var(--bg-card); border-radius:16px; padding:30px; border:1px solid var(--border); margin-bottom:30px; overflow-x:auto">
+            <h3 style="margin-bottom:20px; color:var(--accent-purple)">Entity-Relationship Diyagrami</h3>
+            <svg viewBox="0 0 1000 500" class="relation-svg" style="min-width:800px">
+                <!-- Background grid -->
+                <defs>
+                    <marker id="arrow" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+                        <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+                    </marker>
+                </defs>
+
+                <!-- sources -->
+                <rect x="30" y="180" width="180" height="140" rx="12" fill="#1e1e3a" stroke="#f59e0b" stroke-width="2"/>
+                <rect x="30" y="180" width="180" height="35" rx="12" fill="rgba(245,158,11,0.2)"/>
+                <text x="120" y="203" text-anchor="middle" fill="#f59e0b" font-weight="700" font-size="14">sources</text>
+                <text x="45" y="230" fill="#94a3b8" font-size="11">id (PK)</text>
+                <text x="45" y="248" fill="#94a3b8" font-size="11">name (UNIQUE)</text>
+                <text x="45" y="266" fill="#94a3b8" font-size="11">unc_path</text>
+                <text x="45" y="284" fill="#94a3b8" font-size="11">archive_dest</text>
+                <text x="45" y="302" fill="#94a3b8" font-size="11">enabled, last_scanned_at</text>
+
+                <!-- scan_runs -->
+                <rect x="280" y="50" width="180" height="130" rx="12" fill="#1e1e3a" stroke="#3b82f6" stroke-width="2"/>
+                <rect x="280" y="50" width="180" height="35" rx="12" fill="rgba(59,130,246,0.2)"/>
+                <text x="370" y="73" text-anchor="middle" fill="#3b82f6" font-weight="700" font-size="14">scan_runs</text>
+                <text x="295" y="102" fill="#94a3b8" font-size="11">id (PK)</text>
+                <text x="295" y="120" fill="#94a3b8" font-size="11">source_id (FK)</text>
+                <text x="295" y="138" fill="#94a3b8" font-size="11">started_at, completed_at</text>
+                <text x="295" y="156" fill="#94a3b8" font-size="11">total_files, total_size</text>
+                <text x="295" y="174" fill="#94a3b8" font-size="11">errors, status</text>
+
+                <!-- scanned_files -->
+                <rect x="280" y="220" width="200" height="190" rx="12" fill="#1e1e3a" stroke="#10b981" stroke-width="2"/>
+                <rect x="280" y="220" width="200" height="35" rx="12" fill="rgba(16,185,129,0.2)"/>
+                <text x="380" y="243" text-anchor="middle" fill="#10b981" font-weight="700" font-size="14">scanned_files</text>
+                <text x="295" y="272" fill="#94a3b8" font-size="11">id (PK)</text>
+                <text x="295" y="290" fill="#94a3b8" font-size="11">source_id (FK), scan_id (FK)</text>
+                <text x="295" y="308" fill="#94a3b8" font-size="11">file_path, relative_path</text>
+                <text x="295" y="326" fill="#94a3b8" font-size="11">file_name, extension</text>
+                <text x="295" y="344" fill="#94a3b8" font-size="11">file_size</text>
+                <text x="295" y="362" fill="#94a3b8" font-size="11">creation_time, access_time</text>
+                <text x="295" y="380" fill="#94a3b8" font-size="11">modify_time, owner</text>
+                <text x="295" y="398" fill="#94a3b8" font-size="11">attributes</text>
+
+                <!-- archived_files -->
+                <rect x="560" y="180" width="200" height="200" rx="12" fill="#1e1e3a" stroke="#8b5cf6" stroke-width="2"/>
+                <rect x="560" y="180" width="200" height="35" rx="12" fill="rgba(139,92,246,0.2)"/>
+                <text x="660" y="203" text-anchor="middle" fill="#8b5cf6" font-weight="700" font-size="14">archived_files</text>
+                <text x="575" y="232" fill="#94a3b8" font-size="11">id (PK)</text>
+                <text x="575" y="250" fill="#94a3b8" font-size="11">source_id (FK)</text>
+                <text x="575" y="268" fill="#94a3b8" font-size="11">original_path, archive_path</text>
+                <text x="575" y="286" fill="#94a3b8" font-size="11">relative_path</text>
+                <text x="575" y="304" fill="#94a3b8" font-size="11">file_name, extension</text>
+                <text x="575" y="322" fill="#94a3b8" font-size="11">file_size</text>
+                <text x="575" y="340" fill="#94a3b8" font-size="11">creation/access/modify_time</text>
+                <text x="575" y="358" fill="#94a3b8" font-size="11">archived_at, archived_by</text>
+                <text x="575" y="376" fill="#94a3b8" font-size="11">restored_at, checksum</text>
+
+                <!-- archive_policies -->
+                <rect x="560" y="30" width="180" height="120" rx="12" fill="#1e1e3a" stroke="#ec4899" stroke-width="2"/>
+                <rect x="560" y="30" width="180" height="35" rx="12" fill="rgba(236,72,153,0.2)"/>
+                <text x="650" y="53" text-anchor="middle" fill="#ec4899" font-weight="700" font-size="14">archive_policies</text>
+                <text x="575" y="82" fill="#94a3b8" font-size="11">id (PK)</text>
+                <text x="575" y="100" fill="#94a3b8" font-size="11">name (UNIQUE)</text>
+                <text x="575" y="118" fill="#94a3b8" font-size="11">source_id (FK, nullable)</text>
+                <text x="575" y="136" fill="#94a3b8" font-size="11">rules_json, enabled</text>
+
+                <!-- scheduled_tasks -->
+                <rect x="810" y="80" width="180" height="140" rx="12" fill="#1e1e3a" stroke="#06b6d4" stroke-width="2"/>
+                <rect x="810" y="80" width="180" height="35" rx="12" fill="rgba(6,182,212,0.2)"/>
+                <text x="900" y="103" text-anchor="middle" fill="#06b6d4" font-weight="700" font-size="14">scheduled_tasks</text>
+                <text x="825" y="132" fill="#94a3b8" font-size="11">id (PK)</text>
+                <text x="825" y="150" fill="#94a3b8" font-size="11">task_type (scan/archive)</text>
+                <text x="825" y="168" fill="#94a3b8" font-size="11">source_id (FK)</text>
+                <text x="825" y="186" fill="#94a3b8" font-size="11">policy_id (FK)</text>
+                <text x="825" y="204" fill="#94a3b8" font-size="11">cron_expression, enabled</text>
+
+                <!-- archive_fts (virtual) -->
+                <rect x="600" y="420" width="160" height="70" rx="12" fill="#1e1e3a" stroke="#64748b" stroke-width="1" stroke-dasharray="5,5"/>
+                <text x="680" y="450" text-anchor="middle" fill="#64748b" font-size="12" font-style="italic">archive_fts</text>
+                <text x="680" y="470" text-anchor="middle" fill="#475569" font-size="10">(FTS5 Virtual Table)</text>
+
+                <!-- Relationships -->
+                <!-- sources -> scan_runs -->
+                <line x1="210" y1="230" x2="280" y2="140" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+                <text x="230" y="175" fill="#475569" font-size="10">1:N</text>
+
+                <!-- sources -> scanned_files -->
+                <line x1="210" y1="280" x2="280" y2="310" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+                <text x="230" y="302" fill="#475569" font-size="10">1:N</text>
+
+                <!-- scan_runs -> scanned_files -->
+                <line x1="370" y1="180" x2="370" y2="220" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+                <text x="380" y="205" fill="#475569" font-size="10">1:N</text>
+
+                <!-- sources -> archived_files -->
+                <line x1="210" y1="280" x2="560" y2="280" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+                <text x="420" y="275" fill="#475569" font-size="10">1:N</text>
+
+                <!-- sources -> archive_policies -->
+                <line x1="210" y1="210" x2="560" y2="100" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="4,4"/>
+                <text x="400" y="140" fill="#475569" font-size="10">1:N (opsiyonel)</text>
+
+                <!-- archive_policies -> scheduled_tasks -->
+                <line x1="740" y1="100" x2="810" y2="150" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="4,4"/>
+
+                <!-- archived_files -> archive_fts -->
+                <line x1="660" y1="380" x2="680" y2="420" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3"/>
+            </svg>
+        </div>
+
+        <div class="db-schema">
+            <div class="db-table">
+                <div class="db-table-header orange">&#x1F4C1; sources</div>
+                <div class="db-columns">
+                    <div class="db-col"><span class="db-col-name">id</span><span class="db-col-type">INTEGER</span><span class="db-col-key pk">PK</span></div>
+                    <div class="db-col"><span class="db-col-name">name</span><span class="db-col-type">TEXT UNIQUE</span></div>
+                    <div class="db-col"><span class="db-col-name">unc_path</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">archive_dest</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">enabled</span><span class="db-col-type">INTEGER</span></div>
+                    <div class="db-col"><span class="db-col-name">created_at</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">last_scanned_at</span><span class="db-col-type">TEXT</span></div>
+                </div>
+            </div>
+
+            <div class="db-table">
+                <div class="db-table-header blue">&#x1F50D; scan_runs</div>
+                <div class="db-columns">
+                    <div class="db-col"><span class="db-col-name">id</span><span class="db-col-type">INTEGER</span><span class="db-col-key pk">PK</span></div>
+                    <div class="db-col"><span class="db-col-name">source_id</span><span class="db-col-type">INTEGER</span><span class="db-col-key fk">FK</span></div>
+                    <div class="db-col"><span class="db-col-name">started_at</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">completed_at</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">total_files</span><span class="db-col-type">INTEGER</span></div>
+                    <div class="db-col"><span class="db-col-name">total_size</span><span class="db-col-type">INTEGER</span></div>
+                    <div class="db-col"><span class="db-col-name">errors</span><span class="db-col-type">INTEGER</span></div>
+                    <div class="db-col"><span class="db-col-name">status</span><span class="db-col-type">TEXT</span></div>
+                </div>
+            </div>
+
+            <div class="db-table">
+                <div class="db-table-header green">&#x1F4C4; scanned_files</div>
+                <div class="db-columns">
+                    <div class="db-col"><span class="db-col-name">id</span><span class="db-col-type">INTEGER</span><span class="db-col-key pk">PK</span></div>
+                    <div class="db-col"><span class="db-col-name">source_id</span><span class="db-col-type">INTEGER</span><span class="db-col-key fk">FK</span></div>
+                    <div class="db-col"><span class="db-col-name">scan_id</span><span class="db-col-type">INTEGER</span><span class="db-col-key fk">FK</span></div>
+                    <div class="db-col"><span class="db-col-name">file_path</span><span class="db-col-type">TEXT</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">relative_path</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">file_name</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">extension</span><span class="db-col-type">TEXT</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">file_size</span><span class="db-col-type">INTEGER</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">creation_time</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">last_access_time</span><span class="db-col-type">TEXT</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">last_modify_time</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">owner</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">attributes</span><span class="db-col-type">INTEGER</span></div>
+                </div>
+            </div>
+
+            <div class="db-table">
+                <div class="db-table-header purple">&#x1F4E6; archived_files</div>
+                <div class="db-columns">
+                    <div class="db-col"><span class="db-col-name">id</span><span class="db-col-type">INTEGER</span><span class="db-col-key pk">PK</span></div>
+                    <div class="db-col"><span class="db-col-name">source_id</span><span class="db-col-type">INTEGER</span><span class="db-col-key fk">FK</span></div>
+                    <div class="db-col"><span class="db-col-name">original_path</span><span class="db-col-type">TEXT</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">relative_path</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">archive_path</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">file_name</span><span class="db-col-type">TEXT</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">extension</span><span class="db-col-type">TEXT</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">file_size</span><span class="db-col-type">INTEGER</span></div>
+                    <div class="db-col"><span class="db-col-name">creation_time</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">last_access_time</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">last_modify_time</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">archived_at</span><span class="db-col-type">TEXT</span><span class="db-col-key idx">IDX</span></div>
+                    <div class="db-col"><span class="db-col-name">archived_by</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">restored_at</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">checksum</span><span class="db-col-type">TEXT</span></div>
+                </div>
+            </div>
+
+            <div class="db-table">
+                <div class="db-table-header cyan">&#x1F4DC; archive_policies</div>
+                <div class="db-columns">
+                    <div class="db-col"><span class="db-col-name">id</span><span class="db-col-type">INTEGER</span><span class="db-col-key pk">PK</span></div>
+                    <div class="db-col"><span class="db-col-name">name</span><span class="db-col-type">TEXT UNIQUE</span></div>
+                    <div class="db-col"><span class="db-col-name">source_id</span><span class="db-col-type">INTEGER</span><span class="db-col-key fk">FK?</span></div>
+                    <div class="db-col"><span class="db-col-name">rules_json</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">enabled</span><span class="db-col-type">INTEGER</span></div>
+                    <div class="db-col"><span class="db-col-name">created_at</span><span class="db-col-type">TEXT</span></div>
+                </div>
+            </div>
+
+            <div class="db-table">
+                <div class="db-table-header red">&#x23F0; scheduled_tasks</div>
+                <div class="db-columns">
+                    <div class="db-col"><span class="db-col-name">id</span><span class="db-col-type">INTEGER</span><span class="db-col-key pk">PK</span></div>
+                    <div class="db-col"><span class="db-col-name">task_type</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">source_id</span><span class="db-col-type">INTEGER</span><span class="db-col-key fk">FK</span></div>
+                    <div class="db-col"><span class="db-col-name">policy_id</span><span class="db-col-type">INTEGER</span><span class="db-col-key fk">FK</span></div>
+                    <div class="db-col"><span class="db-col-name">cron_expression</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">enabled</span><span class="db-col-type">INTEGER</span></div>
+                    <div class="db-col"><span class="db-col-name">last_run_at</span><span class="db-col-type">TEXT</span></div>
+                    <div class="db-col"><span class="db-col-name">next_run_at</span><span class="db-col-type">TEXT</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== CLI ==================== -->
+    <section class="section" id="cli">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(239,68,68,0.2)">&#x1F4BB;</span>
+            CLI Komutlari
+        </h2>
+
+        <div style="overflow-x:auto; border-radius:16px; border:1px solid var(--border)">
+            <table class="cli-table">
+                <thead>
+                    <tr>
+                        <th>Komut Grubu</th>
+                        <th>Komut</th>
+                        <th>Aciklama</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Source -->
+                    <tr><td rowspan="4" style="vertical-align:middle; font-weight:600; color:var(--accent-orange)">source</td>
+                        <td><code>source add --name "X" --path "\\\\srv\\sh" --archive-dest "D:\\Arc"</code></td>
+                        <td>Yeni kaynak ekle</td></tr>
+                    <tr><td><code>source list</code></td><td>Kaynaklari listele</td></tr>
+                    <tr><td><code>source remove --name "X"</code></td><td>Kaynak sil</td></tr>
+                    <tr><td><code>source test --name "X"</code></td><td>Baglanti testi</td></tr>
+
+                    <!-- Scan -->
+                    <tr><td rowspan="3" style="vertical-align:middle; font-weight:600; color:var(--accent-blue)">scan</td>
+                        <td><code>scan --source "X"</code></td>
+                        <td>Tek kaynak tara</td></tr>
+                    <tr><td><code>scan --all</code></td><td>Tum kaynaklari tara</td></tr>
+                    <tr><td><code>scan --source "X" --incremental false</code></td><td>Tam tarama</td></tr>
+
+                    <!-- Report -->
+                    <tr><td rowspan="5" style="vertical-align:middle; font-weight:600; color:var(--accent-green)">report</td>
+                        <td><code>report status --source "X"</code></td>
+                        <td>Mevcut durum raporu</td></tr>
+                    <tr><td><code>report frequency --source "X" --days 90</code></td><td>Erisim sikligi raporu</td></tr>
+                    <tr><td><code>report types --source "X"</code></td><td>Dosya turu analizi</td></tr>
+                    <tr><td><code>report sizes --source "X"</code></td><td>Boyut dagilimi</td></tr>
+                    <tr><td><code>report full --all --format json</code></td><td>Tam rapor (HTML/JSON/CSV)</td></tr>
+
+                    <!-- Archive -->
+                    <tr><td rowspan="4" style="vertical-align:middle; font-weight:600; color:var(--accent-purple)">archive</td>
+                        <td><code>archive run --source "X" --policy "old"</code></td>
+                        <td>Politika ile arsivle</td></tr>
+                    <tr><td><code>archive run --source "X" --days 365</code></td><td>365+ gun erisim yok &#x2192; arsivle</td></tr>
+                    <tr><td><code>archive dry-run --source "X" --days 180</code></td><td>Onizleme (silme yok)</td></tr>
+                    <tr><td><code>archive search --query "budget 2023"</code></td><td>Arsiv indeksinde ara</td></tr>
+
+                    <!-- Restore -->
+                    <tr><td rowspan="2" style="vertical-align:middle; font-weight:600; color:var(--accent-cyan)">restore</td>
+                        <td><code>restore --id 42</code></td>
+                        <td>ID ile geri yukle</td></tr>
+                    <tr><td><code>restore --path "\\\\srv\\sh\\old\\file.docx"</code></td><td>Yol ile geri yukle</td></tr>
+
+                    <!-- Policy -->
+                    <tr><td rowspan="3" style="vertical-align:middle; font-weight:600; color:var(--accent-pink)">policy</td>
+                        <td><code>policy add --name "old" --access-days 365</code></td>
+                        <td>Yeni politika olustur</td></tr>
+                    <tr><td><code>policy list</code></td><td>Politikalari listele</td></tr>
+                    <tr><td><code>policy remove --name "old"</code></td><td>Politika sil</td></tr>
+
+                    <!-- Schedule -->
+                    <tr><td rowspan="3" style="vertical-align:middle; font-weight:600; color:var(--accent-red)">schedule</td>
+                        <td><code>schedule add --type scan --source "X" --cron "0 2 * * 0"</code></td>
+                        <td>Zamanlanmis tarama</td></tr>
+                    <tr><td><code>schedule list</code></td><td>Zamanlanmis gorevler</td></tr>
+                    <tr><td><code>schedule install-windows</code></td><td>Win Task Scheduler kaydi</td></tr>
+
+                    <!-- Dashboard -->
+                    <tr><td style="font-weight:600; color:var(--accent-red)">dashboard</td>
+                        <td><code>dashboard --port 8085</code></td>
+                        <td>Web arayuzu baslat</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- ==================== API ==================== -->
+    <section class="section" id="api">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(59,130,246,0.2)">&#x1F310;</span>
+            REST API Endpointleri
+        </h2>
+
+        <div class="api-group">
+            <div class="api-group-header" style="color:var(--accent-orange)">&#x1F4C1; Kaynaklar (Sources)</div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/sources</span><span class="api-desc">Tum kaynaklari listele</span></div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/sources</span><span class="api-desc">Yeni kaynak ekle</span></div>
+            <div class="api-endpoint"><span class="api-method delete">DELETE</span><span class="api-path">/api/sources/{id}</span><span class="api-desc">Kaynak sil</span></div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/sources/{id}/test</span><span class="api-desc">Baglanti testi</span></div>
+        </div>
+
+        <div class="api-group">
+            <div class="api-group-header" style="color:var(--accent-blue)">&#x1F50D; Tarama (Scan)</div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/scan/{source_id}</span><span class="api-desc">Tarama baslat</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/scan/runs</span><span class="api-desc">Tarama gecmisi</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/scan/runs/{id}</span><span class="api-desc">Tarama detayi</span></div>
+        </div>
+
+        <div class="api-group">
+            <div class="api-group-header" style="color:var(--accent-green)">&#x1F4CA; Raporlar (Reports)</div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/reports/status/{source_id}</span><span class="api-desc">Durum ozeti</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/reports/frequency/{source_id}?days=90</span><span class="api-desc">Erisim sikligi</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/reports/types/{source_id}</span><span class="api-desc">Dosya turu dagilimi</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/reports/sizes/{source_id}</span><span class="api-desc">Boyut dagilimi</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/reports/full/{source_id}</span><span class="api-desc">Tam rapor</span></div>
+        </div>
+
+        <div class="api-group">
+            <div class="api-group-header" style="color:var(--accent-purple)">&#x1F4E6; Arsiv (Archive)</div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/archive/files?q=search&ext=docx</span><span class="api-desc">Arsiv arama</span></div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/archive/run</span><span class="api-desc">Arsivleme calistir</span></div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/archive/dry-run</span><span class="api-desc">Arsiv onizleme</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/archive/stats</span><span class="api-desc">Arsiv istatistikleri</span></div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/restore/{archive_id}</span><span class="api-desc">Geri yukle</span></div>
+        </div>
+
+        <div class="api-group">
+            <div class="api-group-header" style="color:var(--accent-pink)">&#x1F4DC; Politikalar (Policies)</div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/policies</span><span class="api-desc">Politikalari listele</span></div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/policies</span><span class="api-desc">Politika olustur</span></div>
+            <div class="api-endpoint"><span class="api-method delete">DELETE</span><span class="api-path">/api/policies/{id}</span><span class="api-desc">Politika sil</span></div>
+        </div>
+
+        <div class="api-group">
+            <div class="api-group-header" style="color:var(--accent-cyan)">&#x23F0; Zamanlama (Schedules)</div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/schedules</span><span class="api-desc">Gorevleri listele</span></div>
+            <div class="api-endpoint"><span class="api-method post">POST</span><span class="api-path">/api/schedules</span><span class="api-desc">Gorev olustur</span></div>
+            <div class="api-endpoint"><span class="api-method put">PUT</span><span class="api-path">/api/schedules/{id}</span><span class="api-desc">Gorev guncelle</span></div>
+            <div class="api-endpoint"><span class="api-method delete">DELETE</span><span class="api-path">/api/schedules/{id}</span><span class="api-desc">Gorev sil</span></div>
+        </div>
+
+        <div class="api-group">
+            <div class="api-group-header" style="color:var(--accent-red)">&#x2699; Dashboard</div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/dashboard/overview</span><span class="api-desc">Genel bakis verisi</span></div>
+            <div class="api-endpoint"><span class="api-method get">GET</span><span class="api-path">/api/config</span><span class="api-desc">Konfigürasyon oku</span></div>
+            <div class="api-endpoint"><span class="api-method put">PUT</span><span class="api-path">/api/config</span><span class="api-desc">Konfigürasyon guncelle</span></div>
+        </div>
+    </section>
+
+    <!-- ==================== PHASES ==================== -->
+    <section class="section" id="phases">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(236,72,153,0.2)">&#x1F680;</span>
+            Gelistirme Fazlari
+        </h2>
+        <div class="timeline">
+            <div class="timeline-item">
+                <h3>
+                    <span class="phase-badge" style="background:rgba(16,185,129,0.2); color:var(--accent-green)">FAZ 1</span>
+                    Temel Altyapi (Foundation)
+                </h3>
+                <p style="color:var(--text-muted); margin-bottom:8px">Tum moduller bu katmana bagimlidir - ilk olusturulmalidir.</p>
+                <ul>
+                    <li>config_loader.py - YAML konfigürasyon yukleme ve dogrulama</li>
+                    <li>logging_setup.py - Iki dilli loglama altyapisi</li>
+                    <li>messages.py - TR/EN mesaj katalogu</li>
+                    <li>database.py - SQLite sema olusturma, CRUD islemleri</li>
+                    <li>models.py - Veri sinifi tanimlari (dataclass)</li>
+                    <li>config.yaml - Varsayilan konfigürasyon dosyasi</li>
+                    <li>requirements.txt - Python bagimliklar</li>
+                </ul>
+            </div>
+
+            <div class="timeline-item">
+                <h3>
+                    <span class="phase-badge" style="background:rgba(59,130,246,0.2); color:var(--accent-blue)">FAZ 2</span>
+                    Tarayici (Scanner)
+                </h3>
+                <p style="color:var(--text-muted); margin-bottom:8px">Veri toplama katmani - analiz ve arsivleme icin gerekli.</p>
+                <ul>
+                    <li>win_attributes.py - pywin32 dosya ozellikleri okuma</li>
+                    <li>share_resolver.py - UNC yol dogrulama ve baglanti testi</li>
+                    <li>file_scanner.py - Recursive tarama, batch DB insert</li>
+                    <li>main.py CLI: source ve scan komut gruplari</li>
+                </ul>
+            </div>
+
+            <div class="timeline-item">
+                <h3>
+                    <span class="phase-badge" style="background:rgba(245,158,11,0.2); color:var(--accent-orange)">FAZ 3</span>
+                    Analiz ve Raporlama
+                </h3>
+                <p style="color:var(--text-muted); margin-bottom:8px">Tarama verilerini anlamli raporlara donusturme.</p>
+                <ul>
+                    <li>frequency_analyzer.py - Erisim sikligi kovalamalari</li>
+                    <li>type_analyzer.py - Dosya uzantisi bazinda analiz</li>
+                    <li>size_analyzer.py - Boyut dagilimi kategorileri</li>
+                    <li>report_generator.py - Birlestirici rapor motoru</li>
+                    <li>main.py CLI: report komut grubu</li>
+                </ul>
+            </div>
+
+            <div class="timeline-item">
+                <h3>
+                    <span class="phase-badge" style="background:rgba(139,92,246,0.2); color:var(--accent-purple)">FAZ 4</span>
+                    Arsivleme Motoru
+                </h3>
+                <p style="color:var(--text-muted); margin-bottom:8px">En kritik modul - veri kaybini onlemek icin ozenli gelistirme gerektirir.</p>
+                <ul>
+                    <li>archive_policy.py - Kural motoru (AND/OR birlestirme)</li>
+                    <li>archive_engine.py - Kopyala-Dogrula-Sil guvenlik akisi</li>
+                    <li>restore_engine.py - Geri yukleme motoru</li>
+                    <li>FTS5 sanal tablo - arsiv indeksi arama</li>
+                    <li>main.py CLI: archive, restore, policy komutlari</li>
+                </ul>
+            </div>
+
+            <div class="timeline-item">
+                <h3>
+                    <span class="phase-badge" style="background:rgba(6,182,212,0.2); color:var(--accent-cyan)">FAZ 5</span>
+                    Zamanlama
+                </h3>
+                <p style="color:var(--text-muted); margin-bottom:8px">Otomatik tarama ve arsivleme gorevleri.</p>
+                <ul>
+                    <li>task_scheduler.py - APScheduler dahili zamanlayici</li>
+                    <li>win_task_scheduler.py - Windows Task Scheduler entegrasyonu</li>
+                    <li>main.py CLI: schedule komut grubu</li>
+                </ul>
+            </div>
+
+            <div class="timeline-item">
+                <h3>
+                    <span class="phase-badge" style="background:rgba(236,72,153,0.2); color:var(--accent-pink)">FAZ 6</span>
+                    Web Dashboard
+                </h3>
+                <p style="color:var(--text-muted); margin-bottom:8px">Gorsel yonetim arayuzu.</p>
+                <ul>
+                    <li>api.py - FastAPI REST endpointleri</li>
+                    <li>index.html - SPA dashboard (grafikler, tablolar)</li>
+                    <li>Interaktif rapor goruntuleyici</li>
+                    <li>Arsiv arama ve geri yukleme UI</li>
+                </ul>
+            </div>
+
+            <div class="timeline-item">
+                <h3>
+                    <span class="phase-badge" style="background:rgba(239,68,68,0.2); color:var(--accent-red)">FAZ 7</span>
+                    Cilalama ve Test
+                </h3>
+                <p style="color:var(--text-muted); margin-bottom:8px">Uretim ortamina hazirlama.</p>
+                <ul>
+                    <li>windows_service.py - Windows Service wrapper</li>
+                    <li>Unit testler (scanner, analyzer, archiver, database)</li>
+                    <li>README.md - Kullanim dokümantasyonu</li>
+                    <li>Hata yonetimi ve edge case kontrolleri</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- ==================== CONFIG ==================== -->
+    <section class="section" id="config">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(245,158,11,0.2)">&#x2699;</span>
+            Konfigürasyon (config.yaml)
+        </h2>
+        <div class="file-tree" style="line-height:1.8">
+<div class="line"><span class="comment"># FILE ACTIVITY - Konfigürasyon Dosyasi</span></div>
+<div class="line"></div>
+<div class="line"><span class="dir">general:</span></div>
+<div class="line">  <span class="file-py">language:</span> <span class="file">"tr"</span>              <span class="comment"># "tr" veya "en"</span></div>
+<div class="line">  <span class="file-py">log_level:</span> <span class="file">"INFO"</span></div>
+<div class="line">  <span class="file-py">log_file:</span> <span class="file">"logs/file_activity.log"</span></div>
+<div class="line"></div>
+<div class="line"><span class="dir">database:</span></div>
+<div class="line">  <span class="file-py">path:</span> <span class="file">"data/file_activity.db"</span></div>
+<div class="line"></div>
+<div class="line"><span class="dir">sources:</span>                       <span class="comment"># Dosya paylasim kaynaklari</span></div>
+<div class="line">  - <span class="file-py">name:</span> <span class="file">"Engineering"</span></div>
+<div class="line">    <span class="file-py">unc_path:</span> <span class="file">"\\\\fileserver01\\engineering$"</span></div>
+<div class="line">    <span class="file-py">archive_dest:</span> <span class="file">"D:\\Archive\\engineering"</span></div>
+<div class="line">    <span class="file-py">enabled:</span> <span class="file-html">true</span></div>
+<div class="line"></div>
+<div class="line"><span class="dir">scanner:</span>                       <span class="comment"># Tarama ayarlari</span></div>
+<div class="line">  <span class="file-py">max_workers:</span> <span class="file">4</span></div>
+<div class="line">  <span class="file-py">skip_hidden:</span> <span class="file-html">true</span></div>
+<div class="line">  <span class="file-py">skip_system:</span> <span class="file-html">true</span></div>
+<div class="line">  <span class="file-py">exclude_patterns:</span></div>
+<div class="line">    - <span class="file">"*.tmp"</span></div>
+<div class="line">    - <span class="file">"~$*"</span></div>
+<div class="line">    - <span class="file">"Thumbs.db"</span></div>
+<div class="line">  <span class="file-py">incremental:</span> <span class="file-html">true</span></div>
+<div class="line"></div>
+<div class="line"><span class="dir">analysis:</span>                      <span class="comment"># Analiz parametreleri</span></div>
+<div class="line">  <span class="file-py">frequency_buckets:</span> <span class="file">[30, 60, 90, 180, 365]</span></div>
+<div class="line">  <span class="dir">size_buckets:</span></div>
+<div class="line">    <span class="file-py">tiny:</span> <span class="file">102400</span>          <span class="comment"># &lt; 100 KB</span></div>
+<div class="line">    <span class="file-py">small:</span> <span class="file">1048576</span>        <span class="comment"># &lt; 1 MB</span></div>
+<div class="line">    <span class="file-py">medium:</span> <span class="file">104857600</span>     <span class="comment"># &lt; 100 MB</span></div>
+<div class="line">    <span class="file-py">large:</span> <span class="file">1073741824</span>    <span class="comment"># &lt; 1 GB</span></div>
+<div class="line"></div>
+<div class="line"><span class="dir">archiving:</span>                     <span class="comment"># Arsivleme ayarlari</span></div>
+<div class="line">  <span class="file-py">verify_checksum:</span> <span class="file-html">true</span>      <span class="comment"># SHA-256 dogrulama</span></div>
+<div class="line">  <span class="file-py">dry_run:</span> <span class="file-html">false</span></div>
+<div class="line">  <span class="file-py">create_restore_manifest:</span> <span class="file-html">true</span></div>
+<div class="line"></div>
+<div class="line"><span class="dir">dashboard:</span>                     <span class="comment"># Web arayuz ayarlari</span></div>
+<div class="line">  <span class="file-py">host:</span> <span class="file">"127.0.0.1"</span></div>
+<div class="line">  <span class="file-py">port:</span> <span class="file">8085</span></div>
+        </div>
+    </section>
+
+    <!-- ==================== IMPORTANT NOTES ==================== -->
+    <section class="section">
+        <h2 class="section-title">
+            <span class="icon" style="background:rgba(239,68,68,0.2)">&#x26A0;</span>
+            Onemli Notlar
+        </h2>
+        <div class="cards-grid">
+            <div class="card" style="border-color:var(--accent-orange)">
+                <div class="card-header">
+                    <div class="card-icon orange">&#x26A0;</div>
+                    <h3>NtfsDisableLastAccessUpdate</h3>
+                </div>
+                <p>Windows Vista'dan beri varsayilan olarak <strong>last access time</strong> guncellemesi kapalidir. Tarayici bu registry anahtarini kontrol eder ve uyari verir. Eger kapali ise, <strong>last_modify_time</strong> alternatif kriter olarak kullanilmalidir.</p>
+                <p style="margin-top:8px"><code>HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\NtfsDisableLastAccessUpdate</code></p>
+            </div>
+            <div class="card" style="border-color:var(--accent-red)">
+                <div class="card-header">
+                    <div class="card-icon red">&#x1F512;</div>
+                    <h3>Guvenlik</h3>
+                </div>
+                <p>Arsivleme islemi <strong>Kopyala-Dogrula-Sil</strong> deseni kullanir. Kaynak dosya ancak ve ancak hedef dosyanin SHA-256 checksum'i eslestiginde silinir. Bu, veri kaybi riskini minimize eder.</p>
+            </div>
+            <div class="card" style="border-color:var(--accent-blue)">
+                <div class="card-header">
+                    <div class="card-icon blue">&#x1F4CA;</div>
+                    <h3>Performans</h3>
+                </div>
+                <p><code>os.scandir()</code> kullanimi ag paylasimlari taranirken stat() cagrilarini azaltir. Batch INSERT (500 kayit) SQLite performansini optimize eder. WAL modu okuma/yazma esitligini saglar.</p>
+            </div>
+            <div class="card" style="border-color:var(--accent-green)">
+                <div class="card-header">
+                    <div class="card-icon green">&#x1F50E;</div>
+                    <h3>Arama (FTS5)</h3>
+                </div>
+                <p>Arsiv indeksinde hizli arama icin SQLite FTS5 (Full-Text Search) sanal tablosu kullanilir. Dosya adi, yol ve uzanti uzerinde <strong>anlik arama</strong> saglar.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <div style="text-align:center; padding:40px 20px; color:var(--text-muted); border-top:1px solid var(--border); margin-top:40px">
+        <p><strong>FILE ACTIVITY</strong> - Windows Dosya Paylasim Analiz ve Arsivleme Sistemi</p>
+        <p style="margin-top:5px; font-size:0.85em">Python 3.10+ | SQLite | FastAPI | pywin32 | click</p>
+        <p style="margin-top:5px; font-size:0.8em">Dokuman Tarihi: 2026-03-18</p>
+    </div>
+
+</div>
+
+</body>
+</html>
