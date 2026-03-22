@@ -20,31 +20,85 @@ Write-Host "  ║  Windows File Share Analysis System      ║" -ForegroundColor
 Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
+function Refresh-Path {
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    # Bilinen kurulum yollarini da ekle
+    @("C:\Program Files\Git\cmd", "C:\Program Files\Git\bin",
+      "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts",
+      "C:\Program Files\Python311", "C:\Program Files\Python311\Scripts",
+      "C:\Program Files\Python310", "C:\Program Files\Python310\Scripts",
+      "C:\Python312", "C:\Python312\Scripts",
+      "C:\Python311", "C:\Python311\Scripts") | ForEach-Object {
+        if ((Test-Path $_) -and ($env:Path -notlike "*$_*")) { $env:Path += ";$_" }
+    }
+}
+
+function Download-File($url, $outPath) {
+    # TLS 1.2 zorla (eski Windows Server icin gerekli)
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+
+    # Yontem 1: WebClient (daha guvenilir, redirect takip eder)
+    try {
+        Write-Host "    Indiriliyor: $url" -ForegroundColor Gray
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("User-Agent", "PowerShell")
+        $wc.DownloadFile($url, $outPath)
+        if (Test-Path $outPath) {
+            $size = (Get-Item $outPath).Length
+            Write-Host "    Indirildi: $([math]::Round($size/1MB, 1)) MB" -ForegroundColor Gray
+            return $true
+        }
+    } catch {
+        Write-Host "    WebClient hatasi: $_" -ForegroundColor Gray
+    }
+
+    # Yontem 2: Invoke-WebRequest
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $outPath -UseBasicParsing -ErrorAction Stop
+        if (Test-Path $outPath) { return $true }
+    } catch {
+        Write-Host "    IWR hatasi: $_" -ForegroundColor Gray
+    }
+
+    # Yontem 3: BITS Transfer
+    try {
+        Start-BitsTransfer -Source $url -Destination $outPath -ErrorAction Stop
+        if (Test-Path $outPath) { return $true }
+    } catch {
+        Write-Host "    BITS hatasi: $_" -ForegroundColor Gray
+    }
+
+    return $false
+}
+
 function Install-WithFallback($name, $wingetId, $directUrl, $installerArgs) {
     # 1. winget dene
     $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
     if ($hasWinget) {
         Write-Host "  winget ile kuruluyor..." -ForegroundColor Gray
-        winget install --id $wingetId --accept-package-agreements --accept-source-agreements --silent 2>$null
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        if (Get-Command $name -ErrorAction SilentlyContinue) { return $true }
+        try {
+            winget install --id $wingetId --accept-package-agreements --accept-source-agreements --silent 2>$null
+            Refresh-Path
+            if (Get-Command $name -ErrorAction SilentlyContinue) { return $true }
+        } catch {}
     }
+
     # 2. Dogrudan indir ve kur
     if ($directUrl) {
-        Write-Host "  Dogrudan indiriliyor..." -ForegroundColor Gray
-        $installer = "$env:TEMP\${name}_setup.exe"
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $directUrl -OutFile $installer -UseBasicParsing
-        Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -NoNewWindow
-        Remove-Item $installer -Force -ErrorAction SilentlyContinue
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        # Bilinen yolları da ekle
-        @("C:\Program Files\Git\cmd", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts",
-          "C:\Program Files\Python311", "C:\Program Files\Python311\Scripts",
-          "C:\Python312", "C:\Python312\Scripts", "C:\Python311", "C:\Python311\Scripts") | ForEach-Object {
-            if ((Test-Path $_) -and ($env:Path -notlike "*$_*")) { $env:Path += ";$_" }
+        Write-Host "  Dogrudan indiriliyor..." -ForegroundColor Yellow
+        $installer = "$env:TEMP\${name}_installer.exe"
+        $downloaded = Download-File $directUrl $installer
+        if ($downloaded) {
+            Write-Host "  Kuruluyor (sessiz mod)..." -ForegroundColor Yellow
+            $proc = Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -PassThru -NoNewWindow
+            Write-Host "  Kurulum cikis kodu: $($proc.ExitCode)" -ForegroundColor Gray
+            Remove-Item $installer -Force -ErrorAction SilentlyContinue
+            Refresh-Path
+            if (Get-Command $name -ErrorAction SilentlyContinue) { return $true }
+            Write-Host "  [!] Kurulum tamamlandi ama '$name' PATH'te bulunamadi." -ForegroundColor Yellow
+        } else {
+            Write-Host "  [!] Indirme basarisiz." -ForegroundColor Red
         }
-        if (Get-Command $name -ErrorAction SilentlyContinue) { return $true }
     }
     return $false
 }
