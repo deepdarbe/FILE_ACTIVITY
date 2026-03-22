@@ -2,90 +2,188 @@
 
 **Windows File Share Analysis, Archiving & Compliance System**
 
-Kurumsal dosya paylaşımlarını analiz eden, riskli/eski/kopya dosyaları tespit edip arşivleyen ve MIT Libraries adlandırma standartlarına uyum kontrolü yapan bir Windows yönetim aracı.
+[🇹🇷 Türkçe](#-türkçe) | [🇬🇧 English](#-english)
 
 ---
 
-## Proje Şeması
+# 🇬🇧 English
+
+Enterprise file share analysis tool that detects risky/stale/duplicate files, archives them securely, and checks compliance with MIT Libraries naming standards.
+
+## Quick Setup
+
+### Requirements
+- Windows 10/11 or Windows Server 2016+
+- No Python or Git needed (standalone EXE)
+
+### One-Command Install
+
+```powershell
+# PowerShell (Run as Admin):
+$f="$env:TEMP\fa.ps1"; (New-Object Net.WebClient).DownloadFile("https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1",$f); powershell -ExecutionPolicy Bypass -File $f
+```
+
+### Manual Install
+```powershell
+# Download latest release from:
+# https://github.com/deepdarbe/FILE_ACTIVITY/releases/latest
+# Extract ZIP, then run:
+C:\FileActivity\bin\FileActivity.exe --config C:\FileActivity\config\config.yaml dashboard
+```
+
+Dashboard: **http://localhost:8085**
+
+## Project Structure
 
 ```
 FILE_ACTIVITY/
-│
-├── main.py                          # CLI giriş noktası (Click)
-├── config.yaml                      # Ana konfigürasyon
-├── requirements.txt                 # Python bağımlılıkları
-├── setup.py                         # Kurulum scripti
-├── dev_server.py                    # Mock geliştirme sunucusu
-│
+├── main.py                          # CLI entry point (Click)
+├── config.yaml                      # Main configuration
 ├── src/
-│   ├── scanner/                     # Dosya Tarama Motoru
-│   │   ├── file_scanner.py          #   Recursive tarama + FileNameAnalyzer + MITNamingAnalyzer
-│   │   ├── file_watcher.py          #   Gerçek zamanlı değişiklik izleme
-│   │   ├── share_resolver.py        #   UNC yol çözümleme
-│   │   └── win_attributes.py        #   Windows dosya öznitelikleri (ACL, owner, zaman)
-│   │
-│   ├── analyzer/                    # Analiz Modülleri
-│   │   ├── frequency_analyzer.py    #   Erişim sıklığı analizi (30/60/90/180/365+ gün)
-│   │   ├── type_analyzer.py         #   Dosya türü dağılımı
-│   │   ├── size_analyzer.py         #   Boyut dağılımı (tiny → huge)
-│   │   ├── ai_insights.py           #   AI önerileri ve risk skoru
-│   │   ├── report_generator.py      #   Birleşik rapor üretici
+│   ├── scanner/                     # File Scanning Engine
+│   │   ├── file_scanner.py          #   Recursive scan + FileNameAnalyzer + MITNamingAnalyzer
+│   │   ├── file_watcher.py          #   Real-time change monitoring
+│   │   ├── share_resolver.py        #   UNC path resolution
+│   │   └── win_attributes.py        #   Windows file attributes (ACL, owner, timestamps)
+│   ├── analyzer/                    # Analysis Modules
+│   │   ├── frequency_analyzer.py    #   Access frequency analysis (30/60/90/180/365+ days)
+│   │   ├── type_analyzer.py         #   File type distribution
+│   │   ├── size_analyzer.py         #   Size distribution (tiny → huge)
+│   │   ├── ai_insights.py           #   AI recommendations and risk score
+│   │   ├── report_generator.py      #   Combined report generator
 │   │   └── report_exporter.py       #   HTML/JSON/XLS export
-│   │
-│   ├── archiver/                    # Arşivleme Motoru
-│   │   ├── archive_engine.py        #   Kopyala-Doğrula(SHA256)-Sil akışı
-│   │   ├── archive_policy.py        #   Politika tabanlı arşivleme
-│   │   └── restore_engine.py        #   Geri yükleme (tekli/toplu, dizin yeniden oluşturma)
-│   │
-│   ├── storage/                     # Veri Katmanı
-│   │   ├── database.py              #   SQLite veritabanı (WAL, thread-safe, FTS5)
-│   │   └── models.py                #   Veri modelleri
-│   │
-│   ├── dashboard/                   # Web Arayüzü
-│   │   ├── api.py                   #   FastAPI REST endpointleri (~30 endpoint)
+│   ├── archiver/                    # Archive Engine
+│   │   ├── archive_engine.py        #   Copy-Verify(SHA256)-Delete workflow
+│   │   ├── archive_policy.py        #   Policy-based archiving
+│   │   └── restore_engine.py        #   Restore (single/bulk, directory recreation)
+│   ├── storage/                     # Data Layer
+│   │   ├── database.py              #   SQLite database (WAL, thread-safe, FTS5)
+│   │   └── models.py                #   Data models
+│   ├── dashboard/                   # Web Interface
+│   │   ├── api.py                   #   FastAPI REST endpoints (~30 endpoints)
 │   │   └── static/
-│   │       └── index.html           #   Tek sayfa dashboard (Chart.js, D3.js)
-│   │
-│   ├── user_activity/               # Kullanıcı Aktivite Takibi
-│   │   ├── event_collector.py       #   Windows Event Log toplama (4663, 5145, 4660)
-│   │   └── user_analyzer.py         #   Kullanıcı risk skoru, anomali tespiti
-│   │
-│   ├── scheduler/                   # Görev Zamanlayıcı
-│   │   ├── task_scheduler.py        #   APScheduler ile cron tabanlı zamanlama
-│   │   └── win_task_scheduler.py    #   Windows Task Scheduler entegrasyonu
-│   │
-│   ├── service/                     # Windows Servisi
-│   │   └── file_activity_service.py #   Windows Service olarak çalışma
-│   │
-│   ├── i18n/                        # Çoklu Dil
-│   │   └── messages.py              #   Türkçe/İngilizce mesajlar
-│   │
-│   └── utils/                       # Yardımcılar
-│       ├── config_loader.py         #   YAML konfigürasyon yükleyici
-│       ├── logging_setup.py         #   Loglama yapılandırması
-│       └── size_formatter.py        #   Boyut formatlama (KB/MB/GB/TB)
-│
-├── deploy/                          # Dağıtım & Güncelleme
-│   ├── auto-update.ps1              #   GitHub'dan otomatik güncelleme
-│   ├── deploy.ps1                   #   Uzak sunucu toplu dağıtım (PSRemoting)
-│   ├── install.bat                  #   Kurulum scripti (EXE veya kaynak kod)
-│   ├── update.bat                   #   Manuel güncelleme (veri korunarak)
-│   ├── uninstall.bat                #   Kaldırma scripti
-│   ├── service_install.bat          #   Windows Servis kurulumu (NSSM/TaskScheduler)
-│   └── servers_template.csv         #   Toplu dağıtım sunucu listesi şablonu
-│
-├── scripts/                         # Yardımcı Scriptler
-│   ├── init_db.py                   #   Veritabanı ilk kurulum
-│   └── Configure-FileAudit.ps1     #   Windows dosya denetimi yapılandırma
-│
-├── build.bat                        # PyInstaller ile EXE derleme
-├── pack.py                          # ZIP paket oluşturma
-├── file_activity.spec               # PyInstaller yapılandırması
-└── docs/
-    └── project-diagram.html         # Proje diyagramı
+│   │       └── index.html           #   Single-page dashboard (Chart.js, D3.js)
+│   ├── user_activity/               # User Activity Tracking
+│   │   ├── event_collector.py       #   Windows Event Log collection (4663, 5145, 4660)
+│   │   └── user_analyzer.py         #   User risk scoring, anomaly detection
+│   ├── scheduler/                   # Task Scheduler
+│   │   ├── task_scheduler.py        #   APScheduler cron-based scheduling
+│   │   └── win_task_scheduler.py    #   Windows Task Scheduler integration
+│   ├── service/                     # Windows Service
+│   │   └── file_activity_service.py #   Run as Windows Service
+│   ├── i18n/                        # Internationalization
+│   │   └── messages.py              #   Turkish/English messages
+│   └── utils/                       # Utilities
+│       ├── config_loader.py         #   YAML configuration loader
+│       ├── logging_setup.py         #   Logging configuration
+│       └── size_formatter.py        #   Size formatting (KB/MB/GB/TB)
+├── deploy/                          # Deployment & Updates
+│   ├── setup.ps1                    #   One-command setup (downloads EXE from GitHub Releases)
+│   ├── auto-update.ps1              #   Auto-update from GitHub
+│   ├── deploy.ps1                   #   Remote multi-server deployment (PSRemoting)
+│   ├── install.bat                  #   Installation script
+│   ├── update.bat                   #   Manual update (preserves data)
+│   ├── uninstall.bat                #   Uninstall script
+│   └── service_install.bat          #   Windows Service setup (NSSM/TaskScheduler)
+├── scripts/                         # Helper Scripts
+│   ├── init_db.py                   #   Database initialization
+│   └── Configure-FileAudit.ps1     #   Windows file audit configuration
+├── build.bat                        # PyInstaller EXE build
+├── pack.py                          # ZIP package creator
+└── file_activity.spec               # PyInstaller configuration
 ```
 
+## Dashboard Pages
+
+| Page | Description |
+|------|-------------|
+| **Overview** | Risk score, KPI cards, file age distribution, growth trend, AI recommendations |
+| **Sources** | UNC share source management |
+| **Treemap** | File/directory size visualization |
+| **Access Frequency** | Files not accessed for 30/60/90/180/365+ days |
+| **File Types** | Extension-based distribution |
+| **Size Distribution** | Tiny/Small/Medium/Large/Huge categories |
+| **User Activity** | Top users, department analysis, time series |
+| **Anomalies** | High volume, night access, mass delete, large transfer detection |
+| **AI Insights** | Automated recommendations and health score |
+| **Archiving** | Archive statistics, search, restore |
+| **Archive History** | Detailed log of all archive/restore operations |
+| **Duplicate Files** | Duplicate file groups, selective archiving, optional hash verification |
+| **Growth Analysis** | Yearly/monthly/daily growth charts, top file creators |
+| **Naming Compliance** | MIT Libraries File Naming Scheme compliance analysis |
+| **Policies** | Archive policy management |
+| **Scheduling** | Automated scan and archive schedules |
+
+## Update
+
+### Automatic update (same install command):
+```powershell
+$f="$env:TEMP\fa.ps1"; (New-Object Net.WebClient).DownloadFile("https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1",$f); powershell -ExecutionPolicy Bypass -File $f
+```
+
+**Preserved during update:** database, config, logs, reports
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/sources` | Source list |
+| GET | `/api/risk-score/{id}` | Risk score and KPIs |
+| GET | `/api/reports/frequency/{id}` | Access frequency |
+| GET | `/api/reports/types/{id}` | File types |
+| GET | `/api/reports/sizes/{id}` | Size distribution |
+| GET | `/api/reports/duplicates/{id}` | Duplicate file groups |
+| GET | `/api/reports/mit-naming/{id}` | MIT naming compliance |
+| GET | `/api/growth/{id}` | Growth statistics |
+| GET | `/api/reports/top-creators/{id}` | Top file creators |
+| GET | `/api/insights/{id}` | AI recommendations |
+| GET | `/api/archive/history` | Archive history |
+| POST | `/api/archive/by-insight` | Archive by AI recommendation |
+| POST | `/api/archive/selective` | Archive selected files |
+| POST | `/api/restore/bulk` | Bulk restore |
+| GET | `/api/users/overview` | User activity overview |
+| GET | `/api/anomalies` | Anomaly alerts |
+
+## Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| Backend | Python 3.10+, FastAPI, Click |
+| Frontend | Vanilla JS, Chart.js, D3.js |
+| Database | SQLite (WAL, FTS5) |
+| Windows API | pywin32 (Event Log, ACL, Security) |
+| Scheduling | APScheduler |
+| Reporting | openpyxl, reportlab |
+| Packaging | PyInstaller |
+
 ---
+
+# 🇹🇷 Türkçe
+
+Kurumsal dosya paylaşımlarını analiz eden, riskli/eski/kopya dosyaları tespit edip arşivleyen ve MIT Libraries adlandırma standartlarına uyum kontrolü yapan bir Windows yönetim aracı.
+
+## Hızlı Kurulum
+
+### Gereksinimler
+- Windows 10/11 veya Windows Server 2016+
+- Python veya Git **gerekmez** (standalone EXE)
+
+### Tek Komutla Kurulum
+
+```powershell
+# PowerShell (Admin olarak çalıştırın):
+$f="$env:TEMP\fa.ps1"; (New-Object Net.WebClient).DownloadFile("https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1",$f); powershell -ExecutionPolicy Bypass -File $f
+```
+
+### Manuel Kurulum
+```powershell
+# Son sürümü indirin:
+# https://github.com/deepdarbe/FILE_ACTIVITY/releases/latest
+# ZIP'i açın, ardından çalıştırın:
+C:\FileActivity\bin\FileActivity.exe --config C:\FileActivity\config\config.yaml dashboard
+```
+
+Dashboard: **http://localhost:8085**
 
 ## Dashboard Sayfaları
 
@@ -103,105 +201,52 @@ FILE_ACTIVITY/
 | **Arşivleme** | Arşiv istatistikleri, arama, geri yükleme |
 | **Arşiv Geçmişi** | Tüm arşiv/geri yükleme işlemlerinin detaylı kaydı |
 | **Kopya Dosyalar** | Duplike dosya grupları, seçici arşivleme, opsiyonel hash doğrulama |
-| **Büyüme Analizi** | Yıllık/aylık/günlük büyüme grafikleri, top file creators |
+| **Büyüme Analizi** | Yıllık/aylık/günlük büyüme grafikleri, en çok dosya oluşturanlar |
 | **Adlandırma Uyumu** | MIT Libraries File Naming Scheme uyum analizi |
 | **Politikalar** | Arşiv politika yönetimi |
 | **Zamanlama** | Otomatik tarama ve arşivleme zamanları |
 
----
+## Güncelleme
 
-## Hızlı Kurulum
-
-### Gereksinimler
-- Windows 10/11 veya Windows Server 2016+
-- Python 3.10+
-- Git
-
-### Tek Komutla Kurulum
-
+### Otomatik güncelleme (aynı kurulum komutu):
 ```powershell
-# PowerShell (Admin olarak çalıştırın):
-irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1 | iex
+$f="$env:TEMP\fa.ps1"; (New-Object Net.WebClient).DownloadFile("https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1",$f); powershell -ExecutionPolicy Bypass -File $f
 ```
 
-### Manuel Kurulum
-
-```powershell
-# 1. Repo'yu klonla
-git clone https://github.com/deepdarbe/FILE_ACTIVITY.git C:\FileActivity\repo
-
-# 2. Bağımlılıkları kur
-pip install -r C:\FileActivity\repo\requirements.txt
-
-# 3. Dizin yapısını oluştur
-mkdir C:\FileActivity\config, C:\FileActivity\data, C:\FileActivity\logs, C:\FileActivity\reports
-
-# 4. Config kopyala
-copy C:\FileActivity\repo\config.yaml C:\FileActivity\config\
-
-# 5. Dashboard'u başlat
-python C:\FileActivity\repo\main.py dashboard --config C:\FileActivity\config\config.yaml
-```
-
-Dashboard: **http://localhost:8085**
-
----
-
-## Otomatik Güncelleme
-
-### Günlük otomatik güncelleme zamanlama:
-```powershell
-powershell -File C:\FileActivity\repo\deploy\auto-update.ps1 -SetupSchedule
-```
-
-### Manuel güncelleme:
-```powershell
-powershell -File C:\FileActivity\repo\deploy\auto-update.ps1
-```
-
-Güncelleme sırasında **korunan** veriler:
-- `data\file_activity.db` (veritabanı)
-- `config\config.yaml` (ayarlar)
-- `logs\` (log dosyaları)
-- `reports\` (raporlar)
-
----
+**Güncelleme sırasında korunan veriler:** veritabanı, config, loglar, raporlar
 
 ## CLI Komutları
 
 ```bash
 # Kaynak yönetimi
-python main.py add-source -n SERVER01 -p "\\server\share" -a "\\archive\dest"
-python main.py remove-source -n SERVER01
-python main.py test-connection -n SERVER01
+FileActivity.exe add-source -n SERVER01 -p "\\server\share" -a "\\archive\dest"
+FileActivity.exe remove-source -n SERVER01
+FileActivity.exe test-connection -n SERVER01
 
 # Tarama
-python main.py scan -s SERVER01
-python main.py scan --all
+FileActivity.exe scan -s SERVER01
+FileActivity.exe scan --all
 
 # Raporlar
-python main.py report-age -s SERVER01
-python main.py report-types -s SERVER01
-python main.py report-size -s SERVER01
-python main.py report-owners -s SERVER01
-python main.py export-data -s SERVER01 -f json -o rapor.json
+FileActivity.exe report-age -s SERVER01
+FileActivity.exe report-types -s SERVER01
+FileActivity.exe report-size -s SERVER01
+FileActivity.exe report-owners -s SERVER01
 
 # Arşivleme
-python main.py archive -s SERVER01 -p eski-dosyalar
-python main.py restore --archive-id 42
+FileActivity.exe archive -s SERVER01 -p eski-dosyalar
+FileActivity.exe restore --archive-id 42
 
 # Politikalar
-python main.py create-policy -n eski-dosyalar --access-days 365
-python main.py list-policies
+FileActivity.exe create-policy -n eski-dosyalar --access-days 365
+FileActivity.exe list-policies
 
 # Zamanlama
-python main.py schedule-task -t scan -s SERVER01 --cron "0 2 * * *"
+FileActivity.exe schedule-task -t scan -s SERVER01 --cron "0 2 * * *"
 
 # Dashboard
-python main.py dashboard --port 8085
+FileActivity.exe --config config.yaml dashboard
 ```
-
----
 
 ## API Endpointleri
 
@@ -224,8 +269,6 @@ python main.py dashboard --port 8085
 | GET | `/api/users/overview` | Kullanıcı aktivite özeti |
 | GET | `/api/anomalies` | Anomali uyarıları |
 
----
-
 ## Teknoloji
 
 | Katman | Teknoloji |
@@ -240,6 +283,6 @@ python main.py dashboard --port 8085
 
 ---
 
-## Lisans
+## License / Lisans
 
 Private - Internal Use Only
