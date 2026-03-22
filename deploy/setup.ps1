@@ -20,22 +20,47 @@ Write-Host "  ║  Windows File Share Analysis System      ║" -ForegroundColor
 Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
+function Install-WithFallback($name, $wingetId, $directUrl, $installerArgs) {
+    # 1. winget dene
+    $hasWinget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($hasWinget) {
+        Write-Host "  winget ile kuruluyor..." -ForegroundColor Gray
+        winget install --id $wingetId --accept-package-agreements --accept-source-agreements --silent 2>$null
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        if (Get-Command $name -ErrorAction SilentlyContinue) { return $true }
+    }
+    # 2. Dogrudan indir ve kur
+    if ($directUrl) {
+        Write-Host "  Dogrudan indiriliyor..." -ForegroundColor Gray
+        $installer = "$env:TEMP\${name}_setup.exe"
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $directUrl -OutFile $installer -UseBasicParsing
+        Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait -NoNewWindow
+        Remove-Item $installer -Force -ErrorAction SilentlyContinue
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        # Bilinen yolları da ekle
+        @("C:\Program Files\Git\cmd", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts",
+          "C:\Program Files\Python311", "C:\Program Files\Python311\Scripts",
+          "C:\Python312", "C:\Python312\Scripts", "C:\Python311", "C:\Python311\Scripts") | ForEach-Object {
+            if ((Test-Path $_) -and ($env:Path -notlike "*$_*")) { $env:Path += ";$_" }
+        }
+        if (Get-Command $name -ErrorAction SilentlyContinue) { return $true }
+    }
+    return $false
+}
+
 # ─── 1. Git kontrolu ───
 Write-Host "  [1/6] Git kontrol ediliyor..." -ForegroundColor Yellow
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
-    Write-Host "  Git bulunamadi. Kuruluyor..." -ForegroundColor Gray
-    try {
-        winget install --id Git.Git --accept-package-agreements --accept-source-agreements --silent 2>$null
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        $git = Get-Command git -ErrorAction SilentlyContinue
-        if (-not $git) {
-            Write-Host "  [!] Git kuruldu ama PATH'e eklenmesi icin terminali yeniden acin." -ForegroundColor Red
-            Write-Host "  Sonra bu komutu tekrar calistirin." -ForegroundColor Red
-            exit 1
-        }
-    } catch {
-        Write-Host "  [HATA] Git kurulamadi. Manuel kurun: https://git-scm.com" -ForegroundColor Red
+    Write-Host "  Git bulunamadi. Kuruluyor..." -ForegroundColor Yellow
+    $gitUrl = "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.2/Git-2.47.1.2-64-bit.exe"
+    $ok = Install-WithFallback "git" "Git.Git" $gitUrl "/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /COMPONENTS=`"icons,ext\reg\shellhere,assoc,assoc_sh`""
+    if (-not $ok) {
+        Write-Host "  [HATA] Git kurulamadi." -ForegroundColor Red
+        Write-Host "  Manuel indirin: https://git-scm.com/download/win" -ForegroundColor Yellow
+        Write-Host "  Kurduktan sonra bu komutu tekrar calistirin." -ForegroundColor Yellow
+        Read-Host "  Devam etmek icin Enter'a basin"
         exit 1
     }
 }
@@ -45,17 +70,14 @@ Write-Host "  [OK] Git: $(git --version)" -ForegroundColor Green
 Write-Host "  [2/6] Python kontrol ediliyor..." -ForegroundColor Yellow
 $python = Get-Command python -ErrorAction SilentlyContinue
 if (-not $python) {
-    Write-Host "  Python bulunamadi. Kuruluyor..." -ForegroundColor Gray
-    try {
-        winget install --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent 2>$null
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        $python = Get-Command python -ErrorAction SilentlyContinue
-        if (-not $python) {
-            Write-Host "  [!] Python kuruldu ama PATH'e eklenmesi icin terminali yeniden acin." -ForegroundColor Red
-            exit 1
-        }
-    } catch {
-        Write-Host "  [HATA] Python kurulamadi. Manuel kurun: https://python.org" -ForegroundColor Red
+    Write-Host "  Python bulunamadi. Kuruluyor..." -ForegroundColor Yellow
+    $pyUrl = "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe"
+    $ok = Install-WithFallback "python" "Python.Python.3.12" $pyUrl "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1"
+    if (-not $ok) {
+        Write-Host "  [HATA] Python kurulamadi." -ForegroundColor Red
+        Write-Host "  Manuel indirin: https://python.org/downloads" -ForegroundColor Yellow
+        Write-Host "  Kurduktan sonra bu komutu tekrar calistirin." -ForegroundColor Yellow
+        Read-Host "  Devam etmek icin Enter'a basin"
         exit 1
     }
 }
