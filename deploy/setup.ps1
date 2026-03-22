@@ -168,7 +168,7 @@ try {
 # Baslat scripti olustur
 $launcher = "$InstallDir\start_dashboard.cmd"
 if (Test-Path "$InstallDir\bin\FileActivity.exe") {
-    Set-Content $launcher "@echo off`r`ncd /d `"$InstallDir`"`r`n`"$InstallDir\bin\FileActivity.exe`" dashboard --config `"$InstallDir\config\config.yaml`"`r`npause"
+    Set-Content $launcher "@echo off`r`ncd /d `"$InstallDir`"`r`n`"$InstallDir\bin\FileActivity.exe`" --config `"$InstallDir\config\config.yaml`" dashboard`r`npause"
     Write-Host "    Launcher olusturuldu: $launcher" -ForegroundColor Gray
 }
 
@@ -195,7 +195,7 @@ if ($start -eq "E" -or $start -eq "e" -or $start -eq "") {
     if (Test-Path "$InstallDir\bin\FileActivity.exe") {
         Write-Host "  Dashboard baslatiliyor..." -ForegroundColor Cyan
         Start-Process -FilePath "$InstallDir\bin\FileActivity.exe" `
-            -ArgumentList "dashboard", "--config", "$InstallDir\config\config.yaml" `
+            -ArgumentList "--config", "$InstallDir\config\config.yaml", "dashboard" `
             -WorkingDirectory $InstallDir
         Start-Sleep -Seconds 3
         Start-Process "http://localhost:8085"
