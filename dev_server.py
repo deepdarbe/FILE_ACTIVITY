@@ -633,6 +633,48 @@ async def mit_naming_export(source_id: int):
     csv += 'R3,Yasak Karakter,"rapor_özet.pdf","\\\\server\\share\\docs\\rapor_özet.pdf",1048576,"elif.demir",2025-03-20\n'
     return StreamingResponse(io.BytesIO(csv.encode('utf-8-sig')), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=MIT_Naming_Report.csv"})
 
+@app.get("/api/insights/{source_id}")
+async def insights_report(source_id: int):
+    return {
+        "insights": [
+            {"category": "stale", "insight_type": "stale_1year", "severity": "critical", "title": "1 Yildan Eski Erisim: %42",
+             "description": "198,450 dosya (2.8 TB) 1 yildir erisilmemis. Toplam dosyalarin %42'si.",
+             "action": "Bu dosyalari arsivlemeyi planlayin", "impact_size": 2_800_000_000_000, "file_count": 198450},
+            {"category": "stale", "insight_type": "stale_3year", "severity": "critical", "title": "3+ Yillik Eski Veri: 1.2 TB",
+             "description": "85,200 dosya 3 yildir hic erisilmemis.",
+             "action": "Acil arsivleme oneriliyor", "impact_size": 1_200_000_000_000, "file_count": 85200},
+            {"category": "storage", "insight_type": "temp_files", "severity": "warning", "title": "Gecici Dosyalar Tespit Edildi",
+             "description": "12,340 gecici/yedek dosya (45.2 GB) temizlenebilir.",
+             "action": "Bu dosyalari arsivleyin veya silin", "impact_size": 45_200_000_000, "file_count": 12340},
+            {"category": "storage", "insight_type": "very_large", "severity": "warning", "title": "28 Buyuk Dosya (>1 GB)",
+             "description": "Toplam 156 GB yer kapliyor.",
+             "action": "Buyuk dosyalari arsivlemeyi dusunun", "impact_size": 156_000_000_000, "file_count": 28},
+            {"category": "duplicates", "insight_type": "duplicates", "severity": "warning", "title": "Olasi Kopya Dosyalar: 1,240",
+             "description": "Ayni ad ve boyuttaki dosyalar 75.9 MB israf ediyor olabilir.",
+             "action": "Kopya dosyalari inceleyin", "impact_size": 75_900_000, "file_count": 1240},
+            {"category": "security", "insight_type": "temp_files", "severity": "warning", "title": "342 Calistirilabilir Dosya",
+             "description": "Paylasimda .exe, .bat, .ps1 gibi dosyalar bulundu.",
+             "action": "Guvenlik riski - inceleyin", "file_count": 342},
+            {"category": "growth", "insight_type": "stale_180", "severity": "info", "title": "Buyume Trendi: Aylik 75.1 GB",
+             "description": "Mevcut hizla 12 ay sonra tahmini 900 GB ek alan gerekecek.",
+             "file_count": 0},
+            {"category": "recommendation", "insight_type": "large_files", "severity": "info", "title": "Temizlik Onerisi",
+             "description": "Eski ve gecici dosyalari temizleyerek 3.8 TB alan kazanabilirsiniz.",
+             "action": "Otomatik arsivleme politikasi olusturun", "impact_size": 3_800_000_000_000},
+        ],
+        "score": 45,
+        "generated_at": "2026-03-23T12:00:00"
+    }
+
+@app.get("/api/risk-score/{source_id}")
+async def risk_score(source_id: int):
+    return {"score": 45, "factors": [
+        {"name": "Eski Dosyalar", "weight": 35, "value": 42},
+        {"name": "Kopya Dosyalar", "weight": 20, "value": 15},
+        {"name": "Gecici Dosyalar", "weight": 15, "value": 8},
+        {"name": "Guvenlik Riskleri", "weight": 30, "value": 5}
+    ]}
+
 @app.get("/api/insights/{source_id}/files")
 async def insight_files(source_id: int, insight_type: str = "stale_1year", page: int = 1, page_size: int = 100):
     files = [
@@ -750,6 +792,25 @@ async def archive_selective(request):
     return {"archived": len(file_ids), "failed": 0, "total_size": len(file_ids) * 2_000_000,
             "total_size_formatted": _mock_format_size(len(file_ids) * 2_000_000),
             "operation_id": 99}
+
+# ─── DUPLICATE EXPORT (Mock) ───
+
+@app.get("/api/export/duplicates/{source_id}")
+async def export_duplicates(source_id: int):
+    import io
+    from starlette.responses import StreamingResponse
+    output = io.StringIO()
+    output.write('\ufeff')
+    output.write('Grup,Dosya Adi,Boyut,Boyut (Okunur),Kopya Sayisi,Dosya Yolu,Sahip,Son Erisim,Son Degisiklik\n')
+    output.write('1,"budget_template.xlsx",2457600,"2.3 MB",5,"\\\\fileserver\\finance\\budget_template.xlsx","ahmet.yilmaz","2024-06-15","2024-03-20"\n')
+    output.write('1,"budget_template.xlsx",2457600,"2.3 MB",5,"\\\\fileserver\\hr\\budget_template.xlsx","elif.demir","2024-07-10","2024-04-12"\n')
+    output.write('2,"company_logo.png",15728640,"15 MB",3,"\\\\fileserver\\marketing\\company_logo.png","mehmet.ozturk","2024-08-01","2024-01-15"\n')
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode('utf-8-sig')),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=Duplicates_Report.csv"}
+    )
 
 # ─── BUYUME ANALIZI (Mock) ───
 

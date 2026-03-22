@@ -34,6 +34,17 @@ class InsightsEngine:
         insights.extend(self._cleanup_recommendations(source_id, scan_id))
         insights.extend(self._audit_insights(source_id))
 
+        # Ensure all insights have insight_type for frontend Incele button
+        _cat_to_type = {
+            "stale": "stale_1year", "storage": "temp_files",
+            "duplicates": "duplicates", "security": "temp_files",
+            "growth": "stale_180", "recommendation": "large_files",
+            "audit": "stale_1year"
+        }
+        for ins in insights:
+            if "insight_type" not in ins:
+                ins["insight_type"] = _cat_to_type.get(ins.get("category"), "all_files")
+
         # Sort by priority
         priority_order = {"critical": 0, "warning": 1, "info": 2, "success": 3}
         insights.sort(key=lambda x: priority_order.get(x.get("severity", "info"), 99))
@@ -62,6 +73,7 @@ class InsightsEngine:
             if r["cnt"] > 0:
                 insights.append({
                     "category": "storage",
+                    "insight_type": "temp_files",
                     "severity": "warning" if r["size"] > 1024**3 else "info",
                     "title": "Gecici Dosyalar Tespit Edildi",
                     "description": f"{r['cnt']:,} gecici/yedek dosya ({format_size(r['size'])}) temizlenebilir.",
@@ -79,6 +91,7 @@ class InsightsEngine:
             if r["cnt"] > 100:
                 insights.append({
                     "category": "storage",
+                    "insight_type": "empty_files",
                     "severity": "info",
                     "title": f"{r['cnt']:,} Bos Dosya",
                     "description": "Boyutu 0 olan dosyalar temizlenebilir.",
@@ -95,6 +108,7 @@ class InsightsEngine:
             if r["cnt"] > 0:
                 insights.append({
                     "category": "storage",
+                    "insight_type": "very_large",
                     "severity": "warning",
                     "title": f"{r['cnt']:,} Buyuk Dosya (>1 GB)",
                     "description": f"Toplam {format_size(r['size'])} yer kapliyor.",
@@ -450,6 +464,29 @@ def get_insight_files(db: Database, scan_id: int, insight_type: str) -> list:
             ) dup ON sf.file_name = dup.file_name AND sf.file_size = dup.file_size
             WHERE sf.scan_id=?
             ORDER BY sf.file_size DESC
+        """,
+        "empty_files": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            AND file_size = 0
+            ORDER BY file_name ASC
+        """,
+        "very_large": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            AND file_size > 1073741824
+            ORDER BY file_size DESC
+        """,
+        "stale_180": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            AND last_access_time < datetime('now', '-180 days')
+            ORDER BY file_size DESC
+        """,
+        "all_files": """
+            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+            FROM scanned_files WHERE scan_id=?
+            ORDER BY file_size DESC
         """,
     }
 

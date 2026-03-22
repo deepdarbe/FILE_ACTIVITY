@@ -1216,7 +1216,7 @@ class Database:
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY file_size DESC LIMIT ? OFFSET ?
             """, params_base + [limit, offset])
-            files = cur.fetchall()
+            files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
     def get_files_by_frequency(self, source_id: int, scan_id: int,
@@ -1242,7 +1242,7 @@ class Database:
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY last_access_time ASC LIMIT ? OFFSET ?
             """, params + [limit, offset])
-            files = cur.fetchall()
+            files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
     def get_files_by_extension(self, source_id: int, scan_id: int, extension: str,
@@ -1262,7 +1262,7 @@ class Database:
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY file_size DESC LIMIT ? OFFSET ?
             """, params_base + [limit, offset])
-            files = cur.fetchall()
+            files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
     def get_files_by_size_range(self, source_id: int, scan_id: int,
@@ -1285,7 +1285,7 @@ class Database:
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY file_size DESC LIMIT ? OFFSET ?
             """, params + [limit, offset])
-            files = cur.fetchall()
+            files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
     def upsert_scanned_file(self, source_id: int, scan_id: int, file_data: dict):

@@ -40,7 +40,7 @@
     --transition: all 0.2s ease;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Segoe UI', -apple-system, 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); display: flex; min-height: 100vh; overflow-x: hidden; }
+body { font-family: 'Segoe UI', -apple-system, 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); display: flex; height: 100vh; overflow: hidden; }
 ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg-primary); } ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
 
 /* === SIDEBAR === */
@@ -63,7 +63,7 @@ body { font-family: 'Segoe UI', -apple-system, 'Inter', sans-serif; background: 
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 /* === MAIN === */
-.main { margin-left: var(--sidebar-width); flex: 1; padding: 28px 32px; min-height: 100vh; }
+.main { margin-left: var(--sidebar-width); flex: 1; padding: 28px 32px 60px; height: 100vh; overflow-y: auto; }
 .page { display: none; animation: fadeIn 0.3s ease; }
 .page.active { display: block; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -279,17 +279,6 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('naming')"><span class="icon">📐</span> <span>Adlandirma Uyumu</span></div>
         <div class="nav-item" onclick="showPage('policies')"><span class="icon">📋</span> <span>Politikalar</span></div>
         <div class="nav-item" onclick="showPage('schedules')"><span class="icon">⏰</span> <span>Zamanlama</span></div>
-    </div>
-    <!-- Global Tarama Progress (tum sayfalarda gorunur) -->
-    <div id="global-scan-progress" style="display:none;padding:8px 16px;border-top:1px solid var(--border);background:var(--bg-card)">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="font-size:11px;color:var(--accent);font-weight:600" id="gsp-label">Tarama...</span>
-            <span style="font-size:10px;color:var(--text-muted);margin-left:auto" id="gsp-count">0</span>
-        </div>
-        <div style="height:4px;background:var(--bg-secondary);border-radius:2px;overflow:hidden">
-            <div id="gsp-bar" style="height:100%;background:var(--accent);border-radius:2px;width:0%;transition:width 0.5s"></div>
-        </div>
-        <div style="font-size:9px;color:var(--text-muted);margin-top:2px" id="gsp-detail"></div>
     </div>
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
@@ -560,10 +549,11 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 <div class="page" id="page-duplicates">
     <div class="page-header">
         <div><h2>Kopya Dosyalar</h2><div class="desc">Ayni isim ve boyuttaki dosyalarin analizi</div></div>
-        <div class="actions">
+        <div class="actions" style="display:flex;gap:8px;align-items:center">
             <select id="dup-source" onchange="loadDuplicates()" style="width:200px">
                 <option value="">Kaynak secin...</option>
             </select>
+            <button id="dup-export-btn" class="btn-export" style="display:none" onclick="exportDuplicatesCSV()">Excel Export</button>
         </div>
     </div>
     <!-- Ozet kartlar -->
@@ -1193,7 +1183,7 @@ async function loadOverview() {
                         <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${i.description}</div>
                     </div>
                     ${i.impact_size ? `<span style="font-size:12px;color:var(--text-muted);flex-shrink:0">${formatSize(i.impact_size)}</span>` : ''}
-                    <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'large_files','duplicates':'duplicates','security':'temp_files','growth':'stale_3year'}[i.category] || 'stale_1year')}', ${sid})" style="flex-shrink:0">Incele</button>
+                    <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'temp_files','duplicates':'duplicates','security':'temp_files','growth':'stale_180','recommendation':'large_files','audit':'stale_1year'}[i.category] || 'all_files')}', ${sid})" style="flex-shrink:0">Incele</button>
                     ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
                 </div>
             `).join('');
@@ -2178,7 +2168,10 @@ async function loadInsights() {
                     <span style="display:inline-block;padding:2px 10px;border-radius:12px;font-size:10px;font-weight:700;background:${sevColors[i.severity] || 'var(--border)'}22;color:${sevColors[i.severity] || 'var(--text-muted)'}">${(i.severity||'info').toUpperCase()}</span>
                     ${i.impact_size ? `<div style="font-size:12px;color:var(--text-muted);margin-top:6px">${formatSize(i.impact_size)}</div>` : ''}
                     ${i.file_count ? `<div style="font-size:11px;color:var(--text-muted)">${formatNum(i.file_count)} dosya</div>` : ''}
-                    ${i.action_button ? `<button class="btn btn-sm btn-primary" style="margin-top:6px" onclick="showPage('archive')">${i.action_button}</button>` : ''}
+                    <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
+                        <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'temp_files','duplicates':'duplicates','security':'temp_files','growth':'stale_180','recommendation':'large_files','audit':'stale_1year'}[i.category] || 'all_files')}', ${sid})">Incele</button>
+                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})">Uygula</button>` : ''}
+                    </div>
                 </div>
             </div>
         `).join('') : '<div style="text-align:center;padding:60px;color:var(--text-muted)">Insight bulunamadi. Once bir tarama yapin.</div>';
@@ -2571,6 +2564,10 @@ async function loadDuplicates(page) {
         const data = await api(`/reports/duplicates/${sourceId}?page=${dupCurrentPage}&page_size=50`);
         const groups = data.groups || [];
 
+        // Export butonu goster
+        const expBtn = document.getElementById('dup-export-btn');
+        if (expBtn) expBtn.style.display = (data.total_groups > 0) ? '' : 'none';
+
         // Ozet kartlar
         document.getElementById('dup-summary-cards').innerHTML = `
             <div class="card accent"><div class="card-label">Kopya Gruplar</div><div class="card-value">${formatNum(data.total_groups || 0)}</div></div>
@@ -2682,6 +2679,12 @@ async function archiveSelectedDuplicates() {
         notify(`${resp.archived || 0} dosya arsivlendi (${resp.total_size_formatted || ''})`, 'success');
         loadDuplicates(dupCurrentPage);
     } catch(e) { notify('Arsivleme hatasi: ' + e.message, 'error'); }
+}
+
+function exportDuplicatesCSV() {
+    const sourceId = document.getElementById('dup-source')?.value;
+    if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
+    window.open(`/api/export/duplicates/${sourceId}`, '_blank');
 }
 
 // ═══════════════════════════════════════════════════
@@ -2866,6 +2869,23 @@ async function loadGrowth() {
             <span id="dd-info"></span>
             <div id="dd-pagination" class="dd-pagination"></div>
         </div>
+    </div>
+</div>
+
+<!-- Floating Scan Progress Bar (her zaman gorunur, fixed pozisyon) -->
+<div id="global-scan-progress" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:1200;padding:8px 20px;background:var(--bg-card);border-top:2px solid var(--accent);box-shadow:0 -4px 20px rgba(0,0,0,0.3);backdrop-filter:blur(10px)">
+    <div style="display:flex;align-items:center;gap:12px;max-width:1400px;margin:0 auto">
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1.5s infinite"></span>
+            <span style="font-size:12px;color:var(--accent);font-weight:700" id="gsp-label">Tarama...</span>
+        </div>
+        <div style="flex:1;min-width:100px">
+            <div style="height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden">
+                <div id="gsp-bar" style="height:100%;background:linear-gradient(90deg,var(--accent),#8b5cf6);border-radius:3px;width:0%;transition:width 0.5s"></div>
+            </div>
+        </div>
+        <span style="font-size:12px;color:var(--text-primary);font-weight:600;flex-shrink:0" id="gsp-count">0</span>
+        <span style="font-size:10px;color:var(--text-muted);flex-shrink:0;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="gsp-detail"></span>
     </div>
 </div>
 

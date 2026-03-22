@@ -991,6 +991,40 @@ def create_app(db, config):
             g["waste_size_formatted"] = format_size(g.get("waste_size", 0))
         return result
 
+    @app.get("/api/export/duplicates/{source_id}")
+    async def export_duplicates(source_id: int):
+        """Kopya dosyalari CSV olarak export et."""
+        from src.utils.size_formatter import format_size
+        from fastapi.responses import StreamingResponse
+        from datetime import datetime
+        import io
+
+        scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama bulunamadi")
+
+        # Tum duplike gruplari getir (max 10000 grup)
+        result = db.get_duplicate_groups(source_id, scan_id=scan_id, page=1, page_size=10000)
+
+        output = io.StringIO()
+        output.write('\ufeff')  # BOM for Excel
+        output.write('Grup,Dosya Adi,Boyut,Boyut (Okunur),Kopya Sayisi,Dosya Yolu,Sahip,Son Erisim,Son Degisiklik\n')
+
+        for idx, g in enumerate(result.get("groups", []), 1):
+            for f in g.get("files", []):
+                path = (f.get("file_path") or "").replace('"', '""')
+                name = (f.get("file_name") or g.get("file_name", "")).replace('"', '""')
+                owner = (f.get("owner") or "").replace('"', '""')
+                output.write(f'{idx},"{name}",{g.get("file_size",0)},"{format_size(g.get("file_size",0))}",{g.get("count",0)},"{path}","{owner}",{f.get("last_access_time","")},{f.get("last_modify_time","")}\n')
+
+        output.seek(0)
+        filename = f"Duplicates_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode('utf-8-sig')),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
     @app.post("/api/archive/selective")
     async def archive_selective(request):
         """Secili dosyalari arsivle (duplicate cleanup icin)."""
