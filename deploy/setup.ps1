@@ -127,7 +127,8 @@ if (-not (Test-Path "$InstallDir\config\config.yaml")) {
     if (Test-Path $cfgSrc) {
         Copy-Item -Path $cfgSrc -Destination "$InstallDir\config\config.yaml" -Force
         $content = Get-Content "$InstallDir\config\config.yaml" -Raw
-        $content = $content -replace 'path: "data/file_activity.db"', "path: `"$InstallDir\data\file_activity.db`""
+        $dbPath = "$InstallDir/data/file_activity.db" -replace '\\', '/'
+        $content = $content -replace 'path: "data/file_activity.db"', "path: `"$dbPath`""
         Set-Content "$InstallDir\config\config.yaml" $content
         Write-Host "    config.yaml olusturuldu" -ForegroundColor Gray
     }
