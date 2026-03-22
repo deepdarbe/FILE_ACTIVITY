@@ -1,0 +1,61 @@
+# FILE ACTIVITY - Konfigürasyon Dosyası
+# Windows Dosya Paylaşım Analiz ve Arşivleme Sistemi
+
+general:
+  language: "tr"              # "tr" veya "en"
+  log_level: "INFO"
+  log_file: "logs/file_activity.log"
+
+database:
+  path: "data/file_activity.db"    # SQLite veritabani dosyasi
+
+sources: []
+  # Örnek:
+  # - name: "Engineering"
+  #   unc_path: "\\\\fileserver01\\engineering$"
+  #   archive_dest: "D:\\Archive\\engineering"
+  #   enabled: true
+
+scanner:
+  max_workers: 4              # paralel dizin tarayıcı sayısı
+  batch_size: 1000            # DB batch insert boyutu
+  skip_hidden: true           # Hidden attribute'lu dosyaları atla
+  skip_system: true           # System attribute'lu dosyaları atla
+  exclude_patterns:           # atlanacak glob desenleri
+    - "*.tmp"
+    - "~$*"
+    - "Thumbs.db"
+    - "desktop.ini"
+    - ".DS_Store"
+  read_owner: true            # dosya sahiplik bilgisi topla (biraz yavaşlatır)
+  incremental: true           # sadece değişen dosyaları tara
+
+analysis:
+  frequency_buckets:          # erişim sıklığı analiz günleri
+    - 30
+    - 60
+    - 90
+    - 180
+    - 365
+  size_buckets:               # boyut eşikleri (bytes)
+    tiny: 102400              # < 100 KB
+    small: 1048576            # < 1 MB
+    medium: 104857600         # < 100 MB
+    large: 1073741824         # < 1 GB
+    # üstü = huge
+
+archiving:
+  verify_checksum: true       # SHA-256 doğrulama
+  dry_run: false              # taşımadan sadece raporla
+  cleanup_empty_dirs: true    # boş dizinleri temizle
+
+reports:
+  output_dir: "reports"           # rapor çıktı dizini
+  auto_report: true               # tarama sonrası otomatik rapor
+  formats:                        # rapor formatları
+    - html
+    - json
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8085

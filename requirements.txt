@@ -1,0 +1,23 @@
+# FILE ACTIVITY - Windows File Share Analysis & Archiving System
+# Python 3.10+
+# SQLite3 is built-in - no external DB dependency!
+
+# CLI
+click>=8.1.0
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Windows API
+pywin32>=306
+
+# Configuration
+pyyaml>=6.0.1
+
+# Scheduling
+apscheduler>=3.10.0
+
+# Reports
+openpyxl>=3.1.0
+reportlab>=4.0.0
