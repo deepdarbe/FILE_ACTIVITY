@@ -16,4 +16,4 @@ node_modules/
 .claude/
 *.zip
 *.exe
-deploy/
+temp_netwrix/

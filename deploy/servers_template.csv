@@ -1,0 +1,4 @@
+ServerName,InstallPath,PgHost,PgPort,PgDb,PgUser,PgPass
+SRV-FILE01,C:\FileActivity,pg-db01.domain.local,5432,file_activity,fa_user,SecurePass123!
+SRV-FILE02,C:\FileActivity,pg-db01.domain.local,5432,file_activity_02,fa_user,SecurePass123!
+SRV-DEPT01,D:\Apps\FileActivity,pg-db02.domain.local,5432,file_activity,fa_user,SecurePass456!
