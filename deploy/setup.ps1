@@ -69,57 +69,70 @@ Write-Host "  [OK] Indirildi: $dlSize MB" -ForegroundColor Green
 # ─── 3. Kur ───
 Write-Host "  [3/4] Kuruluyor..." -ForegroundColor Yellow
 
-# Mevcut kurulum varsa veriyi koru
-$hasExisting = Test-Path "$InstallDir\bin"
-if ($hasExisting) {
-    Write-Host "    Mevcut kurulum tespit edildi - guncelleme modu" -ForegroundColor Gray
-    Write-Host "    Veritabani, config, log korunuyor..." -ForegroundColor Gray
-    # Eski bin yedekle
-    if (Test-Path "$InstallDir\bin_old") { Remove-Item "$InstallDir\bin_old" -Recurse -Force }
-    Rename-Item -Path "$InstallDir\bin" -NewName "bin_old" -ErrorAction SilentlyContinue
+# Dashboard/FileActivity calisan process varsa durdur
+Write-Host "    Calisan processler durduruluyor..." -ForegroundColor Gray
+Get-Process -Name "FileActivity" -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
+
+# Dizin yapisi olustur
+Write-Host "    Dizin yapisi: $InstallDir" -ForegroundColor Gray
+foreach ($d in @("", "\config", "\data", "\logs", "\reports", "\scripts")) {
+    $p = "$InstallDir$d"
+    if (-not (Test-Path $p)) { New-Item -Path $p -ItemType Directory -Force | Out-Null }
 }
 
-# Dizin yapisi
-@($InstallDir, "$InstallDir\bin", "$InstallDir\config", "$InstallDir\data", "$InstallDir\logs", "$InstallDir\reports", "$InstallDir\scripts") | ForEach-Object {
-    New-Item -Path $_ -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+# Mevcut bin varsa yedekle
+if (Test-Path "$InstallDir\bin\FileActivity.exe") {
+    Write-Host "    Eski surum yedekleniyor (bin_old)..." -ForegroundColor Gray
+    if (Test-Path "$InstallDir\bin_old") { Remove-Item -Path "$InstallDir\bin_old" -Recurse -Force -ErrorAction SilentlyContinue }
+    try {
+        Rename-Item -Path "$InstallDir\bin" -NewName "bin_old" -Force
+    } catch {
+        Write-Host "    [!] Yedekleme basarisiz, eski bin siliniyor..." -ForegroundColor Yellow
+        Remove-Item -Path "$InstallDir\bin" -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -Path "$InstallDir\bin" -ItemType Directory -Force | Out-Null
 }
 
 # ZIP ac
-$extractPath = "$env:TEMP\FA_extract"
-if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
 Write-Host "    ZIP aciliyor..." -ForegroundColor Gray
+$extractPath = "$env:TEMP\FA_extract_$(Get-Date -Format 'HHmmss')"
+if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 
-# ZIP icerigini bul (FileActivity-Deploy/ klasoru icinde)
+# ZIP icerigini bul
 $sourceDir = $extractPath
 $innerDirs = Get-ChildItem $extractPath -Directory -ErrorAction SilentlyContinue
-if ($innerDirs) {
-    $sourceDir = $innerDirs[0].FullName
-}
-Write-Host "    Kaynak: $sourceDir" -ForegroundColor Gray
+if ($innerDirs) { $sourceDir = $innerDirs[0].FullName }
+Write-Host "    Kaynak dizin: $sourceDir" -ForegroundColor Gray
+Write-Host "    Icerik:" -ForegroundColor Gray
+Get-ChildItem $sourceDir | ForEach-Object { Write-Host "      $($_.Name)" -ForegroundColor Gray }
 
-# bin/ klasorunu kopyala
+# bin/ kopyala
 if (Test-Path "$sourceDir\bin") {
     Write-Host "    bin\ kopyalaniyor..." -ForegroundColor Gray
     Copy-Item -Path "$sourceDir\bin\*" -Destination "$InstallDir\bin\" -Recurse -Force
 } else {
-    Write-Host "    [!] bin\ klasoru bulunamadi, tum icerik kopyalaniyor..." -ForegroundColor Yellow
-    Copy-Item -Path "$sourceDir\*" -Destination "$InstallDir\bin\" -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "    [!] bin\ yok, dosyalar dogrudan kopyalaniyor..." -ForegroundColor Yellow
+    Get-ChildItem $sourceDir -File | Copy-Item -Destination "$InstallDir\bin\" -Force
+    Get-ChildItem $sourceDir -Directory | Where-Object { $_.Name -notin @("config","scripts","logs","reports") } | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination "$InstallDir\bin\$($_.Name)" -Recurse -Force
+    }
 }
 
-# Config (sadece yoksa kopyala - mevcut config korunur)
+# Config (sadece yoksa)
 if (-not (Test-Path "$InstallDir\config\config.yaml")) {
-    if (Test-Path "$sourceDir\config\config.yaml") {
-        Copy-Item -Path "$sourceDir\config\config.yaml" -Destination "$InstallDir\config\" -Force
-    } elseif (Test-Path "$sourceDir\config.yaml") {
-        Copy-Item -Path "$sourceDir\config.yaml" -Destination "$InstallDir\config\" -Force
-    }
-    # Yollari guncelle
-    if (Test-Path "$InstallDir\config\config.yaml") {
+    $cfgSrc = "$sourceDir\config\config.yaml"
+    if (-not (Test-Path $cfgSrc)) { $cfgSrc = "$sourceDir\config.yaml" }
+    if (Test-Path $cfgSrc) {
+        Copy-Item -Path $cfgSrc -Destination "$InstallDir\config\config.yaml" -Force
         $content = Get-Content "$InstallDir\config\config.yaml" -Raw
         $content = $content -replace 'path: "data/file_activity.db"', "path: `"$InstallDir\data\file_activity.db`""
         Set-Content "$InstallDir\config\config.yaml" $content
+        Write-Host "    config.yaml olusturuldu" -ForegroundColor Gray
     }
+} else {
+    Write-Host "    config.yaml mevcut (korundu)" -ForegroundColor Gray
 }
 
 # Scripts
@@ -133,10 +146,12 @@ Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
 
 # Dogrulama
 if (Test-Path "$InstallDir\bin\FileActivity.exe") {
-    Write-Host "  [OK] Kurulum tamamlandi: $InstallDir" -ForegroundColor Green
+    $exeSize = [math]::Round((Get-Item "$InstallDir\bin\FileActivity.exe").Length / 1MB, 1)
+    Write-Host "  [OK] Kurulum basarili! FileActivity.exe ($exeSize MB)" -ForegroundColor Green
 } else {
-    Write-Host "  [!] FileActivity.exe bulunamadi. Dizin icerigini kontrol edin:" -ForegroundColor Yellow
-    Get-ChildItem "$InstallDir\bin" -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+    Write-Host "  [!] FileActivity.exe bulunamadi!" -ForegroundColor Red
+    Write-Host "    bin\ icerigi:" -ForegroundColor Yellow
+    Get-ChildItem "$InstallDir\bin" -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host "      $($_.Name)" -ForegroundColor Gray }
 }
 
 # ─── 4. Firewall + Baslat ───
