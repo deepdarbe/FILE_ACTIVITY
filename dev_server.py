@@ -216,9 +216,36 @@ async def index():
     with open(html_path, "r", encoding="utf-8") as f:
         return f.read()
 
+@app.get("/api/dashboard/init")
+async def dashboard_init():
+    source_list = [s.__dict__ for s in db.get_sources()]
+    summaries = {}
+    for s in source_list:
+        summaries[s["id"]] = {
+            "has_data": True,
+            "scan_id": 1,
+            "file_count": 474_000,
+            "total_size": 5_800_000_000_000,
+            "total_size_formatted": "5.3 TB",
+            "scan_status": {"started_at": "2026-03-22T14:30:00", "completed_at": "2026-03-22T15:45:00", "status": "completed"}
+        }
+    return {"sources": source_list, "summaries": summaries, "auto_select": source_list[0]["id"] if source_list else None}
+
 @app.get("/api/sources")
 async def get_sources():
     return [s.__dict__ for s in db.get_sources()]
+
+@app.get("/api/trend/{source_id}")
+async def trend(source_id: int):
+    scans = [
+        {"started_at": f"2026-03-{10+i}T14:00:00", "total_files": 460000 + i*2000, "total_size": 5_500_000_000_000 + i*50_000_000_000, "status": "completed"}
+        for i in range(8)
+    ]
+    return {"scans": scans, "growth": {"file_diff": 14000, "size_diff": 350_000_000_000}}
+
+@app.get("/api/watcher/status")
+async def watcher_status(source_id: int = 0):
+    return {"running": False, "total_changes": 0}
 
 @app.post("/api/sources")
 async def add_source(data: SourceCreate):
@@ -270,11 +297,8 @@ async def report_status(source_name: str):
         "generated_at": datetime.now().isoformat()
     }
 
-@app.get("/api/reports/frequency/{source_name}")
-async def report_frequency(source_name: str, days: Optional[str] = None):
-    src = db.get_source_by_name(source_name)
-    if not src:
-        raise HTTPException(404, "Kaynak bulunamadi")
+@app.get("/api/reports/frequency/{source_id}")
+async def report_frequency(source_id: int, days: Optional[str] = None):
     return {"frequency": [
         {"label": "30+ gun erisilmemis", "days": 30, "file_count": 12450, "total_size": 65_000_000_000, "total_size_formatted": "60.5 GB"},
         {"label": "90+ gun erisilmemis", "days": 90, "file_count": 10200, "total_size": 54_000_000_000, "total_size_formatted": "50.3 GB"},

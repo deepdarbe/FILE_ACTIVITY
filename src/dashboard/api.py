@@ -88,6 +88,53 @@ def create_app(db, config):
         sources = db.get_sources()
         return [s.__dict__ for s in sources]
 
+    @app.get("/api/dashboard/init")
+    async def dashboard_init():
+        """Hizli baslangic endpoint - dashboard aninda yuklensin.
+        Kaynaklar + her kaynak icin son tarama ozeti (tek sorgu)."""
+        from src.utils.size_formatter import format_size
+        sources = db.get_sources()
+        source_list = [s.__dict__ for s in sources]
+
+        # Her kaynak icin son tarama ozet bilgisi
+        summaries = {}
+        for s in sources:
+            scan_id = db.get_latest_scan_id(s.id, include_running=True)
+            if not scan_id:
+                summaries[s.id] = {"has_data": False, "scan_id": None}
+                continue
+            with db.get_cursor() as cur:
+                # Tek sorgu: temel bilgiler
+                cur.execute("""
+                    SELECT COUNT(*) as file_count,
+                           COALESCE(SUM(file_size),0) as total_size,
+                           MIN(last_access_time) as oldest_access,
+                           MAX(created_time) as newest_file
+                    FROM scanned_files WHERE source_id=? AND scan_id=?
+                """, (s.id, scan_id))
+                r = cur.fetchone()
+                # Tarama bilgisi
+                cur.execute("""
+                    SELECT started_at, completed_at, status
+                    FROM scan_runs WHERE id=?
+                """, (scan_id,))
+                scan_info = cur.fetchone()
+
+                summaries[s.id] = {
+                    "has_data": True,
+                    "scan_id": scan_id,
+                    "file_count": r["file_count"],
+                    "total_size": r["total_size"],
+                    "total_size_formatted": format_size(r["total_size"]),
+                    "scan_status": dict(scan_info) if scan_info else None,
+                }
+
+        return {
+            "sources": source_list,
+            "summaries": summaries,
+            "auto_select": source_list[0]["id"] if len(source_list) == 1 else None,
+        }
+
     @app.post("/api/sources")
     async def add_source(data: SourceCreate):
         from src.storage.models import Source

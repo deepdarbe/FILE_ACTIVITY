@@ -136,6 +136,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 .progress-header .title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .progress-header .title .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border-light); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.loading-spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .progress-bar { height: 8px; background: var(--bg-primary); border-radius: 4px; overflow: hidden; margin-bottom: 16px; }
 .progress-bar .fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-light)); border-radius: 4px; transition: width 0.5s ease; position: relative; }
 .progress-bar .fill::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent); animation: shimmer 1.5s infinite; }
@@ -247,7 +248,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="sidebar-header">
         <h1><span class="logo">📊</span> <span>FILE ACTIVITY</span></h1>
         <div class="subtitle">Dosya Analiz & Arsiv</div>
-        <div class="version">v1.0.0</div>
+        <div class="version">v1.4.0</div>
     </div>
     <div class="nav-section">
         <div class="nav-label">Genel</div>
@@ -1086,17 +1087,13 @@ async function loadOverview() {
     }
 
     try {
-        // Staggered loading: risk-score first, then others with 500ms delay
-        const riskData = await api(`/risk-score/${sid}`, {silent:true}).catch(()=>({risk_score:0, kpis:{}}));
-        const delayedPromises = new Promise(resolve => setTimeout(async () => {
-            const results = await Promise.all([
-                api(`/trend/${sid}`, {silent:true}).catch(()=>({scans:[], growth:null})),
-                api(`/reports/frequency/${sid}`, {silent:true}).catch(()=>({frequency:[]})),
-                api(`/insights/${sid}`, {silent:true}).catch(()=>({insights:[], score:0})),
-            ]);
-            resolve(results);
-        }, 500));
-        const [trendData, freqData, insightsData] = await delayedPromises;
+        // Tum API cagrilarini paralel yap (500ms gecikme kaldirildi)
+        const [riskData, trendData, freqData, insightsData] = await Promise.all([
+            api(`/risk-score/${sid}`, {silent:true}).catch(()=>({risk_score:0, kpis:{}})),
+            api(`/trend/${sid}`, {silent:true}).catch(()=>({scans:[], growth:null})),
+            api(`/reports/frequency/${sid}`, {silent:true}).catch(()=>({frequency:[]})),
+            api(`/insights/${sid}`, {silent:true}).catch(()=>({insights:[], score:0})),
+        ]);
 
         // KPI Cards
         const rs = riskData.risk_score || 0;
@@ -2843,9 +2840,50 @@ async function loadGrowth() {
 // INIT
 // ═══════════════════════════════════════════════════
 (async function init() {
-    await loadSources();
-    loadOverview();
-    loadAnomalies();
+    // Dashboard aninda yuklensin - veri arka planda gelsin
+    try {
+        const initData = await api('/dashboard/init', {silent: true}).catch(() => null);
+        if (initData && initData.sources) {
+            sources = initData.sources;
+            populateAllSourceSelects();
+            renderSources();
+
+            // Otomatik kaynak sec (tek kaynak varsa veya ilk kaynagi sec)
+            const autoId = initData.auto_select || (sources.length ? sources[0].id : null);
+            if (autoId) {
+                // Tum source select'lere ayarla
+                document.querySelectorAll('select[id$="-source"]').forEach(sel => {
+                    if (sel.querySelector(`option[value="${autoId}"]`)) sel.value = autoId;
+                });
+
+                // Ozet bilgiyi aninda goster (ağır sorguları beklemeden)
+                const summary = initData.summaries?.[autoId];
+                if (summary?.has_data) {
+                    document.getElementById('ov-files').textContent = formatNum(summary.file_count);
+                    document.getElementById('ov-size').textContent = summary.total_size_formatted || formatSize(summary.total_size);
+                    document.getElementById('ov-risk-text').textContent = '...';
+
+                    // Yukleniyor gostergesi
+                    const recEl = document.getElementById('ov-recommendations');
+                    if (recEl) recEl.innerHTML = '<div style="text-align:center;padding:20px"><div class="loading-spinner" style="margin:0 auto"></div><div style="color:var(--text-muted);font-size:12px;margin-top:8px">Gecmis analiz yukleniyor...</div></div>';
+                }
+
+                // Agir verileri arka planda yukle
+                loadOverview();
+                loadAnomalies();
+            }
+        } else {
+            // Fallback: eski yontem
+            await loadSources();
+            loadOverview();
+            loadAnomalies();
+        }
+    } catch(e) {
+        console.error('Init error:', e);
+        await loadSources();
+        loadOverview();
+        loadAnomalies();
+    }
 })();
 </script>
 
