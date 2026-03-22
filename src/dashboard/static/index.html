@@ -80,6 +80,7 @@ body { font-family: 'Segoe UI', -apple-system, 'Inter', sans-serif; background: 
 .btn-success { background: var(--success); color: white; } .btn-success:hover { background: #059669; }
 .btn-danger { background: var(--danger); color: white; } .btn-danger:hover { background: #dc2626; }
 .btn-outline { background: transparent; color: var(--text-secondary); border: 1px solid var(--border-light); } .btn-outline:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-accent { background: #8b5cf6; color: white; } .btn-accent:hover { background: #7c3aed; }
 .btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 6px; }
 .btn-icon { padding: 8px; width: 36px; height: 36px; justify-content: center; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -278,6 +279,17 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('naming')"><span class="icon">📐</span> <span>Adlandirma Uyumu</span></div>
         <div class="nav-item" onclick="showPage('policies')"><span class="icon">📋</span> <span>Politikalar</span></div>
         <div class="nav-item" onclick="showPage('schedules')"><span class="icon">⏰</span> <span>Zamanlama</span></div>
+    </div>
+    <!-- Global Tarama Progress (tum sayfalarda gorunur) -->
+    <div id="global-scan-progress" style="display:none;padding:8px 16px;border-top:1px solid var(--border);background:var(--bg-card)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            <span style="font-size:11px;color:var(--accent);font-weight:600" id="gsp-label">Tarama...</span>
+            <span style="font-size:10px;color:var(--text-muted);margin-left:auto" id="gsp-count">0</span>
+        </div>
+        <div style="height:4px;background:var(--bg-secondary);border-radius:2px;overflow:hidden">
+            <div id="gsp-bar" style="height:100%;background:var(--accent);border-radius:2px;width:0%;transition:width 0.5s"></div>
+        </div>
+        <div style="font-size:9px;color:var(--text-muted);margin-top:2px" id="gsp-detail"></div>
     </div>
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
@@ -985,10 +997,15 @@ async function pollScanProgress(sourceId) {
             document.getElementById('sp-speed').textContent = p.files_per_second || '0';
             document.getElementById('sp-dir').textContent = 'Tamamlandi!';
 
-            if (p.total_files > 0 || p.file_count > 0) {
-                notify(`Tarama tamamlandi! ${formatNum(p.total_files || p.file_count)} dosya, ${p.total_size_formatted || formatSize(p.total_size)}`, 'success');
-            } else {
-                notify('Tarama tamamlandi ancak dosya bulunamadi.', 'warning');
+            // Bildirim sadece 1 kez goster
+            if (!window._scanNotified) {
+                window._scanNotified = true;
+                if (p.total_files > 0 || p.file_count > 0) {
+                    notify(`Tarama tamamlandi! ${formatNum(p.total_files || p.file_count)} dosya, ${p.total_size_formatted || formatSize(p.total_size)}`, 'success');
+                } else {
+                    notify('Tarama tamamlandi ancak dosya bulunamadi.', 'warning');
+                }
+                setTimeout(() => { window._scanNotified = false; }, 30000);
             }
 
             setTimeout(() => { loadSources(); }, 1000);
@@ -996,6 +1013,9 @@ async function pollScanProgress(sourceId) {
                 const prog = document.getElementById('scan-progress');
                 prog.classList.remove('active');
                 activeScanSourceId = null;
+                // Global mini progress'i de gizle
+                const miniProg = document.getElementById('global-scan-progress');
+                if (miniProg) miniProg.style.display = 'none';
             }, 5000);
             return;
         }
@@ -1012,6 +1032,16 @@ async function pollScanProgress(sourceId) {
             const bar = document.getElementById('scan-progress-bar');
             const w = Math.min(90, 5 + (p.file_count / 100));
             bar.style.width = w + '%';
+
+            // Global mini progress (sidebar'da her sayfada gorunur)
+            const gsp = document.getElementById('global-scan-progress');
+            if (gsp) {
+                gsp.style.display = '';
+                document.getElementById('gsp-label').textContent = p.status === 'generating_report' ? 'Rapor...' : 'Tarama...';
+                document.getElementById('gsp-count').textContent = formatNum(p.file_count) + ' dosya';
+                document.getElementById('gsp-bar').style.width = w + '%';
+                document.getElementById('gsp-detail').textContent = `${p.total_size_formatted || formatSize(p.total_size)} | ${p.files_per_second || 0}/s | ${p.elapsed || ''}`;
+            }
 
             // Auto-refresh current analysis page every 10 seconds during scan
             if (p.file_count > 0 && p.file_count % 5000 < 500) {
