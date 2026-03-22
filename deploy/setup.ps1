@@ -3,10 +3,12 @@
     FILE ACTIVITY - Tek Komutla Kurulum
 .DESCRIPTION
     GitHub'dan klonlar, bagimliliklari kurar, dizin yapisini olusturur ve dashboard'u baslatir.
-    Kullanim: irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1 | iex
+    Kullanim: powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1 | iex"
 #>
 
-$ErrorActionPreference = "Stop"
+try {
+
+$ErrorActionPreference = "Continue"
 $InstallDir = "C:\FileActivity"
 $RepoUrl = "https://github.com/deepdarbe/FILE_ACTIVITY.git"
 $Branch = "master"
@@ -132,3 +134,14 @@ if ($start -eq "E" -or $start -eq "e") {
     Start-Sleep -Seconds 3
     Start-Process "http://localhost:8085"
 }
+
+} catch {
+    Write-Host ""
+    Write-Host "  [HATA] Kurulum sirasinda bir sorun olustu:" -ForegroundColor Red
+    Write-Host "  $_" -ForegroundColor Red
+    Write-Host ""
+}
+
+Write-Host ""
+Write-Host "  Kapatmak icin bir tusa basin..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
