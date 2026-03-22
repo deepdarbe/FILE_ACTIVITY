@@ -76,51 +76,68 @@ if ($hasExisting) {
     Write-Host "    Veritabani, config, log korunuyor..." -ForegroundColor Gray
     # Eski bin yedekle
     if (Test-Path "$InstallDir\bin_old") { Remove-Item "$InstallDir\bin_old" -Recurse -Force }
-    Rename-Item "$InstallDir\bin" "bin_old" -ErrorAction SilentlyContinue
+    Rename-Item -Path "$InstallDir\bin" -NewName "bin_old" -ErrorAction SilentlyContinue
 }
 
 # Dizin yapisi
-@($InstallDir, "$InstallDir\config", "$InstallDir\data", "$InstallDir\logs", "$InstallDir\reports") | ForEach-Object {
+@($InstallDir, "$InstallDir\bin", "$InstallDir\config", "$InstallDir\data", "$InstallDir\logs", "$InstallDir\reports", "$InstallDir\scripts") | ForEach-Object {
     New-Item -Path $_ -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 }
 
 # ZIP ac
 $extractPath = "$env:TEMP\FA_extract"
 if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
+Write-Host "    ZIP aciliyor..." -ForegroundColor Gray
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 
-# Icerigi kopyala
-$innerDir = Get-ChildItem $extractPath -Directory | Select-Object -First 1
-if (-not $innerDir) { $innerDir = Get-Item $extractPath }
-$sourceDir = $innerDir.FullName
+# ZIP icerigini bul (FileActivity-Deploy/ klasoru icinde)
+$sourceDir = $extractPath
+$innerDirs = Get-ChildItem $extractPath -Directory -ErrorAction SilentlyContinue
+if ($innerDirs) {
+    $sourceDir = $innerDirs[0].FullName
+}
+Write-Host "    Kaynak: $sourceDir" -ForegroundColor Gray
 
-# bin klasoru varsa kopyala
+# bin/ klasorunu kopyala
 if (Test-Path "$sourceDir\bin") {
-    Copy-Item "$sourceDir\bin" "$InstallDir\bin" -Recurse -Force
+    Write-Host "    bin\ kopyalaniyor..." -ForegroundColor Gray
+    Copy-Item -Path "$sourceDir\bin\*" -Destination "$InstallDir\bin\" -Recurse -Force
 } else {
-    # Ust dizinden kopyala (flat zip)
-    Copy-Item "$sourceDir\*" "$InstallDir\bin\" -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "    [!] bin\ klasoru bulunamadi, tum icerik kopyalaniyor..." -ForegroundColor Yellow
+    Copy-Item -Path "$sourceDir\*" -Destination "$InstallDir\bin\" -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Config (sadece yoksa)
-if (-not (Test-Path "$InstallDir\config\config.yaml") -and (Test-Path "$sourceDir\config\config.yaml")) {
-    Copy-Item "$sourceDir\config\config.yaml" "$InstallDir\config\" -Force
+# Config (sadece yoksa kopyala - mevcut config korunur)
+if (-not (Test-Path "$InstallDir\config\config.yaml")) {
+    if (Test-Path "$sourceDir\config\config.yaml") {
+        Copy-Item -Path "$sourceDir\config\config.yaml" -Destination "$InstallDir\config\" -Force
+    } elseif (Test-Path "$sourceDir\config.yaml") {
+        Copy-Item -Path "$sourceDir\config.yaml" -Destination "$InstallDir\config\" -Force
+    }
     # Yollari guncelle
-    $content = Get-Content "$InstallDir\config\config.yaml" -Raw
-    $content = $content -replace 'path: "data/file_activity.db"', "path: `"$InstallDir\data\file_activity.db`""
-    Set-Content "$InstallDir\config\config.yaml" $content
+    if (Test-Path "$InstallDir\config\config.yaml") {
+        $content = Get-Content "$InstallDir\config\config.yaml" -Raw
+        $content = $content -replace 'path: "data/file_activity.db"', "path: `"$InstallDir\data\file_activity.db`""
+        Set-Content "$InstallDir\config\config.yaml" $content
+    }
 }
 
 # Scripts
 if (Test-Path "$sourceDir\scripts") {
-    Copy-Item "$sourceDir\scripts\*" "$InstallDir\scripts\" -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -Path "$sourceDir\scripts\*" -Destination "$InstallDir\scripts\" -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # Temizle
 Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
 
-Write-Host "  [OK] Kurulum tamamlandi: $InstallDir" -ForegroundColor Green
+# Dogrulama
+if (Test-Path "$InstallDir\bin\FileActivity.exe") {
+    Write-Host "  [OK] Kurulum tamamlandi: $InstallDir" -ForegroundColor Green
+} else {
+    Write-Host "  [!] FileActivity.exe bulunamadi. Dizin icerigini kontrol edin:" -ForegroundColor Yellow
+    Get-ChildItem "$InstallDir\bin" -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Gray }
+}
 
 # ─── 4. Firewall + Baslat ───
 Write-Host "  [4/4] Yapilandiriliyor..." -ForegroundColor Yellow
