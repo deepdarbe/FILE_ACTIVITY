@@ -103,6 +103,9 @@ function Install-WithFallback($name, $wingetId, $directUrl, $installerArgs) {
     return $false
 }
 
+# PATH'i once yenile (kurulu ama PATH'te olmayan programlari bulsun)
+Refresh-Path
+
 # ─── 1. Git kontrolu ───
 Write-Host "  [1/6] Git kontrol ediliyor..." -ForegroundColor Yellow
 $git = Get-Command git -ErrorAction SilentlyContinue
