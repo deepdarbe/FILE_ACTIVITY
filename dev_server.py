@@ -921,6 +921,32 @@ async def db_cleanup(keep_last: int = 5):
 async def db_optimize():
     return {"status": "ok", "size_before": 245_000_000, "size_after": 198_000_000, "saved": 47_000_000}
 
+_mock_export_jobs = {}
+
+@app.post("/api/export/start")
+async def start_export(report_type: str = "", source_id: int = 0):
+    import uuid, threading, time
+    job_id = str(uuid.uuid4())[:8]
+    _mock_export_jobs[job_id] = {"status": "running", "progress": 0}
+    def worker():
+        for i in range(1, 11):
+            time.sleep(0.5)
+            _mock_export_jobs[job_id]["progress"] = i * 10
+        _mock_export_jobs[job_id].update({"status": "completed", "progress": 100, "file_name": f"{report_type}_{job_id}.xlsx", "file_size": 2_450_000})
+    threading.Thread(target=worker, daemon=True).start()
+    return {"job_id": job_id, "status": "queued"}
+
+@app.get("/api/export/status/{job_id}")
+async def export_status(job_id: str):
+    job = _mock_export_jobs.get(job_id, {"status": "error", "error": "Not found"})
+    return {"job_id": job_id, **job}
+
+@app.get("/api/export/download/{job_id}")
+async def export_download(job_id: str):
+    from fastapi.responses import StreamingResponse
+    import io
+    return StreamingResponse(io.BytesIO(b"mock xlsx"), media_type="application/octet-stream", headers={"Content-Disposition": f"attachment; filename=report.xlsx"})
+
 if __name__ == "__main__":
     print("FILE ACTIVITY Dashboard - Dev Mode")
     print(f"http://localhost:8085")

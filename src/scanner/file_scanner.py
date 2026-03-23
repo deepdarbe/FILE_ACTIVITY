@@ -598,6 +598,9 @@ class FileScanner:
                     if len(batch) >= self.batch_size:
                         self.db.bulk_insert_scanned_files(batch)
                         batch = []
+                        # scan_runs'i guncelle (dashboard aninda gorsun)
+                        if file_count % 5000 == 0:
+                            self.db.update_scan_progress(scan_id, file_count, total_size)
 
                     # Ilerleme guncelle (her 500 dosyada veya 2 saniyede bir)
                     now = time.time()

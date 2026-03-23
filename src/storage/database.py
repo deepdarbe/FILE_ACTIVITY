@@ -490,6 +490,14 @@ class Database:
             cur.execute("INSERT INTO scan_runs (source_id) VALUES (?)", (source_id,))
             return cur.lastrowid
 
+    def update_scan_progress(self, scan_id: int, total_files: int, total_size: int):
+        """Tarama sirasinda periyodik ilerleme guncelleme (dashboard aninda gorsun)."""
+        with self.get_cursor() as cur:
+            cur.execute("""
+                UPDATE scan_runs SET total_files=?, total_size=?
+                WHERE id=? AND status='running'
+            """, (total_files, total_size, scan_id))
+
     def complete_scan_run(self, scan_id: int, total_files: int, total_size: int,
                           errors: int, status: str = "completed"):
         with self.get_cursor() as cur:

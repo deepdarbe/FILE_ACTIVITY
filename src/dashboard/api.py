@@ -10,6 +10,8 @@ source_name veya UNC path URL'de KULLANILMAZ (encoding sorunlari).
 import os
 import json
 import logging
+import threading
+import uuid
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Query
@@ -17,6 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
+
+# ── Arka plan export kuyrugu ──
+_export_jobs = {}  # job_id -> {status, progress, file_path, error, created_at, ...}
+_export_lock = threading.Lock()
 
 logger = logging.getLogger("file_activity.dashboard")
 
@@ -90,8 +96,7 @@ def create_app(db, config):
 
     @app.get("/api/dashboard/init")
     async def dashboard_init():
-        """Hizli baslangic - scan_runs'tan ozet al (scanned_files'a dokunma).
-        Dashboard aninda yuklensin, agir sorgular loadOverview'da yapilsin."""
+        """Hizli baslangic - scan_runs + fallback scanned_files."""
         from src.utils.size_formatter import format_size
         sources = db.get_sources()
         source_list = [s.__dict__ for s in sources]
@@ -100,22 +105,45 @@ def create_app(db, config):
         for s in sources:
             try:
                 with db.get_cursor() as cur:
-                    # scan_runs tablosundan hizli ozet (milisaniye)
+                    # 1) Son tamamlanmis tarama (completed once priority)
                     cur.execute("""
                         SELECT id, total_files, total_size, started_at, completed_at, status
                         FROM scan_runs WHERE source_id=?
-                        ORDER BY started_at DESC LIMIT 1
+                        ORDER BY
+                            CASE WHEN status='completed' THEN 0 ELSE 1 END,
+                            started_at DESC
+                        LIMIT 1
                     """, (s.id,))
                     scan = cur.fetchone()
                     if not scan:
                         summaries[s.id] = {"has_data": False, "scan_id": None}
                         continue
+
+                    file_count = scan["total_files"] or 0
+                    total_size = scan["total_size"] or 0
+
+                    # 2) FALLBACK: total_files=0 ama dosyalar var olabilir
+                    if file_count == 0:
+                        cur.execute("""
+                            SELECT COUNT(*) as cnt, COALESCE(SUM(file_size),0) as sz
+                            FROM scanned_files WHERE source_id=? AND scan_id=?
+                        """, (s.id, scan["id"]))
+                        real = cur.fetchone()
+                        if real["cnt"] > 0:
+                            file_count = real["cnt"]
+                            total_size = real["sz"]
+                            # scan_runs'i da guncelle (bir dahaki sefere hizli gelsin)
+                            cur.execute("""
+                                UPDATE scan_runs SET total_files=?, total_size=?
+                                WHERE id=? AND total_files=0
+                            """, (file_count, total_size, scan["id"]))
+
                     summaries[s.id] = {
-                        "has_data": True,
+                        "has_data": file_count > 0,
                         "scan_id": scan["id"],
-                        "file_count": scan["total_files"] or 0,
-                        "total_size": scan["total_size"] or 0,
-                        "total_size_formatted": format_size(scan["total_size"] or 0),
+                        "file_count": file_count,
+                        "total_size": total_size,
+                        "total_size_formatted": format_size(total_size),
                         "scan_status": {
                             "started_at": scan["started_at"],
                             "completed_at": scan["completed_at"],
@@ -1427,5 +1455,259 @@ def create_app(db, config):
         """VACUUM + ANALYZE ile veritabanini optimize et."""
         result = db.optimize_database()
         return result
+
+    # ── ARKA PLAN EXPORT SISTEMI ──
+
+    def _export_worker(job_id: str, report_type: str, source_id: int, scan_id: int, params: dict):
+        """Arka planda XLS olusturma worker'i."""
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        from src.utils.size_formatter import format_size
+        import re as re_mod
+
+        try:
+            with _export_lock:
+                _export_jobs[job_id]["status"] = "running"
+                _export_jobs[job_id]["progress"] = 0
+
+            export_dir = os.path.join(os.path.dirname(db.db_path), "exports")
+            os.makedirs(export_dir, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+
+            # Stiller
+            header_font = Font(bold=True, color="FFFFFF", size=11)
+            header_fill = PatternFill(start_color="2B5797", end_color="2B5797", fill_type="solid")
+            alt_fill = PatternFill(start_color="F2F6FC", end_color="F2F6FC", fill_type="solid")
+            border = Border(
+                left=Side(style='thin', color='D0D5DD'),
+                right=Side(style='thin', color='D0D5DD'),
+                top=Side(style='thin', color='D0D5DD'),
+                bottom=Side(style='thin', color='D0D5DD')
+            )
+
+            if report_type == "mit_naming":
+                ws.title = "MIT Adlandirma Uyumu"
+                filename = f"MIT_Naming_{timestamp}.xlsx"
+                headers = ["Ihlal Kodu", "Ihlal Turu", "Ciddiyet", "Dosya Adi", "Tam Yol", "Boyut", "Boyut (Okunan)", "Sahip", "Son Degisiklik"]
+                checks = {
+                    "R1": ("Bosluk Iceren", "Zorunlu", lambda p, n: bool(re_mod.search(r'\s', n))),
+                    "R2": ("Ilk Karakter Harf Degil", "Zorunlu", lambda p, n: bool(n) and not re_mod.match(r'^[a-zA-Z]', n)),
+                    "R3": ("Yasak Karakter", "Zorunlu", lambda p, n: bool(n) and '.' in n and not re_mod.match(r'^[a-zA-Z0-9._-]+$', n[:n.rfind('.')])),
+                    "R4": ("Uzanti Sorunu", "Zorunlu", lambda p, n: '.' not in n or not n.rsplit('.', 1)[-1].isalpha()),
+                    "B1": ("Uzun Ad (>31)", "Oneri", lambda p, n: len(n) > 31),
+                    "B3": ("Base Nokta", "Oneri", lambda p, n: '.' in n and n[:n.rfind('.')].count('.') > 0),
+                    "B4": ("Buyuk Harf", "Oneri", lambda p, n: bool(re_mod.search(r'[A-Z]', n[:n.rfind('.')] if '.' in n else n))),
+                    "B5": ("Ayirici Yok", "Oneri", lambda p, n: len(n) > 10 and '_' not in n and '-' not in n),
+                }
+                for i, h in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=i, value=h)
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = Alignment(horizontal='center')
+
+                row = 2
+                with db.get_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) as cnt FROM scanned_files WHERE source_id=? AND scan_id=?", (source_id, scan_id))
+                    total = cur.fetchone()["cnt"]
+                    cur.execute("SELECT file_path, file_name, file_size, owner, last_modify_time FROM scanned_files WHERE source_id=? AND scan_id=?", (source_id, scan_id))
+                    processed = 0
+                    for rec in cur:
+                        processed += 1
+                        if processed % 5000 == 0:
+                            with _export_lock:
+                                _export_jobs[job_id]["progress"] = int(processed * 100 / max(total, 1))
+                        for code, (label, severity, fn) in checks.items():
+                            if fn(rec["file_path"], rec["file_name"]):
+                                ws.cell(row=row, column=1, value=code)
+                                ws.cell(row=row, column=2, value=label)
+                                ws.cell(row=row, column=3, value=severity)
+                                ws.cell(row=row, column=4, value=rec["file_name"])
+                                ws.cell(row=row, column=5, value=rec["file_path"])
+                                ws.cell(row=row, column=6, value=rec.get("file_size", 0))
+                                ws.cell(row=row, column=7, value=format_size(rec.get("file_size", 0)))
+                                ws.cell(row=row, column=8, value=rec.get("owner", ""))
+                                ws.cell(row=row, column=9, value=rec.get("last_modify_time", ""))
+                                if row % 2 == 0:
+                                    for c in range(1, 10):
+                                        ws.cell(row=row, column=c).fill = alt_fill
+                                row += 1
+
+                # Ozet sayfasi
+                ws_sum = wb.create_sheet("Ozet", 0)
+                ws_sum.cell(row=1, column=1, value="MIT Libraries File Naming Scheme - Uyum Raporu").font = Font(bold=True, size=14)
+                ws_sum.cell(row=2, column=1, value=f"Tarih: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+                ws_sum.cell(row=3, column=1, value=f"Toplam dosya: {total:,}")
+                ws_sum.cell(row=4, column=1, value=f"Ihlal satiri: {row-2:,}")
+
+            elif report_type == "duplicates":
+                ws.title = "Kopya Dosyalar"
+                filename = f"Duplicates_{timestamp}.xlsx"
+                headers = ["Grup", "Dosya Adi", "Boyut", "Boyut (Okunan)", "Tam Yol", "Sahip", "Son Degisiklik"]
+                for i, h in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=i, value=h)
+                    cell.font = header_font
+                    cell.fill = header_fill
+
+                row = 2
+                with db.get_cursor() as cur:
+                    cur.execute("""
+                        SELECT file_name, file_size, file_path, owner, last_modify_time
+                        FROM scanned_files WHERE source_id=? AND scan_id=? AND file_size > 1048576
+                        ORDER BY file_name, file_size, file_path
+                    """, (source_id, scan_id))
+                    prev_key = None
+                    group_num = 0
+                    for rec in cur:
+                        key = (rec["file_name"], rec["file_size"])
+                        if key != prev_key:
+                            group_num += 1
+                            prev_key = key
+                        ws.cell(row=row, column=1, value=group_num)
+                        ws.cell(row=row, column=2, value=rec["file_name"])
+                        ws.cell(row=row, column=3, value=rec["file_size"])
+                        ws.cell(row=row, column=4, value=format_size(rec["file_size"]))
+                        ws.cell(row=row, column=5, value=rec["file_path"])
+                        ws.cell(row=row, column=6, value=rec.get("owner", ""))
+                        ws.cell(row=row, column=7, value=rec.get("last_modify_time", ""))
+                        row += 1
+
+            elif report_type == "full":
+                ws.title = "Tum Dosyalar"
+                filename = f"FullReport_{timestamp}.xlsx"
+                headers = ["Dosya Adi", "Uzanti", "Boyut", "Boyut (Okunan)", "Tam Yol", "Sahip", "Olusturma", "Son Erisim", "Son Degisiklik"]
+                for i, h in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=i, value=h)
+                    cell.font = header_font
+                    cell.fill = header_fill
+
+                row = 2
+                with db.get_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) as cnt FROM scanned_files WHERE source_id=? AND scan_id=?", (source_id, scan_id))
+                    total = cur.fetchone()["cnt"]
+                    cur.execute("SELECT * FROM scanned_files WHERE source_id=? AND scan_id=? ORDER BY file_path", (source_id, scan_id))
+                    processed = 0
+                    for rec in cur:
+                        processed += 1
+                        if processed % 5000 == 0:
+                            with _export_lock:
+                                _export_jobs[job_id]["progress"] = int(processed * 100 / max(total, 1))
+                        ws.cell(row=row, column=1, value=rec["file_name"])
+                        ws.cell(row=row, column=2, value=rec.get("extension", ""))
+                        ws.cell(row=row, column=3, value=rec.get("file_size", 0))
+                        ws.cell(row=row, column=4, value=format_size(rec.get("file_size", 0)))
+                        ws.cell(row=row, column=5, value=rec["file_path"])
+                        ws.cell(row=row, column=6, value=rec.get("owner", ""))
+                        ws.cell(row=row, column=7, value=rec.get("creation_time", ""))
+                        ws.cell(row=row, column=8, value=rec.get("last_access_time", ""))
+                        ws.cell(row=row, column=9, value=rec.get("last_modify_time", ""))
+                        if row % 2 == 0:
+                            for c in range(1, 10):
+                                ws.cell(row=row, column=c).fill = alt_fill
+                        row += 1
+            else:
+                raise ValueError(f"Bilinmeyen rapor tipi: {report_type}")
+
+            # Sutun genisliklerini ayarla
+            for ws_sheet in wb.worksheets:
+                for col in range(1, ws_sheet.max_column + 1):
+                    max_len = max(len(str(ws_sheet.cell(row=r, column=col).value or "")) for r in range(1, min(ws_sheet.max_row + 1, 100)))
+                    ws_sheet.column_dimensions[get_column_letter(col)].width = min(max_len + 2, 50)
+
+            file_path = os.path.join(export_dir, filename)
+            wb.save(file_path)
+
+            with _export_lock:
+                _export_jobs[job_id]["status"] = "completed"
+                _export_jobs[job_id]["progress"] = 100
+                _export_jobs[job_id]["file_path"] = file_path
+                _export_jobs[job_id]["file_name"] = filename
+                _export_jobs[job_id]["file_size"] = os.path.getsize(file_path)
+
+        except Exception as e:
+            logging.getLogger("file_activity").error(f"Export error: {e}")
+            with _export_lock:
+                _export_jobs[job_id]["status"] = "error"
+                _export_jobs[job_id]["error"] = str(e)
+
+    @app.post("/api/export/start")
+    async def start_export(report_type: str = Query(...), source_id: int = Query(...)):
+        """Arka planda XLS export baslat. Tarama devam ederken bile calisir."""
+        # Son tamamlanmis taramayi kullan (aktif tarama kilitlemesin)
+        with db.get_cursor() as cur:
+            cur.execute("""
+                SELECT id FROM scan_runs WHERE source_id=? AND status='completed'
+                ORDER BY started_at DESC LIMIT 1
+            """, (source_id,))
+            completed = cur.fetchone()
+            if completed:
+                scan_id = completed["id"]
+            else:
+                # Tamamlanmis yoksa son taramayi al
+                scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama bulunamadi")
+
+        job_id = str(uuid.uuid4())[:8]
+        with _export_lock:
+            _export_jobs[job_id] = {
+                "status": "queued",
+                "progress": 0,
+                "report_type": report_type,
+                "source_id": source_id,
+                "scan_id": scan_id,
+                "created_at": datetime.now().isoformat(),
+                "file_path": None,
+                "file_name": None,
+                "error": None,
+            }
+
+        thread = threading.Thread(
+            target=_export_worker,
+            args=(job_id, report_type, source_id, scan_id, {}),
+            daemon=True
+        )
+        thread.start()
+        return {"job_id": job_id, "status": "queued"}
+
+    @app.get("/api/export/status/{job_id}")
+    async def export_status(job_id: str):
+        """Export is durumu sorgula."""
+        with _export_lock:
+            job = _export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Export isi bulunamadi")
+        return {
+            "job_id": job_id,
+            "status": job["status"],
+            "progress": job["progress"],
+            "file_name": job.get("file_name"),
+            "file_size": job.get("file_size"),
+            "error": job.get("error"),
+        }
+
+    @app.get("/api/export/download/{job_id}")
+    async def export_download(job_id: str):
+        """Tamamlanmis export dosyasini indir."""
+        with _export_lock:
+            job = _export_jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Export isi bulunamadi")
+        if job["status"] != "completed" or not job.get("file_path"):
+            raise HTTPException(400, "Export henuz tamamlanmadi")
+        return FileResponse(
+            job["file_path"],
+            filename=job["file_name"],
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    @app.get("/api/export/jobs")
+    async def export_jobs():
+        """Tum export islerini listele."""
+        with _export_lock:
+            return [{"job_id": k, **{kk: vv for kk, vv in v.items() if kk != "file_path"}} for k, v in _export_jobs.items()]
 
     return app

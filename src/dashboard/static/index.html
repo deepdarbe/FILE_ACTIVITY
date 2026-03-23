@@ -2134,13 +2134,50 @@ function drilldownOwner(owner, sourceId) {
 }
 
 // ═══════════════════════════════════════════════════
-// EXPORT HELPERS
+// EXPORT HELPERS (Arka plan XLS sistemi)
 // ═══════════════════════════════════════════════════
 function exportXLS(sourceId) {
-    downloadFile(`/api/export/xls/${sourceId}`);
+    startBackgroundExport('full', sourceId);
 }
 function exportPDF(sourceId) {
     downloadFile(`/api/export/pdf/${sourceId}`);
+}
+
+async function startBackgroundExport(reportType, sourceId) {
+    if (!sourceId) { notify('Kaynak secin', 'warning'); return; }
+    try {
+        const r = await api(`/export/start?report_type=${reportType}&source_id=${sourceId}`, {method:'POST'});
+        notify('Excel raporu arka planda hazirlaniyor...', 'info');
+        pollExportStatus(r.job_id);
+    } catch(e) {
+        // Fallback: eski yontem
+        notify('Arka plan export basarilamadi, dogrudan indiriliyor...', 'warning');
+        downloadFile(`/api/export/xls/${sourceId}`);
+    }
+}
+
+function pollExportStatus(jobId) {
+    const check = async () => {
+        try {
+            const r = await api(`/export/status/${jobId}`, {silent:true});
+            if (r.status === 'completed') {
+                const sizeStr = r.file_size ? ` (${formatSize(r.file_size)})` : '';
+                notify(`Excel hazir: ${r.file_name}${sizeStr} - Indiriliyor...`, 'success');
+                downloadFile(`/api/export/download/${jobId}`);
+                return;
+            } else if (r.status === 'error') {
+                notify('Export hatasi: ' + (r.error || 'Bilinmeyen hata'), 'error');
+                return;
+            } else {
+                // Hala calisiyor
+                if (r.progress > 0) {
+                    notify(`Export hazirlaniyor: %${r.progress}...`, 'info');
+                }
+                setTimeout(check, 2000);
+            }
+        } catch(e) { notify('Export durum sorgu hatasi', 'error'); }
+    };
+    setTimeout(check, 1500);
 }
 
 // ═══════════════════════════════════════════════════
@@ -2381,13 +2418,7 @@ async function showNamingFiles(code, sourceId) {
 function exportNamingReport() {
     const sourceId = document.getElementById('naming-source')?.value;
     if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
-    // Gizli <a> link ile guvenilir indirme (window.open popup engellenebilir)
-    const a = document.createElement('a');
-    a.href = `/api/reports/mit-naming/${sourceId}/export`;
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    startBackgroundExport('mit_naming', sourceId);
     notify('Excel raporu indiriliyor...', 'info');
 }
 
@@ -2746,7 +2777,7 @@ async function archiveSelectedDuplicates() {
 function exportDuplicatesCSV() {
     const sourceId = document.getElementById('dup-source')?.value;
     if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
-    downloadFile(`/api/export/duplicates/${sourceId}`);
+    startBackgroundExport('duplicates', sourceId);
 }
 
 // ═══════════════════════════════════════════════════
