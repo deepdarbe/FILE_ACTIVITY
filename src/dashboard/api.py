@@ -10,7 +10,7 @@ source_name veya UNC path URL'de KULLANILMAZ (encoding sorunlari).
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
@@ -90,49 +90,45 @@ def create_app(db, config):
 
     @app.get("/api/dashboard/init")
     async def dashboard_init():
-        """Hizli baslangic endpoint - dashboard aninda yuklensin.
-        Kaynaklar + her kaynak icin son tarama ozeti (tek sorgu)."""
+        """Hizli baslangic - scan_runs'tan ozet al (scanned_files'a dokunma).
+        Dashboard aninda yuklensin, agir sorgular loadOverview'da yapilsin."""
         from src.utils.size_formatter import format_size
         sources = db.get_sources()
         source_list = [s.__dict__ for s in sources]
 
-        # Her kaynak icin son tarama ozet bilgisi
         summaries = {}
         for s in sources:
-            scan_id = db.get_latest_scan_id(s.id, include_running=True)
-            if not scan_id:
+            try:
+                with db.get_cursor() as cur:
+                    # scan_runs tablosundan hizli ozet (milisaniye)
+                    cur.execute("""
+                        SELECT id, total_files, total_size, started_at, completed_at, status
+                        FROM scan_runs WHERE source_id=?
+                        ORDER BY started_at DESC LIMIT 1
+                    """, (s.id,))
+                    scan = cur.fetchone()
+                    if not scan:
+                        summaries[s.id] = {"has_data": False, "scan_id": None}
+                        continue
+                    summaries[s.id] = {
+                        "has_data": True,
+                        "scan_id": scan["id"],
+                        "file_count": scan["total_files"] or 0,
+                        "total_size": scan["total_size"] or 0,
+                        "total_size_formatted": format_size(scan["total_size"] or 0),
+                        "scan_status": {
+                            "started_at": scan["started_at"],
+                            "completed_at": scan["completed_at"],
+                            "status": scan["status"],
+                        },
+                    }
+            except Exception:
                 summaries[s.id] = {"has_data": False, "scan_id": None}
-                continue
-            with db.get_cursor() as cur:
-                # Tek sorgu: temel bilgiler
-                cur.execute("""
-                    SELECT COUNT(*) as file_count,
-                           COALESCE(SUM(file_size),0) as total_size,
-                           MIN(last_access_time) as oldest_access,
-                           MAX(created_time) as newest_file
-                    FROM scanned_files WHERE source_id=? AND scan_id=?
-                """, (s.id, scan_id))
-                r = cur.fetchone()
-                # Tarama bilgisi
-                cur.execute("""
-                    SELECT started_at, completed_at, status
-                    FROM scan_runs WHERE id=?
-                """, (scan_id,))
-                scan_info = cur.fetchone()
-
-                summaries[s.id] = {
-                    "has_data": True,
-                    "scan_id": scan_id,
-                    "file_count": r["file_count"],
-                    "total_size": r["total_size"],
-                    "total_size_formatted": format_size(r["total_size"]),
-                    "scan_status": dict(scan_info) if scan_info else None,
-                }
 
         return {
             "sources": source_list,
             "summaries": summaries,
-            "auto_select": source_list[0]["id"] if len(source_list) == 1 else None,
+            "auto_select": source_list[0]["id"] if len(source_list) == 1 else (source_list[0]["id"] if source_list else None),
         }
 
     @app.post("/api/sources")
@@ -907,55 +903,42 @@ def create_app(db, config):
 
     @app.get("/api/risk-score/{source_id}")
     async def risk_score(source_id: int):
-        """Supervisor risk score with 7 KPIs."""
+        """Supervisor risk score - TEK optimized sorgu (6 yerine 2)."""
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
             return {"risk_score": 0, "kpis": {}}
 
-        with db.get_cursor() as cur:
-            # Total files and size
-            cur.execute("SELECT COUNT(*) as cnt, COALESCE(SUM(file_size),0) as total FROM scanned_files WHERE source_id=? AND scan_id=?", (source_id, scan_id))
-            r = cur.fetchone()
-            total_files = r["cnt"]
-            total_size = r["total"]
+        risky_exts = ('exe','bat','ps1','vbs','cmd','msi','scr','com','js','wsf')
+        placeholders = ','.join(['?'] * len(risky_exts))
+        stale_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
-            # Stale files (365+ days not accessed)
-            cur.execute("""
-                SELECT COUNT(*) as cnt, COALESCE(SUM(file_size),0) as sz
-                FROM scanned_files WHERE source_id=? AND scan_id=?
-                AND julianday('now') - julianday(last_access_time) > 365
-            """, (source_id, scan_id))
-            stale = cur.fetchone()
-            stale_count = stale["cnt"]
-            stale_size = stale["sz"]
+        with db.get_cursor() as cur:
+            # TEK SORGU: 5 metrigi bir seferde hesapla (6 ayri sorgu yerine)
+            cur.execute(f"""
+                SELECT
+                    COUNT(*) as total_files,
+                    COALESCE(SUM(file_size), 0) as total_size,
+                    SUM(CASE WHEN last_access_time < ? THEN 1 ELSE 0 END) as stale_count,
+                    COALESCE(SUM(CASE WHEN last_access_time < ? THEN file_size ELSE 0 END), 0) as stale_size,
+                    SUM(CASE WHEN LOWER(extension) IN ({placeholders}) THEN 1 ELSE 0 END) as risky_count,
+                    COUNT(DISTINCT CASE WHEN owner IS NOT NULL AND owner != '' THEN owner END) as owner_count,
+                    SUM(CASE WHEN file_size > 104857600 THEN 1 ELSE 0 END) as large_count,
+                    COALESCE(SUM(CASE WHEN file_size > 104857600 THEN file_size ELSE 0 END), 0) as large_size
+                FROM scanned_files
+                WHERE source_id=? AND scan_id=?
+            """, (stale_date, stale_date) + risky_exts + (source_id, scan_id))
+            r = cur.fetchone()
+            total_files = r["total_files"]
+            total_size = r["total_size"]
+            stale_count = r["stale_count"]
+            stale_size = r["stale_size"]
+            risky_count = r["risky_count"]
+            owner_count = r["owner_count"]
+            large_count = r["large_count"]
+            large_size = r["large_size"]
             stale_pct = round(stale_count * 100 / max(total_files, 1), 1)
 
-            # Risky extensions
-            risky_exts = ('exe','bat','ps1','vbs','cmd','msi','scr','com','js','wsf')
-            placeholders = ','.join(['?'] * len(risky_exts))
-            cur.execute(f"""
-                SELECT COUNT(*) as cnt FROM scanned_files
-                WHERE source_id=? AND scan_id=? AND LOWER(extension) IN ({placeholders})
-            """, (source_id, scan_id) + risky_exts)
-            risky_count = cur.fetchone()["cnt"]
-
-            # Unique owners
-            cur.execute("""
-                SELECT COUNT(DISTINCT owner) as cnt FROM scanned_files
-                WHERE source_id=? AND scan_id=? AND owner IS NOT NULL AND owner != ''
-            """, (source_id, scan_id))
-            owner_count = cur.fetchone()["cnt"]
-
-            # Large files (>100MB)
-            cur.execute("""
-                SELECT COUNT(*) as cnt, COALESCE(SUM(file_size),0) as sz
-                FROM scanned_files WHERE source_id=? AND scan_id=? AND file_size > 104857600
-            """, (source_id, scan_id))
-            large = cur.fetchone()
-            large_count = large["cnt"]
-            large_size = large["sz"]
-
-            # Duplicate candidates (same name + same size, different path)
+            # Duplikasyon sorgusu (ayri cunku GROUP BY gerekli)
             cur.execute("""
                 SELECT COUNT(*) as cnt FROM (
                     SELECT file_name, file_size FROM scanned_files
@@ -965,20 +948,23 @@ def create_app(db, config):
             """, (source_id, scan_id))
             dup_groups = cur.fetchone()["cnt"]
 
-        # Calculate risk score (0-100, higher = more risk)
+        # Risk skoru hesapla (0-100)
         risk = 0
-        risk += min(stale_pct * 0.4, 30)  # Stale data up to 30 points
-        risk += min(risky_count / max(total_files, 1) * 1000, 20)  # Risky files up to 20
-        risk += min(large_size / max(total_size, 1) * 100, 15)  # Large file concentration up to 15
-        risk += min(dup_groups * 2, 15)  # Duplicates up to 15
-        risk += 10 if owner_count <= 1 else 0  # No owner info = 10 risk
-        risk += 10 if stale_pct > 50 else 0  # Over 50% stale = extra 10
+        risk += min(stale_pct * 0.4, 30)
+        risk += min(risky_count / max(total_files, 1) * 1000, 20)
+        risk += min(large_size / max(total_size, 1) * 100, 15)
+        risk += min(dup_groups * 2, 15)
+        risk += 10 if owner_count <= 1 else 0
+        risk += 10 if stale_pct > 50 else 0
         risk_score_val = min(round(risk), 100)
 
-        # Watcher changes
-        from src.scanner.file_watcher import get_watcher_status
-        watcher = get_watcher_status(source_id)
-        changes_24h = watcher.get("total_changes", 0) if isinstance(watcher, dict) else 0
+        # Watcher
+        try:
+            from src.scanner.file_watcher import get_watcher_status
+            watcher = get_watcher_status(source_id)
+            changes_24h = watcher.get("total_changes", 0) if isinstance(watcher, dict) else 0
+        except Exception:
+            changes_24h = 0
 
         return {
             "risk_score": risk_score_val,
@@ -1424,5 +1410,22 @@ def create_app(db, config):
             "time": datetime.now().isoformat(),
             "database": db.health_check()
         }
+
+    @app.get("/api/db/stats")
+    async def db_stats():
+        """Veritabani istatistikleri."""
+        return db.get_db_stats()
+
+    @app.post("/api/db/cleanup")
+    async def db_cleanup(keep_last: int = Query(default=5, ge=1, le=50)):
+        """Eski tarama verilerini temizle. Son N taramayi korur."""
+        result = db.cleanup_old_scans(keep_last_n=keep_last)
+        return result
+
+    @app.post("/api/db/optimize")
+    async def db_optimize():
+        """VACUUM + ANALYZE ile veritabanini optimize et."""
+        result = db.optimize_database()
+        return result
 
     return app

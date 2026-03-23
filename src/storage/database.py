@@ -192,6 +192,7 @@ class Database:
             )
         """)
 
+        # Temel indexler
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_source ON scanned_files(source_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_scan ON scanned_files(scan_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_extension ON scanned_files(extension)")
@@ -201,6 +202,12 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_path ON scanned_files(file_path)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_name_size ON scanned_files(file_name, file_size)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_owner ON scanned_files(owner)")
+        # Composite indexler - KRITIK performans (source_id+scan_id tum sorgularda kullanilir)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_source_scan ON scanned_files(source_id, scan_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_access ON scanned_files(source_id, scan_id, last_access_time)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_ext ON scanned_files(source_id, scan_id, extension)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_size ON scanned_files(source_id, scan_id, file_size)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_owner ON scanned_files(source_id, scan_id, owner)")
 
         # Arsivlenmis dosyalar
         cur.execute("""
@@ -1222,16 +1229,20 @@ class Database:
     def get_files_by_frequency(self, source_id: int, scan_id: int,
                                 min_days: int, max_days: int = None,
                                 limit: int = 100, offset: int = 0) -> dict:
-        """Erisim sikligina gore dosyalar (julianday kullanarak)."""
+        """Erisim sikligina gore dosyalar (date karsilastirmasi ile - index kullanir)."""
+        from datetime import datetime, timedelta
         conditions = ["source_id = ?", "scan_id = ?", "last_access_time IS NOT NULL"]
         params = [source_id, scan_id]
 
-        conditions.append("julianday('now','localtime') - julianday(last_access_time) >= ?")
-        params.append(min_days)
+        # julianday yerine date kullan → composite index calisir
+        min_date = (datetime.now() - timedelta(days=min_days)).strftime('%Y-%m-%d')
+        conditions.append("last_access_time <= ?")
+        params.append(min_date)
 
         if max_days is not None:
-            conditions.append("julianday('now','localtime') - julianday(last_access_time) < ?")
-            params.append(max_days)
+            max_date = (datetime.now() - timedelta(days=max_days)).strftime('%Y-%m-%d')
+            conditions.append("last_access_time > ?")
+            params.append(max_date)
 
         where = " AND ".join(conditions)
 
@@ -1740,6 +1751,72 @@ class Database:
                 c["percentage"] = (c["file_count"] / total_files * 100) if total_files > 0 else 0
 
             return creators
+
+    def cleanup_old_scans(self, keep_last_n: int = 5) -> dict:
+        """Eski tarama verilerini temizle. Her kaynak icin son N taramayi koru."""
+        deleted_runs = 0
+        deleted_files = 0
+        try:
+            with self.get_cursor() as cur:
+                # Her kaynak icin son N tarama disindakileri bul
+                cur.execute("SELECT DISTINCT source_id FROM scan_runs")
+                source_ids = [r["source_id"] for r in cur.fetchall()]
+                for sid in source_ids:
+                    cur.execute("""
+                        SELECT id FROM scan_runs WHERE source_id=?
+                        ORDER BY started_at DESC LIMIT -1 OFFSET ?
+                    """, (sid, keep_last_n))
+                    old_run_ids = [r["id"] for r in cur.fetchall()]
+                    if old_run_ids:
+                        placeholders = ','.join(['?'] * len(old_run_ids))
+                        cur.execute(f"DELETE FROM scanned_files WHERE scan_id IN ({placeholders})", old_run_ids)
+                        deleted_files += cur.rowcount
+                        cur.execute(f"DELETE FROM scan_runs WHERE id IN ({placeholders})", old_run_ids)
+                        deleted_runs += cur.rowcount
+            return {"deleted_runs": deleted_runs, "deleted_files": deleted_files}
+        except Exception as e:
+            self.logger.error(f"Cleanup error: {e}")
+            return {"error": str(e)}
+
+    def optimize_database(self) -> dict:
+        """VACUUM ve ANALYZE ile veritabanini optimize et."""
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.db_path)
+            # DB boyutunu al (oncesi)
+            conn.execute("SELECT page_count * page_size FROM pragma_page_count, pragma_page_size")
+            size_before = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+            conn.execute("ANALYZE")
+            conn.execute("VACUUM")
+            conn.close()
+            size_after = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+            saved = size_before - size_after
+            return {"status": "ok", "size_before": size_before, "size_after": size_after, "saved": saved}
+        except Exception as e:
+            self.logger.error(f"Optimize error: {e}")
+            return {"error": str(e)}
+
+    def get_db_stats(self) -> dict:
+        """Veritabani istatistikleri."""
+        try:
+            stats = {}
+            db_size = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+            stats["db_size"] = db_size
+            with self.get_cursor() as cur:
+                for table in ["scanned_files", "scan_runs", "archived_files", "user_access_logs", "sources"]:
+                    try:
+                        cur.execute(f"SELECT COUNT(*) as cnt FROM {table}")
+                        stats[f"{table}_count"] = cur.fetchone()["cnt"]
+                    except Exception:
+                        stats[f"{table}_count"] = 0
+                # En eski ve en yeni tarama
+                cur.execute("SELECT MIN(started_at) as oldest, MAX(started_at) as newest FROM scan_runs")
+                r = cur.fetchone()
+                stats["oldest_scan"] = r["oldest"]
+                stats["newest_scan"] = r["newest"]
+            return stats
+        except Exception as e:
+            return {"error": str(e)}
 
     def health_check(self) -> dict:
         """Veritabani saglik kontrolu."""

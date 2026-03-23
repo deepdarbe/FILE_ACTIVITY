@@ -904,6 +904,23 @@ async def browse_archived(source_id: Optional[int] = None, page: int = 1, page_s
     return {"total": 10, "page": page, "page_size": page_size, "results": results}
 
 
+@app.get("/api/db/stats")
+async def db_stats():
+    return {
+        "db_size": 245_000_000, "scanned_files_count": 474_000,
+        "scan_runs_count": 12, "archived_files_count": 8_500,
+        "user_access_logs_count": 1_200_000, "sources_count": 3,
+        "oldest_scan": "2025-01-15T08:30:00", "newest_scan": "2026-03-22T15:45:00"
+    }
+
+@app.post("/api/db/cleanup")
+async def db_cleanup(keep_last: int = 5):
+    return {"deleted_runs": 7, "deleted_files": 285_000}
+
+@app.post("/api/db/optimize")
+async def db_optimize():
+    return {"status": "ok", "size_before": 245_000_000, "size_after": 198_000_000, "saved": 47_000_000}
+
 if __name__ == "__main__":
     print("FILE ACTIVITY Dashboard - Dev Mode")
     print(f"http://localhost:8085")
