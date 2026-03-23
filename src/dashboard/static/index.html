@@ -792,6 +792,15 @@ const API = '/api';
 // ═══════════════════════════════════════════════════
 // UTILITY
 // ═══════════════════════════════════════════════════
+function downloadFile(url) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
 async function api(path, opts = {}) {
     try {
         const r = await fetch(API + path, { headers: {'Content-Type':'application/json'}, ...opts });
@@ -942,7 +951,7 @@ async function testSource(id) {
 }
 
 async function exportReport(id) {
-    window.open(`${API}/reports/export/${id}`, '_blank');
+    downloadFile(`${API}/reports/export/${id}`);
 }
 
 // ═══════════════════════════════════════════════════
@@ -2112,7 +2121,7 @@ async function downloadDrilldownXLS() {
     // Use the URL to determine source_id
     const parts = ddCurrentUrl.split('/');
     const sid = parts[parts.length - 1].split('?')[0];
-    window.open(`/api/export/xls/${sid}`, '_blank');
+    downloadFile(`/api/export/xls/${sid}`);
 }
 
 function drilldownOwner(owner, sourceId) {
@@ -2128,10 +2137,10 @@ function drilldownOwner(owner, sourceId) {
 // EXPORT HELPERS
 // ═══════════════════════════════════════════════════
 function exportXLS(sourceId) {
-    window.open(`/api/export/xls/${sourceId}`, '_blank');
+    downloadFile(`/api/export/xls/${sourceId}`);
 }
 function exportPDF(sourceId) {
-    window.open(`/api/export/pdf/${sourceId}`, '_blank');
+    downloadFile(`/api/export/pdf/${sourceId}`);
 }
 
 // ═══════════════════════════════════════════════════
@@ -2372,7 +2381,13 @@ async function showNamingFiles(code, sourceId) {
 function exportNamingReport() {
     const sourceId = document.getElementById('naming-source')?.value;
     if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
-    window.open(`/api/reports/mit-naming/${sourceId}/export`, '_blank');
+    // Gizli <a> link ile guvenilir indirme (window.open popup engellenebilir)
+    const a = document.createElement('a');
+    a.href = `/api/reports/mit-naming/${sourceId}/export`;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
     notify('Excel raporu indiriliyor...', 'info');
 }
 
@@ -2731,7 +2746,7 @@ async function archiveSelectedDuplicates() {
 function exportDuplicatesCSV() {
     const sourceId = document.getElementById('dup-source')?.value;
     if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
-    window.open(`/api/export/duplicates/${sourceId}`, '_blank');
+    downloadFile(`/api/export/duplicates/${sourceId}`);
 }
 
 // ═══════════════════════════════════════════════════

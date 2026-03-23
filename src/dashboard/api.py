@@ -845,8 +845,8 @@ def create_app(db, config):
         with db.get_cursor() as cur:
             cur.execute("""
                 SELECT file_path, file_name, file_size, owner, last_modify_time
-                FROM scanned_files WHERE scan_id=?
-            """, (scan_id,))
+                FROM scanned_files WHERE source_id=? AND scan_id=?
+            """, (source_id, scan_id))
             for row in cur:
                 for code, (label, fn) in checks.items():
                     if fn(row["file_path"], row["file_name"]):
