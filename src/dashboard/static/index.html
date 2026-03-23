@@ -1092,13 +1092,15 @@ async function loadDbStats() {
         const s = await api('/db/stats');
         el.innerHTML = `
             <div style="display:flex;gap:16px;flex-wrap:wrap">
+                <span>Toplam disk: <b>${formatSize(s.total_disk||s.db_size||0)}</b></span>
                 <span>DB: <b>${formatSize(s.db_size||0)}</b></span>
+                ${s.wal_size > 0 ? `<span style="color:${s.wal_size > 100000000 ? 'var(--danger)' : 'var(--warning)'}">WAL: <b>${formatSize(s.wal_size)}</b>${s.wal_size > 100000000 ? ' ⚠ Optimize edin!' : ''}</span>` : ''}
                 <span>Dosya kayit: <b>${formatNum(s.scanned_files_count||0)}</b></span>
                 <span>Tarama: <b>${s.scan_runs_count||0}</b></span>
                 <span>Arsiv: <b>${formatNum(s.archived_files_count||0)}</b></span>
                 <span>Erisim log: <b>${formatNum(s.user_access_logs_count||0)}</b></span>
-                <span>Ilk tarama: <b>${(s.oldest_scan||'-').substring(0,10)}</b></span>
-                <span>Son tarama: <b>${(s.newest_scan||'-').substring(0,10)}</b></span>
+                <span>Ilk: <b>${(s.oldest_scan||'-').substring(0,10)}</b></span>
+                <span>Son: <b>${(s.newest_scan||'-').substring(0,10)}</b></span>
             </div>`;
     } catch(e) { el.textContent = 'Hata: ' + e.message; }
 }

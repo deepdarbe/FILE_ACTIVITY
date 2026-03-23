@@ -55,6 +55,8 @@ class Database:
             self._local.conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn.execute("PRAGMA busy_timeout=5000")
             self._local.conn.execute("PRAGMA cache_size=-64000")  # 64MB
+            # WAL auto-checkpoint: her 1000 sayfada (default 1000, ~4MB)
+            self._local.conn.execute("PRAGMA wal_autocheckpoint=1000")
         return self._local.conn
 
     def connect(self):
@@ -70,6 +72,19 @@ class Database:
             self.connected = True
             logger.info(f"SQLite baglantisi kuruldu: {self.db_path}")
             self._create_tables()
+
+            # Baslangicta WAL checkpoint - buyuk WAL dosyalarini temizle
+            try:
+                wal_path = self.db_path + "-wal"
+                if os.path.exists(wal_path):
+                    wal_size = os.path.getsize(wal_path)
+                    if wal_size > 10_000_000:  # 10MB'dan buyukse checkpoint yap
+                        logger.info(f"WAL checkpoint baslatiliyor ({wal_size / 1048576:.1f} MB)...")
+                        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                        wal_after = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+                        logger.info(f"WAL checkpoint tamamlandi: {wal_size / 1048576:.1f} MB -> {wal_after / 1048576:.1f} MB")
+            except Exception as e:
+                logger.warning(f"WAL checkpoint hatasi (kritik degil): {e}")
         except Exception as e:
             self.connected = False
             raise DatabaseConnectionError(
@@ -1785,23 +1800,49 @@ class Database:
             conn = sqlite3.connect(self.db_path)
             # DB boyutunu al (oncesi)
             conn.execute("SELECT page_count * page_size FROM pragma_page_count, pragma_page_size")
-            size_before = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+            # WAL + SHM + DB toplam boyut
+            wal_path = self.db_path + "-wal"
+            shm_path = self.db_path + "-shm"
+            size_before = sum(
+                os.path.getsize(f) for f in [self.db_path, wal_path, shm_path]
+                if os.path.exists(f)
+            )
+            wal_size_before = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+
+            # WAL checkpoint (TRUNCATE modu - WAL dosyasini sifirlar)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.execute("ANALYZE")
             conn.execute("VACUUM")
             conn.close()
-            size_after = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+
+            size_after = sum(
+                os.path.getsize(f) for f in [self.db_path, wal_path, shm_path]
+                if os.path.exists(f)
+            )
             saved = size_before - size_after
-            return {"status": "ok", "size_before": size_before, "size_after": size_after, "saved": saved}
+            return {
+                "status": "ok",
+                "size_before": size_before,
+                "size_after": size_after,
+                "saved": saved,
+                "wal_cleared": wal_size_before,
+            }
         except Exception as e:
             self.logger.error(f"Optimize error: {e}")
             return {"error": str(e)}
 
     def get_db_stats(self) -> dict:
-        """Veritabani istatistikleri."""
+        """Veritabani istatistikleri (WAL/SHM dahil)."""
         try:
             stats = {}
             db_size = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+            wal_path = self.db_path + "-wal"
+            shm_path = self.db_path + "-shm"
+            wal_size = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+            shm_size = os.path.getsize(shm_path) if os.path.exists(shm_path) else 0
             stats["db_size"] = db_size
+            stats["wal_size"] = wal_size
+            stats["total_disk"] = db_size + wal_size + shm_size
             with self.get_cursor() as cur:
                 for table in ["scanned_files", "scan_runs", "archived_files", "user_access_logs", "sources"]:
                     try:
