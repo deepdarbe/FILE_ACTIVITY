@@ -473,6 +473,22 @@ def create_app(db, config, analytics=None):
 
     # --- DRILL-DOWN API ---
 
+    def _run_drilldown(duckdb_fn, sqlite_fn):
+        """DuckDB varsa oradan calistir, yoksa SQLite'a dus.
+
+        duckdb_fn: AnalyticsEngine uzerinde cagrilacak bound method
+        sqlite_fn: db (Database) uzerinde cagrilacak bound method
+        Her ikisi de (*args) -> {"total": int, "files": list} doner.
+        """
+        def call(*args):
+            if analytics.available:
+                try:
+                    return duckdb_fn(*args)
+                except Exception as e:
+                    logger.warning("DuckDB drilldown basarisiz, SQLite fallback: %s", e)
+            return sqlite_fn(*args)
+        return call
+
     @app.get("/api/drilldown/frequency/{source_id}")
     async def drilldown_frequency(source_id: int, min_days: int = 0,
                                    max_days: Optional[int] = None,
@@ -483,7 +499,8 @@ def create_app(db, config, analytics=None):
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_frequency(src.id, scan_id, min_days, max_days, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_frequency, db.get_files_by_frequency)
+        result = run(src.id, scan_id, min_days, max_days, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
@@ -497,7 +514,8 @@ def create_app(db, config, analytics=None):
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_extension(src.id, scan_id, extension, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_extension, db.get_files_by_extension)
+        result = run(src.id, scan_id, extension, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
@@ -512,7 +530,8 @@ def create_app(db, config, analytics=None):
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_size_range(src.id, scan_id, min_bytes, max_bytes, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_size_range, db.get_files_by_size_range)
+        result = run(src.id, scan_id, min_bytes, max_bytes, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
@@ -526,7 +545,8 @@ def create_app(db, config, analytics=None):
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_owner(src.id, scan_id, owner, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_owner, db.get_files_by_owner)
+        result = run(src.id, scan_id, owner, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result

@@ -207,6 +207,91 @@ class AnalyticsEngine:
         }
 
     # ──────────────────────────────────────────────
+    # Drill-down sorgulari (tek-gecis total + sayfa)
+    # ──────────────────────────────────────────────
+
+    def _drilldown(self, where_sql: str, params: list, order_by: str,
+                    limit: int, offset: int) -> dict:
+        """Tek WINDOW-COUNT sorgusuyla hem toplam hem sayfayi doner.
+
+        SQLite yolunda iki ayri COUNT + SELECT kullanilirken burada
+        `COUNT(*) OVER ()` ile columnar tarama tek seferde yeterli olur.
+        """
+        sql = f"""
+            SELECT *, COUNT(*) OVER () AS _total
+            FROM sqlite_db.scanned_files
+            WHERE {where_sql}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?
+        """
+        with self._cursor() as cur:
+            res = cur.execute(sql, list(params) + [limit, offset])
+            cols = [d[0] for d in res.description]
+            rows = res.fetchall()
+
+        if not rows:
+            # Dosya yok; toplami yine de ayri kucuk bir COUNT ile al
+            count_sql = f"SELECT COUNT(*) FROM sqlite_db.scanned_files WHERE {where_sql}"
+            with self._cursor() as cur:
+                total = int(cur.execute(count_sql, list(params)).fetchone()[0] or 0)
+            return {"total": total, "files": [], "engine": "duckdb"}
+
+        total_idx = cols.index("_total")
+        total = int(rows[0][total_idx] or 0)
+        keep_cols = [c for c in cols if c != "_total"]
+        files = []
+        for row in rows:
+            rec = {cols[i]: row[i] for i in range(len(cols)) if cols[i] != "_total"}
+            files.append(rec)
+        return {"total": total, "files": files, "engine": "duckdb"}
+
+    def get_files_by_owner(self, source_id: int, scan_id: int, owner: str,
+                            limit: int, offset: int) -> dict:
+        is_unknown = owner in ("Bilinmiyor", None, "")
+        if is_unknown:
+            where = "source_id = ? AND scan_id = ? AND owner IS NULL"
+            params = [source_id, scan_id]
+        else:
+            where = "source_id = ? AND scan_id = ? AND owner = ?"
+            params = [source_id, scan_id, owner]
+        return self._drilldown(where, params, "file_size DESC", limit, offset)
+
+    def get_files_by_extension(self, source_id: int, scan_id: int,
+                                extension: str, limit: int, offset: int) -> dict:
+        ext = (extension or "").lower().lstrip(".")
+        is_none = ext in ("uzantisiz", "")
+        if is_none:
+            where = "source_id = ? AND scan_id = ? AND extension IS NULL"
+            params = [source_id, scan_id]
+        else:
+            where = "source_id = ? AND scan_id = ? AND extension = ?"
+            params = [source_id, scan_id, ext]
+        return self._drilldown(where, params, "file_size DESC", limit, offset)
+
+    def get_files_by_size_range(self, source_id: int, scan_id: int,
+                                 min_bytes: int, max_bytes: Optional[int],
+                                 limit: int, offset: int) -> dict:
+        where = "source_id = ? AND scan_id = ? AND file_size >= ?"
+        params: list = [source_id, scan_id, min_bytes]
+        if max_bytes is not None:
+            where += " AND file_size < ?"
+            params.append(max_bytes)
+        return self._drilldown(where, params, "file_size DESC", limit, offset)
+
+    def get_files_by_frequency(self, source_id: int, scan_id: int,
+                                min_days: int, max_days: Optional[int],
+                                limit: int, offset: int) -> dict:
+        from datetime import datetime, timedelta
+        where = ("source_id = ? AND scan_id = ? "
+                 "AND last_access_time IS NOT NULL AND last_access_time <= ?")
+        params: list = [source_id, scan_id,
+                        (datetime.now() - timedelta(days=min_days)).strftime('%Y-%m-%d')]
+        if max_days is not None:
+            where += " AND last_access_time > ?"
+            params.append((datetime.now() - timedelta(days=max_days)).strftime('%Y-%m-%d'))
+        return self._drilldown(where, params, "last_access_time ASC", limit, offset)
+
+    # ──────────────────────────────────────────────
     # Saglik / tanilama
     # ──────────────────────────────────────────────
 
