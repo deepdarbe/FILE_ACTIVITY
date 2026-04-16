@@ -18,12 +18,16 @@ from src.utils.size_formatter import format_size
 logger = logging.getLogger("file_activity.watcher")
 
 _watchers = {}  # source_id -> FileWatcher
+_watchers_lock = threading.Lock()
 
 
 def get_watcher_status(source_id: int = None) -> dict:
-    if source_id and source_id in _watchers:
-        return _watchers[source_id].get_status()
-    return {sid: w.get_status() for sid, w in _watchers.items()} if not source_id else {"status": "inactive"}
+    with _watchers_lock:
+        if source_id and source_id in _watchers:
+            return _watchers[source_id].get_status()
+        if not source_id:
+            return {sid: w.get_status() for sid, w in _watchers.items()}
+        return {"status": "inactive"}
 
 
 class FileWatcher:
@@ -34,6 +38,7 @@ class FileWatcher:
         self.interval = interval  # seconds between checks
         self._running = False
         self._thread = None
+        self._stats_lock = threading.Lock()
         self.stats = {
             "status": "idle",
             "last_check": None,
@@ -51,29 +56,39 @@ class FileWatcher:
         self._running = True
         self._thread = threading.Thread(target=self._watch_loop, daemon=True)
         self._thread.start()
-        _watchers[self.source_id] = self
+        with _watchers_lock:
+            _watchers[self.source_id] = self
         logger.info("File watcher started for source %d (interval: %ds)", self.source_id, self.interval)
 
     def stop(self):
         self._running = False
-        if self.source_id in _watchers:
-            del _watchers[self.source_id]
+        with _watchers_lock:
+            _watchers.pop(self.source_id, None)
         logger.info("File watcher stopped for source %d", self.source_id)
 
     def get_status(self):
-        return {**self.stats, "running": self._running, "interval": self.interval}
+        with self._stats_lock:
+            snapshot = dict(self.stats)
+            # last_changes liste referansi kopyalanir (okuyucu modify etmesin)
+            snapshot["last_changes"] = list(snapshot.get("last_changes", []))
+        snapshot["running"] = self._running
+        snapshot["interval"] = self.interval
+        return snapshot
 
     def _watch_loop(self):
         while self._running:
             try:
-                self.stats["status"] = "checking"
+                with self._stats_lock:
+                    self.stats["status"] = "checking"
                 self._check_changes()
-                self.stats["status"] = "waiting"
-                self.stats["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.stats["checks_completed"] += 1
+                with self._stats_lock:
+                    self.stats["status"] = "waiting"
+                    self.stats["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.stats["checks_completed"] += 1
             except Exception as e:
                 logger.error("Watcher error source %d: %s", self.source_id, e)
-                self.stats["status"] = "error"
+                with self._stats_lock:
+                    self.stats["status"] = "error"
 
             # Sleep in small increments so stop() is responsive
             for _ in range(self.interval):
@@ -112,10 +127,11 @@ class FileWatcher:
             "size": size,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        changes = self.stats["last_changes"]
-        changes.append(entry)
-        if len(changes) > 50:
-            self.stats["last_changes"] = changes[-50:]
+        with self._stats_lock:
+            changes = self.stats["last_changes"]
+            changes.append(entry)
+            if len(changes) > 50:
+                self.stats["last_changes"] = changes[-50:]
 
     def _record_audit(self, event_type: str, fpath: str, owner: str = None):
         """Record file audit event in database."""
@@ -196,10 +212,11 @@ class FileWatcher:
             except Exception as e:
                 logger.debug("Watcher delete error %s: %s", dpath[:80], e)
 
-        self.stats["new_files"] += new_count
-        self.stats["modified_files"] += modified_count
-        self.stats["deleted_files"] += deleted_count
-        self.stats["total_changes"] += new_count + modified_count + deleted_count
+        with self._stats_lock:
+            self.stats["new_files"] += new_count
+            self.stats["modified_files"] += modified_count
+            self.stats["deleted_files"] += deleted_count
+            self.stats["total_changes"] += new_count + modified_count + deleted_count
 
         if new_count + modified_count + deleted_count > 0:
             logger.info("Watcher source %d: +%d new, ~%d modified, -%d deleted",

@@ -83,8 +83,9 @@ class ArchiveEngine:
                                 f'Archived to {archive_path} | Policy: {archived_by}',
                                 detected_by='archiver'
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning("Audit event kaydedilemedi %s: %s",
+                                           file_info.get("file_path", "?"), e)
                 else:
                     failed += 1
             except Exception as e:
@@ -144,6 +145,19 @@ class ArchiveEngine:
         dst_dir = os.path.dirname(dst_path)
         os.makedirs(dst_dir, exist_ok=True)
 
+        # 1b. Hedefte yeterli disk alani var mi kontrol et (dosya boyutu + %5 marj)
+        try:
+            required = int(file_info.get("file_size", 0) * 1.05) + 1024
+            free = shutil.disk_usage(dst_dir).free
+            if free < required:
+                logger.error(
+                    "Yetersiz disk alani %s: gerekli=%s, mevcut=%s",
+                    rel_path, format_size(required), format_size(free)
+                )
+                return False
+        except OSError as e:
+            logger.warning("Disk alani kontrolu basarisiz %s: %s", dst_dir, e)
+
         # 2. Kopyala
         shutil.copy2(src_path, dst_path)
 
@@ -169,8 +183,14 @@ class ArchiveEngine:
             src_hash = self._sha256(src_path)
             dst_hash = self._sha256(dst_path)
             if src_hash != dst_hash:
-                # Doğrulama başarısız - hedefi sil
-                os.remove(dst_path)
+                # Doğrulama başarısız - hedefi sil (silme hatasini yut ama logla)
+                try:
+                    os.remove(dst_path)
+                except OSError as e:
+                    logger.error(
+                        "Checksum basarisiz + hedef silinemedi %s: %s",
+                        dst_path, e
+                    )
                 logger.error(t("archive_checksum_fail", path=rel_path))
                 return False
             checksum = src_hash
