@@ -21,3 +21,9 @@ apscheduler>=3.10.0
 # Reports
 openpyxl>=3.1.0
 reportlab>=4.0.0
+
+# Analytics (optional): DuckDB for columnar aggregate queries over SQLite.
+# When installed and analytics.enabled=true, heavy reports (duplicates,
+# growth, stats) run through DuckDB via the sqlite_scanner extension.
+# SQLite remains the source of truth; DuckDB only reads.
+duckdb>=1.0.0

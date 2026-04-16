@@ -9,6 +9,14 @@ general:
 database:
   path: "data/file_activity.db"    # SQLite veritabani dosyasi
 
+analytics:
+  # DuckDB tabanli analitik motor. SQLite dosyasini salt-okunur ATTACH eder,
+  # agir aggregate sorgulari (duplicate raporu, buyume, db_stats) icin kullanir.
+  # Kapatilirsa tum sorgular klasik SQLite yolundan gider.
+  enabled: true
+  memory_limit: "512MB"           # DuckDB bellek siniri
+  threads: 4                      # DuckDB paralel thread sayisi
+
 sources: []
   # Örnek:
   # - name: "Engineering"

@@ -92,10 +92,19 @@ def _get_source(db, source_id: int):
     return src
 
 
-def create_app(db, config):
-    """FastAPI uygulamasini olustur."""
+def create_app(db, config, analytics=None):
+    """FastAPI uygulamasini olustur.
+
+    analytics: Opsiyonel AnalyticsEngine. Verilmezse config.analytics'e gore
+    olusturulur; DuckDB yoksa veya basarisiz olursa `available=False` ile
+    doner ve endpoint'ler SQLite fallback'ine duser.
+    """
+    if analytics is None:
+        from src.storage.analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db.db_path, config.get("analytics", {}))
 
     app = FastAPI(title="FILE ACTIVITY Dashboard", version="1.0.0")
+    app.state.analytics = analytics
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
@@ -1077,10 +1086,27 @@ def create_app(db, config):
                                 page: int = Query(1, ge=1, le=10000),
                                 page_size: int = Query(50, ge=1, le=500),
                                 min_size: int = 0):
-        """Kopya dosya raporu - gruplandirmali."""
+        """Kopya dosya raporu - gruplandirmali.
+
+        DuckDB kurulu ve ATTACH basarili ise tek-gecis CTE ile calisir,
+        aksi halde SQLite yoluna duser.
+        """
         from src.utils.size_formatter import format_size
-        result = db.get_duplicate_groups(source_id, min_size=min_size,
-                                          page=page, page_size=page_size)
+        result = None
+        if analytics.available:
+            try:
+                scan_id = db.get_latest_scan_id(source_id, include_running=False)
+                if scan_id:
+                    result = analytics.get_duplicate_groups(
+                        scan_id, min_size, page, page_size
+                    )
+            except Exception as e:
+                logger.warning("DuckDB duplicate sorgusu basarisiz, SQLite fallback: %s", e)
+                result = None
+        if result is None:
+            result = db.get_duplicate_groups(
+                source_id, min_size=min_size, page=page, page_size=page_size
+            )
         # Boyut formatlama
         result["total_waste_size_formatted"] = format_size(result.get("total_waste_size", 0))
         for g in result.get("groups", []):
@@ -1478,8 +1504,14 @@ def create_app(db, config):
         return {
             "status": "ok",
             "time": datetime.now().isoformat(),
-            "database": db.health_check()
+            "database": db.health_check(),
+            "analytics": analytics.health(),
         }
+
+    @app.get("/api/system/analytics")
+    async def analytics_status():
+        """DuckDB analitik motor durumunu dondur."""
+        return analytics.health()
 
     @app.get("/api/db/stats")
     async def db_stats():
