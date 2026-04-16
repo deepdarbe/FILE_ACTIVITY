@@ -1216,7 +1216,14 @@ def create_app(db, config, analytics=None):
     @app.get("/api/growth/{source_id}")
     async def growth_stats(source_id: int):
         """Yillik/aylik/gunluk buyume istatistikleri."""
-        stats = db.get_growth_stats(source_id)
+        stats = None
+        if analytics.available:
+            try:
+                stats = analytics.get_growth_stats(source_id)
+            except Exception as e:
+                logger.warning("DuckDB growth sorgusu basarisiz, SQLite fallback: %s", e)
+        if stats is None:
+            stats = db.get_growth_stats(source_id)
         creators = db.get_top_file_creators(source_id)
         stats["top_creators"] = creators
         return stats
@@ -1536,6 +1543,15 @@ def create_app(db, config, analytics=None):
     @app.get("/api/db/stats")
     async def db_stats():
         """Veritabani istatistikleri."""
+        if analytics.available:
+            try:
+                wal_path = db.db_path + "-wal"
+                shm_path = db.db_path + "-shm"
+                tables = ["scanned_files", "scan_runs", "archived_files",
+                          "user_access_logs", "sources"]
+                return analytics.get_db_stats(tables, db.db_path, wal_path, shm_path)
+            except Exception as e:
+                logger.warning("DuckDB db_stats basarisiz, SQLite fallback: %s", e)
         return db.get_db_stats()
 
     @app.post("/api/db/cleanup")

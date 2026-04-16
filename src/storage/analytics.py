@@ -292,6 +292,115 @@ class AnalyticsEngine:
         return self._drilldown(where, params, "last_access_time ASC", limit, offset)
 
     # ──────────────────────────────────────────────
+    # Buyume ve db istatistikleri
+    # ──────────────────────────────────────────────
+
+    def get_growth_stats(self, source_id: int) -> dict:
+        """Yillik/aylik/gunluk buyume + toplam tarama sayisi.
+
+        `started_at` SQLite attach'inda VARCHAR olarak gelir, bu yuzden
+        SQLite'in `strftime('%Y',...)` davranisi yerine ISO string
+        substring kullaniyoruz (ayni sonuc, tip donusumu gerekmez).
+        """
+        base_where = "source_id = ? AND status = 'completed'"
+        with self._cursor() as cur:
+            yearly = cur.execute(
+                f"""
+                SELECT substr(started_at, 1, 4) AS year,
+                       MAX(total_files) AS total_files,
+                       MAX(total_size) AS total_size
+                FROM sqlite_db.scan_runs
+                WHERE {base_where}
+                GROUP BY year
+                ORDER BY year
+                """,
+                [source_id],
+            ).fetchall()
+
+            monthly = cur.execute(
+                f"""
+                SELECT substr(started_at, 1, 7) AS month,
+                       MAX(total_files) AS total_files,
+                       MAX(total_size) AS total_size
+                FROM sqlite_db.scan_runs
+                WHERE {base_where}
+                GROUP BY month
+                ORDER BY month DESC
+                LIMIT 24
+                """,
+                [source_id],
+            ).fetchall()
+
+            daily = cur.execute(
+                f"""
+                SELECT substr(started_at, 1, 10) AS day,
+                       MAX(total_files) AS total_files,
+                       MAX(total_size) AS total_size
+                FROM sqlite_db.scan_runs
+                WHERE {base_where}
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT 30
+                """,
+                [source_id],
+            ).fetchall()
+
+            total_scans = int(cur.execute(
+                f"SELECT COUNT(*) FROM sqlite_db.scan_runs WHERE {base_where}",
+                [source_id],
+            ).fetchone()[0] or 0)
+
+        def _rows(rs, key):
+            return [
+                {key: r[0], "total_files": int(r[1] or 0), "total_size": int(r[2] or 0)}
+                for r in rs
+            ]
+
+        return {
+            "yearly": _rows(yearly, "year"),
+            "monthly": list(reversed(_rows(monthly, "month"))),
+            "daily": list(reversed(_rows(daily, "day"))),
+            "total_scans": total_scans,
+            "engine": "duckdb",
+        }
+
+    def get_db_stats(self, tables: list, db_path: str,
+                      wal_path: str, shm_path: str) -> dict:
+        """Tablo satir sayilari + dosya boyutlari. Disk boyutlari cagiran
+        tarafindan verilir (DuckDB SQLite dosyasinin mtime'ini sormaz)."""
+        import os
+        stats: dict = {}
+        try:
+            stats["db_size"] = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+            stats["wal_size"] = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+            shm = os.path.getsize(shm_path) if os.path.exists(shm_path) else 0
+            stats["total_disk"] = stats["db_size"] + stats["wal_size"] + shm
+
+            with self._cursor() as cur:
+                # Tum tablo COUNT'lari tek UNION ALL sorgusunda
+                union_parts = []
+                for t in tables:
+                    # sqlite_db.<table> semasi; kolon isimleri quote edilmez
+                    union_parts.append(
+                        f"SELECT '{t}' AS table_name, COUNT(*) AS cnt "
+                        f"FROM sqlite_db.{t}"
+                    )
+                union_sql = " UNION ALL ".join(union_parts)
+                for row in cur.execute(union_sql).fetchall():
+                    stats[f"{row[0]}_count"] = int(row[1] or 0)
+
+                # En eski/yeni tarama
+                row = cur.execute(
+                    "SELECT MIN(started_at), MAX(started_at) FROM sqlite_db.scan_runs"
+                ).fetchone()
+                stats["oldest_scan"] = row[0]
+                stats["newest_scan"] = row[1]
+            stats["engine"] = "duckdb"
+        except Exception as e:
+            return {"error": str(e)}
+        return stats
+
+    # ──────────────────────────────────────────────
     # Saglik / tanilama
     # ──────────────────────────────────────────────
 
