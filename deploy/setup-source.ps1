@@ -217,8 +217,25 @@ if (-not (Test-Path $venvPy)) {
     Write-Host "  [OK] Mevcut venv kullaniliyor" -ForegroundColor Green
 }
 
-& $venvPy -m pip install --upgrade pip --quiet
-& $venvPy -m pip install -r "$InstallDir\requirements.txt" --quiet --upgrade
+# Kurumsal TLS inspection proxy'leri icin pip'e pypi host'larini guvenilir olarak
+# isaretle. Ayrica venv icine pip.ini yaz: sonraki manuel pip kullanimlari da
+# (update.cmd dahil) bu ayarlari otomatik alir.
+$pipIni = @"
+[global]
+trusted-host = pypi.org
+               files.pythonhosted.org
+               pypi.python.org
+"@
+Set-Content "$venvPath\pip.ini" $pipIni -Encoding ASCII
+
+$pipTrust = @(
+    "--trusted-host", "pypi.org",
+    "--trusted-host", "files.pythonhosted.org",
+    "--trusted-host", "pypi.python.org"
+)
+
+& $venvPy -m pip install --upgrade pip --quiet @pipTrust
+& $venvPy -m pip install -r "$InstallDir\requirements.txt" --quiet --upgrade @pipTrust
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  [HATA] pip install basarisiz" -ForegroundColor Red
     Write-Host "         Asagidaki komutla elle kontrol edin:" -ForegroundColor Yellow
