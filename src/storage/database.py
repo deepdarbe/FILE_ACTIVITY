@@ -1614,31 +1614,28 @@ class Database:
                 scan_id = row["id"]
 
         with self.get_cursor() as cur:
-            # Toplam grup sayisi
+            # Tek CTE ile ozetleri (toplam grup, toplam israf, toplam dosya)
+            # ve sayfalanmis gruplari iki ayri sorguda tek aggregate uzerinden
+            # alir. Onceki kodda ayni GROUP BY uc kere calisiyordu; buyuk
+            # tarama setlerinde bariz yavaslamaya yol aciyordu.
             cur.execute("""
-                SELECT COUNT(*) as cnt FROM (
-                    SELECT file_name, file_size
+                WITH dup AS (
+                    SELECT file_name, file_size, COUNT(*) AS cnt
                     FROM scanned_files
-                    WHERE scan_id=? AND file_size > ?
+                    WHERE scan_id = ? AND file_size > ?
                     GROUP BY file_name, file_size
                     HAVING COUNT(*) > 1
                 )
+                SELECT
+                    COUNT(*) AS total_groups,
+                    COALESCE(SUM(cnt), 0) AS total_files,
+                    COALESCE(SUM((cnt - 1) * file_size), 0) AS total_waste
+                FROM dup
             """, (scan_id, min_size))
-            total_groups = cur.fetchone()["cnt"]
-
-            # Toplam israf
-            cur.execute("""
-                SELECT COALESCE(SUM((cnt - 1) * file_size), 0) as total_waste,
-                       COALESCE(SUM(cnt), 0) as total_files
-                FROM (
-                    SELECT file_name, file_size, COUNT(*) as cnt
-                    FROM scanned_files
-                    WHERE scan_id=? AND file_size > ?
-                    GROUP BY file_name, file_size
-                    HAVING COUNT(*) > 1
-                )
-            """, (scan_id, min_size))
-            waste_row = cur.fetchone()
+            summary = cur.fetchone()
+            total_groups = summary["total_groups"]
+            waste_row = {"total_waste": summary["total_waste"],
+                         "total_files": summary["total_files"]}
 
             # Sayfalanmis gruplar (en cok israf eden grup once)
             cur.execute("""

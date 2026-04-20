@@ -14,10 +14,10 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List
 
 # ── Arka plan export kuyrugu ──
@@ -50,6 +50,30 @@ class ScheduleCreate(BaseModel):
     policy_name: Optional[str] = None
     cron_expression: str
 
+    @field_validator("task_type")
+    @classmethod
+    def _validate_task_type(cls, v: str) -> str:
+        if v not in ("scan", "archive"):
+            raise ValueError("task_type must be 'scan' or 'archive'")
+        return v
+
+    @field_validator("cron_expression")
+    @classmethod
+    def _validate_cron(cls, v: str) -> str:
+        parts = v.strip().split()
+        if len(parts) != 5:
+            raise ValueError("cron_expression must have 5 fields (minute hour day month dow)")
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+            CronTrigger(
+                minute=parts[0], hour=parts[1],
+                day=parts[2], month=parts[3],
+                day_of_week=parts[4],
+            )
+        except Exception as e:
+            raise ValueError(f"invalid cron expression: {e}")
+        return v.strip()
+
 class ArchiveRequest(BaseModel):
     source_id: int
     policy_name: Optional[str] = None
@@ -68,10 +92,19 @@ def _get_source(db, source_id: int):
     return src
 
 
-def create_app(db, config):
-    """FastAPI uygulamasini olustur."""
+def create_app(db, config, analytics=None):
+    """FastAPI uygulamasini olustur.
+
+    analytics: Opsiyonel AnalyticsEngine. Verilmezse config.analytics'e gore
+    olusturulur; DuckDB yoksa veya basarisiz olursa `available=False` ile
+    doner ve endpoint'ler SQLite fallback'ine duser.
+    """
+    if analytics is None:
+        from src.storage.analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db.db_path, config.get("analytics", {}))
 
     app = FastAPI(title="FILE ACTIVITY Dashboard", version="1.0.0")
+    app.state.analytics = analytics
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
@@ -337,7 +370,8 @@ def create_app(db, config):
         }
 
     @app.get("/api/archive/search")
-    async def archive_search(q: str, extension: Optional[str] = None, page: int = 1):
+    async def archive_search(q: str, extension: Optional[str] = None,
+                              page: int = Query(1, ge=1, le=10000)):
         return db.search_archived_files(q, extension=extension, page=page)
 
     @app.get("/api/archive/stats")
@@ -439,29 +473,49 @@ def create_app(db, config):
 
     # --- DRILL-DOWN API ---
 
+    def _run_drilldown(duckdb_fn, sqlite_fn):
+        """DuckDB varsa oradan calistir, yoksa SQLite'a dus.
+
+        duckdb_fn: AnalyticsEngine uzerinde cagrilacak bound method
+        sqlite_fn: db (Database) uzerinde cagrilacak bound method
+        Her ikisi de (*args) -> {"total": int, "files": list} doner.
+        """
+        def call(*args):
+            if analytics.available:
+                try:
+                    return duckdb_fn(*args)
+                except Exception as e:
+                    logger.warning("DuckDB drilldown basarisiz, SQLite fallback: %s", e)
+            return sqlite_fn(*args)
+        return call
+
     @app.get("/api/drilldown/frequency/{source_id}")
     async def drilldown_frequency(source_id: int, min_days: int = 0,
                                    max_days: Optional[int] = None,
-                                   page: int = 1, limit: int = 100):
+                                   page: int = Query(1, ge=1, le=10000),
+                                   limit: int = Query(100, ge=1, le=500)):
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_frequency(src.id, scan_id, min_days, max_days, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_frequency, db.get_files_by_frequency)
+        result = run(src.id, scan_id, min_days, max_days, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
 
     @app.get("/api/drilldown/type/{source_id}")
     async def drilldown_type(source_id: int, extension: str = "",
-                              page: int = 1, limit: int = 100):
+                              page: int = Query(1, ge=1, le=10000),
+                              limit: int = Query(100, ge=1, le=500)):
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_extension(src.id, scan_id, extension, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_extension, db.get_files_by_extension)
+        result = run(src.id, scan_id, extension, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
@@ -469,26 +523,30 @@ def create_app(db, config):
     @app.get("/api/drilldown/size/{source_id}")
     async def drilldown_size(source_id: int, min_bytes: int = 0,
                               max_bytes: Optional[int] = None,
-                              page: int = 1, limit: int = 100):
+                              page: int = Query(1, ge=1, le=10000),
+                              limit: int = Query(100, ge=1, le=500)):
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_size_range(src.id, scan_id, min_bytes, max_bytes, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_size_range, db.get_files_by_size_range)
+        result = run(src.id, scan_id, min_bytes, max_bytes, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
 
     @app.get("/api/drilldown/owner/{source_id}")
     async def drilldown_owner(source_id: int, owner: str = "",
-                               page: int = 1, limit: int = 100):
+                               page: int = Query(1, ge=1, le=10000),
+                               limit: int = Query(100, ge=1, le=500)):
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        result = db.get_files_by_owner(src.id, scan_id, owner, limit, offset)
+        run = _run_drilldown(analytics.get_files_by_owner, db.get_files_by_owner)
+        result = run(src.id, scan_id, owner, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
@@ -754,7 +812,9 @@ def create_app(db, config):
 
     @app.get("/api/audit/events")
     async def audit_events(source_id: int = None, event_type: str = None,
-                           username: str = None, days: int = 7, page: int = 1):
+                           username: str = None,
+                           days: int = Query(7, ge=1, le=365),
+                           page: int = Query(1, ge=1, le=10000)):
         return db.get_audit_events(source_id, event_type, username, days, page)
 
     @app.get("/api/audit/summary")
@@ -792,7 +852,9 @@ def create_app(db, config):
         return analyzer.get_report()
 
     @app.get("/api/reports/mit-naming/{source_id}/files")
-    async def mit_naming_files(source_id: int, code: str = "R1", page: int = 1, page_size: int = 100):
+    async def mit_naming_files(source_id: int, code: str = "R1",
+                                page: int = Query(1, ge=1, le=10000),
+                                page_size: int = Query(100, ge=1, le=500)):
         """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6)."""
         import re as re_mod
         from src.utils.size_formatter import format_size
@@ -902,7 +964,8 @@ def create_app(db, config):
 
     @app.get("/api/insights/{source_id}/files")
     async def insight_files(source_id: int, insight_type: str = "stale_1year",
-                            page: int = 1, page_size: int = 100):
+                            page: int = Query(1, ge=1, le=10000),
+                            page_size: int = Query(100, ge=1, le=500)):
         """AI insight tipine gore dosya listesi."""
         from src.utils.size_formatter import format_size
         from src.analyzer.ai_insights import get_insight_files
@@ -1039,12 +1102,31 @@ def create_app(db, config):
     # --- DUPLIKE RAPOR ve SECICI ARSIV ---
 
     @app.get("/api/reports/duplicates/{source_id}")
-    async def duplicate_report(source_id: int, page: int = 1,
-                                page_size: int = 50, min_size: int = 0):
-        """Kopya dosya raporu - gruplandirmali."""
+    async def duplicate_report(source_id: int,
+                                page: int = Query(1, ge=1, le=10000),
+                                page_size: int = Query(50, ge=1, le=500),
+                                min_size: int = 0):
+        """Kopya dosya raporu - gruplandirmali.
+
+        DuckDB kurulu ve ATTACH basarili ise tek-gecis CTE ile calisir,
+        aksi halde SQLite yoluna duser.
+        """
         from src.utils.size_formatter import format_size
-        result = db.get_duplicate_groups(source_id, min_size=min_size,
-                                          page=page, page_size=page_size)
+        result = None
+        if analytics.available:
+            try:
+                scan_id = db.get_latest_scan_id(source_id, include_running=False)
+                if scan_id:
+                    result = analytics.get_duplicate_groups(
+                        scan_id, min_size, page, page_size
+                    )
+            except Exception as e:
+                logger.warning("DuckDB duplicate sorgusu basarisiz, SQLite fallback: %s", e)
+                result = None
+        if result is None:
+            result = db.get_duplicate_groups(
+                source_id, min_size=min_size, page=page, page_size=page_size
+            )
         # Boyut formatlama
         result["total_waste_size_formatted"] = format_size(result.get("total_waste_size", 0))
         for g in result.get("groups", []):
@@ -1134,7 +1216,14 @@ def create_app(db, config):
     @app.get("/api/growth/{source_id}")
     async def growth_stats(source_id: int):
         """Yillik/aylik/gunluk buyume istatistikleri."""
-        stats = db.get_growth_stats(source_id)
+        stats = None
+        if analytics.available:
+            try:
+                stats = analytics.get_growth_stats(source_id)
+            except Exception as e:
+                logger.warning("DuckDB growth sorgusu basarisiz, SQLite fallback: %s", e)
+        if stats is None:
+            stats = db.get_growth_stats(source_id)
         creators = db.get_top_file_creators(source_id)
         stats["top_creators"] = creators
         return stats
@@ -1378,8 +1467,9 @@ def create_app(db, config):
             return result
 
     @app.get("/api/archive/browse")
-    async def browse_archived(source_id: int = None, page: int = 1,
-                               page_size: int = 50):
+    async def browse_archived(source_id: int = None,
+                               page: int = Query(1, ge=1, le=10000),
+                               page_size: int = Query(50, ge=1, le=500)):
         """Arsivlenmis dosyalara goz at (geri yukleme UI icin)."""
         from src.utils.size_formatter import format_size
         result = db.search_archived_files("", page=page, page_size=page_size)
@@ -1390,8 +1480,10 @@ def create_app(db, config):
     # --- ARSIV GECMISI ---
 
     @app.get("/api/archive/history")
-    async def archive_history(source_id: int = None, page: int = 1,
-                              page_size: int = 20, date_from: str = None,
+    async def archive_history(source_id: int = None,
+                              page: int = Query(1, ge=1, le=10000),
+                              page_size: int = Query(20, ge=1, le=500),
+                              date_from: str = None,
                               date_to: str = None, op_type: str = None):
         """Sayfalanmis arsiv islem gecmisi."""
         from src.utils.size_formatter import format_size
@@ -1402,7 +1494,9 @@ def create_app(db, config):
         return result
 
     @app.get("/api/archive/operations/{op_id}/files")
-    async def operation_files(op_id: int, page: int = 1, page_size: int = 100):
+    async def operation_files(op_id: int,
+                               page: int = Query(1, ge=1, le=10000),
+                               page_size: int = Query(100, ge=1, le=500)):
         """Arsiv islemindeki dosyalari sayfalanmis getir."""
         from src.utils.size_formatter import format_size
         result = db.get_archive_operation_files(op_id, page, page_size)
@@ -1413,20 +1507,21 @@ def create_app(db, config):
     # --- SYSTEM API ---
 
     @app.post("/api/system/open-folder")
-    async def open_folder(request):
+    async def open_folder(request: Request):
         """Dizini Windows Explorer'da ac."""
         import subprocess
         body = await request.json()
         folder = body.get("path", "")
-        if not folder:
+        if not folder or not isinstance(folder, str):
             raise HTTPException(400, "path gerekli")
-        # Guvenlik: sadece mevcut dizinleri ac
-        folder = os.path.normpath(folder)
+        # Guvenlik: normalize + gercek yol cozumleme (symlink/junction eskape koruma)
+        folder = os.path.realpath(os.path.normpath(folder))
         if os.path.isdir(folder):
-            subprocess.Popen(f'explorer "{folder}"', shell=True)
+            # shell=False ile argv listesi kullanilarak komut enjeksiyonu onlenir
+            subprocess.Popen(["explorer", folder], shell=False)
             return {"success": True, "path": folder}
         elif os.path.isfile(folder):
-            subprocess.Popen(f'explorer /select,"{folder}"', shell=True)
+            subprocess.Popen(["explorer", "/select,", folder], shell=False)
             return {"success": True, "path": folder}
         else:
             raise HTTPException(404, f"Dizin bulunamadi: {folder}")
@@ -1436,12 +1531,27 @@ def create_app(db, config):
         return {
             "status": "ok",
             "time": datetime.now().isoformat(),
-            "database": db.health_check()
+            "database": db.health_check(),
+            "analytics": analytics.health(),
         }
+
+    @app.get("/api/system/analytics")
+    async def analytics_status():
+        """DuckDB analitik motor durumunu dondur."""
+        return analytics.health()
 
     @app.get("/api/db/stats")
     async def db_stats():
         """Veritabani istatistikleri."""
+        if analytics.available:
+            try:
+                wal_path = db.db_path + "-wal"
+                shm_path = db.db_path + "-shm"
+                tables = ["scanned_files", "scan_runs", "archived_files",
+                          "user_access_logs", "sources"]
+                return analytics.get_db_stats(tables, db.db_path, wal_path, shm_path)
+            except Exception as e:
+                logger.warning("DuckDB db_stats basarisiz, SQLite fallback: %s", e)
         return db.get_db_stats()
 
     @app.post("/api/db/cleanup")
