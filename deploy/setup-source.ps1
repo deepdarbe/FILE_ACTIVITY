@@ -23,12 +23,14 @@
 $ErrorActionPreference = "Stop"
 
 # --- Konfigurasyon ---
-$InstallDir  = "C:\FileActivity"
-$RepoOwner   = "deepdarbe"
-$RepoName    = "FILE_ACTIVITY"
-$Branch      = "master"
-$RepoZipUrl  = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$Branch.zip"
-$DashPort    = 8085
+$InstallDir   = "C:\FileActivity"
+$RepoOwner    = "deepdarbe"
+$RepoName     = "FILE_ACTIVITY"
+$Branch       = "master"
+$RepoZipUrl   = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$Branch.zip"
+$DashPort     = 8085
+$PythonVersion = "3.11.9"
+$PythonUrl    = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-amd64.exe"
 
 Write-Host ""
 Write-Host "  +==========================================+" -ForegroundColor Cyan
@@ -45,31 +47,94 @@ if (-not $isAdmin) {
     exit 1
 }
 
-# --- 1. Python kontrolu ---
-Write-Host "[1/6] Python 3.10+ kontrol ediliyor..." -ForegroundColor Yellow
-$pythonCmd = $null
-foreach ($candidate in @("python", "py -3")) {
-    try {
-        $out = & cmd /c "$candidate --version 2>&1"
-        if ($LASTEXITCODE -eq 0 -and $out -match "Python (\d+)\.(\d+)") {
-            $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-            if ($major -eq 3 -and $minor -ge 10) {
-                $pythonCmd = $candidate
-                Write-Host "  [OK] $out -> komut: $candidate" -ForegroundColor Green
-                break
+# --- TLS (Python installer indirme icin erken aktiflestir) ---
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+function Find-Python {
+    foreach ($candidate in @("python", "py -3")) {
+        try {
+            $out = & cmd /c "$candidate --version 2>&1"
+            if ($LASTEXITCODE -eq 0 -and $out -match "Python (\d+)\.(\d+)") {
+                $major = [int]$Matches[1]; $minor = [int]$Matches[2]
+                if ($major -eq 3 -and $minor -ge 10) {
+                    return @{ Command = $candidate; Version = $out.Trim() }
+                }
+            }
+        } catch {}
+    }
+    # Son care: yaygin kurulum yollarinda ara (PATH henuz yenilenmemis olabilir)
+    $commonPaths = @(
+        "$env:ProgramFiles\Python311\python.exe",
+        "$env:ProgramFiles\Python312\python.exe",
+        "$env:ProgramFiles\Python310\python.exe",
+        "$env:LocalAppData\Programs\Python\Python311\python.exe",
+        "$env:LocalAppData\Programs\Python\Python312\python.exe"
+    )
+    foreach ($p in $commonPaths) {
+        if (Test-Path $p) {
+            $out = & $p --version 2>&1
+            if ($out -match "Python (\d+)\.(\d+)" -and [int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 10) {
+                return @{ Command = "`"$p`""; Version = $out.Trim() }
             }
         }
-    } catch {}
-}
-if (-not $pythonCmd) {
-    Write-Host "  [HATA] Python 3.10+ bulunamadi." -ForegroundColor Red
-    Write-Host "         https://www.python.org/downloads/ adresinden kurup tekrar deneyin." -ForegroundColor Yellow
-    Write-Host "         Kurulumda 'Add Python to PATH' secenegini isaretleyin." -ForegroundColor Yellow
-    exit 1
+    }
+    return $null
 }
 
-# --- TLS ---
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+function Refresh-Path {
+    $m = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $u = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$m;$u"
+}
+
+# --- 1. Python kontrolu (yoksa otomatik kur) ---
+Write-Host "[1/6] Python 3.10+ kontrol ediliyor..." -ForegroundColor Yellow
+$py = Find-Python
+
+if (-not $py) {
+    Write-Host "  Python 3.10+ bulunamadi. Otomatik kurulum baslatiliyor..." -ForegroundColor Yellow
+    Write-Host "  Python $PythonVersion indiriliyor (~28 MB)..." -ForegroundColor Gray
+
+    $pyInstaller = "$env:TEMP\python-$PythonVersion-amd64.exe"
+    try {
+        Invoke-WebRequest -Uri $PythonUrl -OutFile $pyInstaller -UseBasicParsing
+    } catch {
+        Write-Host "  [HATA] Python installer indirilemedi: $_" -ForegroundColor Red
+        Write-Host "         Manuel: https://www.python.org/downloads/" -ForegroundColor Yellow
+        exit 1
+    }
+
+    Write-Host "  Python sessiz kuruluyor (tum kullanicilar, PATH'e eklenir)..." -ForegroundColor Gray
+    $pyArgs = @(
+        "/quiet",
+        "InstallAllUsers=1",
+        "PrependPath=1",
+        "Include_test=0",
+        "Include_launcher=1",
+        "Include_pip=1"
+    )
+    $proc = Start-Process -FilePath $pyInstaller -ArgumentList $pyArgs -Wait -PassThru
+    Remove-Item $pyInstaller -Force -ErrorAction SilentlyContinue
+
+    if ($proc.ExitCode -ne 0) {
+        Write-Host "  [HATA] Python kurulumu basarisiz (exit $($proc.ExitCode))" -ForegroundColor Red
+        exit 1
+    }
+
+    # Mevcut PowerShell oturumunda yeni PATH'i gor
+    Refresh-Path
+    $py = Find-Python
+
+    if (-not $py) {
+        Write-Host "  [HATA] Python kuruldu ama calistirilabilir bulunamadi." -ForegroundColor Red
+        Write-Host "         PowerShell'i kapatip yeniden acin ve komutu tekrar calistirin." -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "  [OK] Python kuruldu: $($py.Version)" -ForegroundColor Green
+} else {
+    Write-Host "  [OK] $($py.Version) -> komut: $($py.Command)" -ForegroundColor Green
+}
+$pythonCmd = $py.Command
 
 # --- 2. Kaynak kodu indir ---
 Write-Host "[2/6] Kaynak kod indiriliyor ($Branch)..." -ForegroundColor Yellow
@@ -161,6 +226,13 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-Host "  [OK] Bagimliliklar kuruldu (duckdb dahil)" -ForegroundColor Green
+
+# pywin32 post-install: COM + servis bilesenleri icin bir kez calistirilir
+$pywin32PI = "$venvPath\Scripts\pywin32_postinstall.py"
+if (Test-Path $pywin32PI) {
+    Write-Host "  pywin32 postinstall calistiriliyor..." -ForegroundColor Gray
+    & $venvPy $pywin32PI -install 2>&1 | Out-Null
+}
 
 # --- 5. Launcher scriptleri ---
 Write-Host "[5/6] Launcher scriptleri..." -ForegroundColor Yellow
