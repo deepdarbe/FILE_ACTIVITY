@@ -12,22 +12,41 @@ Enterprise file share analysis tool that detects risky/stale/duplicate files, ar
 
 ## Quick Setup
 
-### Requirements
-- Windows 10/11 or Windows Server 2016+
-- No Python or Git needed (standalone EXE)
+### Option A — Source install from master (recommended, always latest)
 
-### One-Command Install
+**Requirements:** Python 3.10+ on target (check with `python --version`).
+
+```powershell
+# PowerShell (Run as Admin):
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
+```
+
+Installs to `C:\FileActivity\`, creates a Python venv, installs all
+dependencies (including DuckDB analytics), configures firewall, and offers to
+start the dashboard. Re-run the same command any time to update — data,
+logs, reports, and `config.yaml` are preserved.
+
+To update later: `C:\FileActivity\update.cmd`
+
+### Option B — EXE release install (no Python needed)
+
+Requires a prebuilt EXE released on GitHub Releases.
 
 ```powershell
 # PowerShell (Run as Admin):
 $f="$env:TEMP\fa.ps1"; (New-Object Net.WebClient).DownloadFile("https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup.ps1",$f); powershell -ExecutionPolicy Bypass -File $f
 ```
 
-### Manual Install
+### Manual install
 ```powershell
-# Download latest release from:
-# https://github.com/deepdarbe/FILE_ACTIVITY/releases/latest
-# Extract ZIP, then run:
+# Source:
+git clone https://github.com/deepdarbe/FILE_ACTIVITY.git
+cd FILE_ACTIVITY
+python -m venv .venv && .venv\Scripts\activate
+pip install -r requirements.txt
+python main.py dashboard
+
+# Or EXE (from Releases):
 C:\FileActivity\bin\FileActivity.exe --config C:\FileActivity\config\config.yaml dashboard
 ```
 
