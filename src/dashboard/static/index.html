@@ -1715,8 +1715,12 @@ async function loadUsers() {
             renderHeatmap(heatData);
 
             document.getElementById('users-table').innerHTML = `
-                <thead><tr><th>Kullanici</th><th>Erisim</th><th>Detay</th></tr></thead>
-                <tbody>${topUsers.slice(0,20).map(u => `<tr><td><strong>${u.username}</strong></td><td>${formatNum(u.access_count||u.count||0)}</td><td><button class="btn btn-sm btn-outline" onclick="loadUserDetail('${u.username}')">Detay</button></td></tr>`).join('')}</tbody>
+                <thead><tr><th>Kullanici</th><th>Erisim</th><th>Islem</th></tr></thead>
+                <tbody>${topUsers.slice(0,20).map(u => `<tr><td><strong>${u.username}</strong></td><td>${formatNum(u.access_count||u.count||0)}</td>
+                    <td style="display:flex;gap:4px">
+                        <button class="btn btn-sm btn-outline" onclick="loadUserDetail('${u.username}')">Detay</button>
+                        <button class="btn btn-sm btn-outline" style="border-color:var(--accent);color:var(--accent)" onclick="loadUserEfficiency('${u.username}')">Verimlilik</button>
+                    </td></tr>`).join('')}</tbody>
             `;
         }
     } catch(e) { console.error(e); }
@@ -1803,6 +1807,76 @@ async function loadUserDetail(username) {
         modal.querySelector('.modal').innerHTML = body;
         modal.classList.add('active');
     } catch(e) { notify(e.message, 'error'); }
+}
+
+// Verimlilik skoru modali — PR B (efficiency score)
+async function loadUserEfficiency(username) {
+    try {
+        const d = await api(`/users/${username}/efficiency`);
+        const score = d.score || 0;
+        const grade = d.grade || 'A';
+        // Renk: A/B yesil, C sari, D/E kirmizi
+        const gradeColor = {A:'var(--success)', B:'var(--success)', C:'var(--warning)', D:'var(--danger)', E:'var(--danger)'}[grade] || 'var(--text-primary)';
+
+        const factorsHtml = (d.factors || []).length === 0 ?
+            '<p style="color:var(--text-muted);font-size:13px">Hicbir uyumsuzluk tespit edilmedi. Iyi gidiyorsunuz.</p>' :
+            (d.factors || []).map(f => `
+                <div style="margin-bottom:10px;padding:10px;background:var(--bg-primary);border-radius:6px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">
+                        <strong>${f.label}</strong>
+                        <span style="color:var(--danger);font-weight:600">-${f.penalty} puan</span>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${formatNum(f.count)} ${f.name === 'dormant' ? 'gun' : 'dosya'} (max ceza: -${f.max})</div>
+                </div>
+            `).join('');
+
+        const suggestionsHtml = (d.suggestions || []).map(s => `<li style="margin-bottom:6px">${s}</li>`).join('');
+
+        const body = `
+            <h3 style="margin:0 0 16px 0">Verimlilik Skoru: ${username}</h3>
+
+            <div style="display:flex;gap:20px;align-items:center;background:var(--bg-primary);padding:20px;border-radius:8px;margin-bottom:20px">
+                <div style="flex:0 0 100px;text-align:center">
+                    <div style="font-size:56px;font-weight:700;color:${gradeColor};line-height:1">${score}</div>
+                    <div style="font-size:14px;color:var(--text-muted);margin-top:4px">/ 100</div>
+                </div>
+                <div style="flex:0 0 80px;text-align:center">
+                    <div style="font-size:48px;font-weight:700;color:${gradeColor};line-height:1">${grade}</div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Sinif</div>
+                </div>
+                <div style="flex:1;font-size:12px;color:var(--text-muted)">
+                    <div><strong>Toplam dosya:</strong> ${formatNum(d.total_files||0)}</div>
+                    <div><strong>Toplam boyut:</strong> ${formatSize(d.total_size||0)}</div>
+                    <div><strong>Toplam ceza:</strong> -${d.total_penalty||0} puan</div>
+                    <div style="font-size:10px;margin-top:4px">Son guncelleme: ${d.computed_at ? new Date(d.computed_at).toLocaleString() : '-'}</div>
+                </div>
+            </div>
+
+            <h4 style="font-size:13px;margin:0 0 8px 0;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px">Faktorler</h4>
+            ${factorsHtml}
+
+            ${suggestionsHtml ? `
+                <h4 style="font-size:13px;margin:16px 0 8px 0;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px">Oneriler</h4>
+                <ul style="font-size:13px;line-height:1.6;padding-left:20px;margin:0">${suggestionsHtml}</ul>
+            ` : ''}
+
+            <div style="text-align:right;margin-top:20px">
+                <button class="btn btn-outline" onclick="closeModal('modal-user-efficiency')">Kapat</button>
+            </div>
+        `;
+
+        let modal = document.getElementById('modal-user-efficiency');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'modal-user-efficiency';
+            modal.className = 'modal-overlay';
+            modal.innerHTML = '<div class="modal" style="max-width:700px;width:90%"></div>';
+            modal.onclick = (e) => { if (e.target === modal) closeModal('modal-user-efficiency'); };
+            document.body.appendChild(modal);
+        }
+        modal.querySelector('.modal').innerHTML = body;
+        modal.classList.add('active');
+    } catch(e) { notify(e.message || 'Verimlilik skoru alinamadi', 'error'); }
 }
 
 // ═══════════════════════════════════════════════════

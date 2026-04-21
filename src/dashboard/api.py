@@ -741,6 +741,18 @@ def create_app(db, config, analytics=None, ad_lookup=None):
     async def user_activity(username: str, days: int = 30):
         return db.get_user_activity(username, days=days)
 
+    @app.get("/api/users/{username}/efficiency")
+    async def user_efficiency(username: str,
+                               source_id: Optional[int] = None,
+                               scan_id: Optional[int] = None):
+        """Kullanici verimlilik skoru + uyumsuzluk raporu.
+
+        0-100 arasi skor, faktorler, somut oneriler. source_id ve scan_id
+        opsiyonel; hic biri verilmezse son tamamlanmis tarama kullanilir.
+        """
+        from src.user_activity.efficiency_score import compute_user_score
+        return compute_user_score(db, username, source_id=source_id, scan_id=scan_id)
+
     @app.get("/api/users/{username}/detail")
     async def user_detail(username: str, days: int = 30):
         """Kullanici detay raporu - HTML dashboard icin genisletilmis format."""
