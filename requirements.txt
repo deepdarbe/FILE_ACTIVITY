@@ -27,3 +27,9 @@ reportlab>=4.0.0
 # growth, stats) run through DuckDB via the sqlite_scanner extension.
 # SQLite remains the source of truth; DuckDB only reads.
 duckdb>=1.0.0
+
+# Active Directory lookup (optional): pure-Python LDAP client.
+# When installed and active_directory.enabled=true, dashboard resolves
+# username -> email/display_name for activity detail + notifications.
+# Missing package -> ADLookup.available=False and feature silently disabled.
+ldap3>=2.9.1
