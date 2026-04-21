@@ -654,6 +654,20 @@ class FileScanner:
             file_count, format_size(total_size), elapsed, fps, errors
         )
 
+        # KPI summary hesapla (Overview sayfasi bu JSON'u okur, scanned_files
+        # tablosunu taramaz). Scan basarili olmayabilir (hata/kismi),
+        # yine de mumkun oldugu kadar ozet cikart.
+        if status == "completed" and file_count > 0:
+            try:
+                t0 = time.time()
+                self.db.compute_scan_summary(scan_id)
+                logger.info(
+                    "Scan summary hesaplandi (scan_id=%d, %.1f sn)",
+                    scan_id, time.time() - t0,
+                )
+            except Exception as e:
+                logger.warning("Scan summary hesaplanamadi (scan_id=%d): %s", scan_id, e)
+
         # Son ilerleme durumunu guncelle
         progress.update({
             "status": status,

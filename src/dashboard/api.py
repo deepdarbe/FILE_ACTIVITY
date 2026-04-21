@@ -211,6 +211,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
                                 WHERE id=? AND total_files=0
                             """, (file_count, total_size, scan["id"]))
 
+                    # Pre-computed KPI summary (scan tamamlanirken
+                    # yazilmisti). Varsa Overview bu satirdan render eder,
+                    # scanned_files tablosuna hic dokunmaz.
+                    kpi = db.get_scan_summary(scan["id"])
+
                     summaries[s.id] = {
                         "has_data": file_count > 0,
                         "scan_id": scan["id"],
@@ -222,6 +227,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
                             "completed_at": scan["completed_at"],
                             "status": scan["status"],
                         },
+                        "kpi": kpi,  # None ise frontend eski yola duser
                     }
             except Exception:
                 summaries[s.id] = {"has_data": False, "scan_id": None}
@@ -1081,12 +1087,88 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "files": page_files
         }
 
+    @app.get("/api/overview/{source_id}")
+    async def overview(source_id: int):
+        """Instant Overview: pre-computed summary'den okur, scanned_files
+        tablosuna dokunmaz. Scan tamamlaniyorken kaydedilen JSON'dan gelir.
+
+        Summary henuz hesaplanmamissa (ornek: scan calisiyor, eski scan)
+        frontend kendi fallback'ine duser (has_data=false).
+        """
+        from src.utils.size_formatter import format_size
+        _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            return {"has_data": False, "reason": "no_completed_scan"}
+
+        kpi = db.get_scan_summary(scan_id)
+        if not kpi:
+            return {"has_data": False, "scan_id": scan_id,
+                    "reason": "summary_not_computed"}
+
+        # Boyutlari formatla
+        kpi["total_size_formatted"] = format_size(kpi.get("total_size", 0))
+        kpi["stale_size_formatted"] = format_size(kpi.get("stale_size", 0))
+        kpi["large_size_formatted"] = format_size(kpi.get("large_size", 0))
+        kpi["duplicate_waste_formatted"] = format_size(kpi.get("duplicate_waste_size", 0))
+        for ext in kpi.get("top_extensions", []):
+            ext["size_formatted"] = format_size(ext.get("size", 0))
+        for owner in kpi.get("top_owners", []):
+            owner["size_formatted"] = format_size(owner.get("size", 0))
+
+        kpi["has_data"] = True
+        return kpi
+
+    @app.post("/api/overview/{source_id}/recompute")
+    async def overview_recompute(source_id: int):
+        """Manuel: son scan icin summary'yi yeniden hesapla.
+
+        Kullanim: scan bittigi sirada summary yazilmadi (crash vs.) ise
+        veya KPI algoritmasi guncellendikten sonra.
+        """
+        _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, "Tamamlanmis scan yok")
+        summary = db.compute_scan_summary(scan_id)
+        return {"status": "ok", "scan_id": scan_id,
+                "total_files": summary.get("total_files")}
+
     @app.get("/api/risk-score/{source_id}")
     async def risk_score(source_id: int):
         """Supervisor risk score - TEK optimized sorgu (6 yerine 2)."""
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
             return {"risk_score": 0, "kpis": {}}
+
+        # Hizli yol: pre-computed summary varsa oradan hesapla
+        kpi = db.get_scan_summary(scan_id)
+        if kpi:
+            total = kpi.get("total_files", 0) or 1
+            risky = kpi.get("risky_count", 0)
+            stale = kpi.get("stale_count", 0)
+            dup_waste = kpi.get("duplicate_waste_size", 0)
+            total_size = kpi.get("total_size", 0) or 1
+            # Basit formul: risky % + stale % + (dup_waste / total_size) %
+            score = int(min(100,
+                (risky / total) * 40 +
+                (stale / total) * 30 +
+                (dup_waste / total_size) * 30 * 100
+            ))
+            return {
+                "risk_score": score,
+                "kpis": {
+                    "total_files": kpi.get("total_files"),
+                    "risky_files": risky,
+                    "stale_files": stale,
+                    "duplicate_groups": kpi.get("duplicate_groups"),
+                    "total_size": kpi.get("total_size"),
+                    "stale_size": kpi.get("stale_size"),
+                    "risky_pct": round(risky * 100 / total, 1),
+                    "stale_pct": round(stale * 100 / total, 1),
+                },
+                "source": "precomputed",
+            }
 
         risky_exts = ('exe','bat','ps1','vbs','cmd','msi','scr','com','js','wsf')
         placeholders = ','.join(['?'] * len(risky_exts))
