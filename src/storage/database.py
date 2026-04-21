@@ -108,17 +108,25 @@ class Database:
             except Exception as e:
                 logger.warning(f"WAL checkpoint hatasi (kritik degil): {e}")
 
-            # Baslangicta eski scan'leri temizle (retention policy).
-            # Bir musteri 2.5M dosya + N scan ile dashboard'u acmayi bekliyordu;
-            # Overview analytical sorgulari scan_runs x scanned_files uzerinden
-            # cartesian yuk getirdigi icin dakikalarca asiliyordu. Her kaynak
-            # icin son N scan tutulur (default 3), eski olanlar + dosyalari
-            # silinir. Scan sayisi esiginin altindaysa no-op.
+            # Baslangicta eski scan'leri ve orphan satirlari temizle.
+            # Iki ayri kontrol:
+            # (1) RETENTION: Her kaynak icin son N scan tutulur (default 3).
+            # (2) ORPHAN: scanned_files'ta scan_run'a bagli olmayan satirlari
+            #     SIL — eski versiyonlardan kalmis 1.27M+ orphan satir
+            #     dashboard'u dakikalarca asiyordu.
+            # Orphan kontrolu retention'dan bagimsiz ve hep calisir;
+            # tek scan + milyonlarca orphan en kotu durumdur.
             try:
                 retention = self.config.get("retention", {}) or {}
                 if retention.get("auto_cleanup_on_startup", True):
                     keep_n = int(retention.get("keep_last_n_scans", 3))
-                    # Temizlik gerekli mi? Once say
+                    # Hizli orphan tespiti — eger varsa bunlari da temizleyecegiz
+                    orphan_row = conn.execute(
+                        "SELECT COUNT(*) FROM scanned_files "
+                        "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
+                    ).fetchone()
+                    orphan_count = orphan_row[0] if orphan_row else 0
+
                     count_row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM scan_runs"
                     ).fetchone()
@@ -127,20 +135,29 @@ class Database:
                         "SELECT COUNT(DISTINCT source_id) AS cnt FROM scan_runs"
                     ).fetchone()
                     total_sources = source_row[0] if source_row else 0
-                    # total_scans > keep_n * sources varsa temizle (hissini hizli kontrol)
-                    if total_scans > keep_n * max(total_sources, 1):
-                        logger.info(
-                            "Startup retention temizligi: %d scan var, her kaynak icin son %d tutuluyor",
-                            total_scans, keep_n,
-                        )
-                        result = self.cleanup_old_scans(keep_last_n=keep_n)
-                        if result.get("deleted_runs"):
+
+                    needs_retention = total_scans > keep_n * max(total_sources, 1)
+                    needs_orphan = orphan_count > 0
+
+                    if needs_retention or needs_orphan:
+                        if needs_retention:
                             logger.info(
-                                "Temizlendi: %d scan_run, %d dosya kaydi silindi",
+                                "Startup retention temizligi: %d scan var, her kaynak icin son %d tutuluyor",
+                                total_scans, keep_n,
+                            )
+                        if needs_orphan:
+                            logger.info(
+                                "Orphan scanned_files satirlari tespit edildi: %d adet (scan_run'a bagli degil), siliniyor",
+                                orphan_count,
+                            )
+                        result = self.cleanup_old_scans(keep_last_n=keep_n)
+                        if result.get("deleted_runs") or result.get("deleted_orphans"):
+                            logger.info(
+                                "Temizlendi: %d scan_run, %d dosya kaydi (eski scan), %d orphan satir",
                                 result.get("deleted_runs", 0),
                                 result.get("deleted_files", 0),
+                                result.get("deleted_orphans", 0),
                             )
-                            # Silme sonrasi VACUUM incremental — disk alanini geri al
                             try:
                                 conn.execute("PRAGMA incremental_vacuum(1000)")
                             except Exception:
@@ -1837,9 +1854,15 @@ class Database:
             return creators
 
     def cleanup_old_scans(self, keep_last_n: int = 5) -> dict:
-        """Eski tarama verilerini temizle. Her kaynak icin son N taramayi koru."""
+        """Eski tarama verilerini temizle. Her kaynak icin son N taramayi koru.
+
+        Ek olarak: hangi scan_run'a ait olmayan orphan scanned_files
+        satirlarini da siler. Eski versiyonlarin bug'i veya elle yapilan
+        scan_run silmeleri 1.27M+ orphan birakabiliyordu.
+        """
         deleted_runs = 0
         deleted_files = 0
+        deleted_orphans = 0
         try:
             with self.get_cursor() as cur:
                 # Her kaynak icin son N tarama disindakileri bul
@@ -1857,7 +1880,19 @@ class Database:
                         deleted_files += cur.rowcount
                         cur.execute(f"DELETE FROM scan_runs WHERE id IN ({placeholders})", old_run_ids)
                         deleted_runs += cur.rowcount
-            return {"deleted_runs": deleted_runs, "deleted_files": deleted_files}
+
+                # Orphan satirlari da temizle (silinmis scan_run'lara ait dosyalar)
+                cur.execute(
+                    "DELETE FROM scanned_files "
+                    "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
+                )
+                deleted_orphans = cur.rowcount
+
+            return {
+                "deleted_runs": deleted_runs,
+                "deleted_files": deleted_files,
+                "deleted_orphans": deleted_orphans,
+            }
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
             return {"error": str(e)}
