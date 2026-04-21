@@ -33,6 +33,7 @@ import logging
 import os
 import smtplib
 import ssl
+from contextlib import contextmanager
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -239,18 +240,9 @@ class EmailNotifier:
         lines.append("-- FILE ACTIVITY (otomatik bildirim)")
         return "\n".join(lines)
 
-    def send_user_report(self, username: str, email: str,
-                          score_result: dict,
-                          display_name: Optional[str] = None) -> dict:
-        """Kullaniciya verimlilik raporu e-postasi gonder.
-
-        admin_cc varsa CC'ye eklenir. Gonderim sonucu notification_log'a yazilir.
-        """
-        if not self.available:
-            return {"ok": False, "error": self._init_error, "skipped": True}
-        if not email:
-            return {"ok": False, "error": "hedef e-posta yok", "skipped": True}
-
+    def _build_message(self, username: str, email: str, score_result: dict,
+                        display_name: Optional[str]) -> tuple:
+        """Subject + MIMEMultipart + recipient list hazirla."""
         score = score_result.get("score", 0)
         grade = score_result.get("grade", "A")
         subject = f"{self.subject_prefix} Dosya Verimlilik Raporu — {grade} ({score}/100)"
@@ -268,10 +260,34 @@ class EmailNotifier:
         html = self._render_html(username, display_name, score_result)
         msg.attach(MIMEText(text, "plain", "utf-8"))
         msg.attach(MIMEText(html, "html", "utf-8"))
+        return subject, msg, recipients
 
+    def send_user_report(self, username: str, email: str,
+                          score_result: dict,
+                          display_name: Optional[str] = None,
+                          smtp_session: Optional[smtplib.SMTP] = None) -> dict:
+        """Kullaniciya verimlilik raporu e-postasi gonder.
+
+        admin_cc varsa CC'ye eklenir. Gonderim sonucu notification_log'a yazilir.
+
+        smtp_session: opsiyonel. Batch cagrilar icin EmailNotifier.session()
+        context manager'indan alinan acik bir SMTP baglantisi verilirse her
+        gonderimde yeni baglanti acilmaz. None ise her cagri icin kendi
+        baglantisini acar ve kapatir.
+        """
+        if not self.available:
+            return {"ok": False, "error": self._init_error, "skipped": True}
+        if not email:
+            return {"ok": False, "error": "hedef e-posta yok", "skipped": True}
+
+        subject, msg, recipients = self._build_message(username, email,
+                                                         score_result, display_name)
         try:
-            with self._connect() as s:
-                s.sendmail(self.from_address, recipients, msg.as_string())
+            if smtp_session is not None:
+                smtp_session.sendmail(self.from_address, recipients, msg.as_string())
+            else:
+                with self._connect() as s:
+                    s.sendmail(self.from_address, recipients, msg.as_string())
             self._log(username, email, subject, "sent", score_result=score_result,
                        cc=self.admin_cc or None)
             return {"ok": True, "email": email, "cc": self.admin_cc or None, "subject": subject}
@@ -281,6 +297,34 @@ class EmailNotifier:
             self._log(username, email, subject, "error", error=err,
                        cc=self.admin_cc or None)
             return {"ok": False, "error": err}
+
+    @contextmanager
+    def session(self):
+        """Batch gonderim icin persistent SMTP oturumu aciklama context manager'i.
+
+        Kullanim:
+            with notifier.session() as smtp:
+                for user in users:
+                    notifier.send_user_report(..., smtp_session=smtp)
+
+        Bir kez baglanir, tum gonderimler ayni soket uzerinden gider. Office
+        365 gibi rate-limited sunucularda bagimsiz baglanti sayisini makul
+        tutar. available=False ise hata atmaz, smtp=None yield eder ve
+        send_user_report her cagrida kendi baglantisini acar (downgrade).
+        """
+        if not self.available:
+            yield None
+            return
+        smtp = None
+        try:
+            smtp = self._connect()
+            yield smtp
+        finally:
+            if smtp is not None:
+                try:
+                    smtp.quit()
+                except Exception:
+                    pass
 
     def _log(self, username: str, email: str, subject: str, status: str,
               error: Optional[str] = None, cc: Optional[str] = None,
