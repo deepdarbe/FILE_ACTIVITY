@@ -197,12 +197,22 @@ class TaskScheduler:
             return {"status": "completed", "message": "Bu taramada sahibi olan dosya yok",
                     "sent": 0, "skipped": 0, "failed": 0}
 
+        total = len(owners)
+        logger.info("notify_users: %d kullaniciya bildirim gonderilecek", total)
+
         sent = 0
         skipped = 0
         failed = 0
         skipped_users: list = []
+        # Her 25 kullanicida bir ilerleme logu
+        progress_step = max(25, total // 10)
 
-        for owner in owners:
+        for idx, owner in enumerate(owners, start=1):
+            if idx % progress_step == 0 or idx == total:
+                logger.info(
+                    "notify_users ilerleme: %d/%d (sent=%d, skipped=%d, failed=%d)",
+                    idx, total, sent, skipped, failed,
+                )
             # 1. Skor hesapla
             try:
                 score = compute_user_score(self.db, owner, scan_id=scan_id)
