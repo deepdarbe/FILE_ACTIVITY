@@ -26,6 +26,7 @@ INCLUDE = [
     "file_activity.spec",
     "build.bat",
     "pack.py",
+    "VERSION",
 
     # Kaynak kod
     "src/",
