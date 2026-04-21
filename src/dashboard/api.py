@@ -92,6 +92,30 @@ def _get_source(db, source_id: int):
     return src
 
 
+def _read_version() -> str:
+    """Proje kok dizinindeki VERSION dosyasindan sürümü oku.
+
+    Sürüm tek bir dosyada yasar (repo kok dizininde `VERSION`). Dashboard
+    ve FastAPI title'i bu tek kaynaktan beslenir. Dosya yoksa 'unknown'
+    doner — hardcoded bir yedek yok ki yanlis bir deger yayilmasin.
+    """
+    for candidate in (
+        os.path.join(os.path.dirname(__file__), "..", "..", "VERSION"),
+        os.path.join(os.getcwd(), "VERSION"),
+    ):
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                v = f.read().strip()
+                if v:
+                    return v
+        except (OSError, IOError):
+            continue
+    return "unknown"
+
+
+APP_VERSION = _read_version()
+
+
 def create_app(db, config, analytics=None):
     """FastAPI uygulamasini olustur.
 
@@ -103,7 +127,7 @@ def create_app(db, config, analytics=None):
         from src.storage.analytics import AnalyticsEngine
         analytics = AnalyticsEngine(db.db_path, config.get("analytics", {}))
 
-    app = FastAPI(title="FILE ACTIVITY Dashboard", version="1.0.0")
+    app = FastAPI(title="FILE ACTIVITY Dashboard", version=APP_VERSION)
     app.state.analytics = analytics
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -1531,6 +1555,7 @@ def create_app(db, config, analytics=None):
         return {
             "status": "ok",
             "time": datetime.now().isoformat(),
+            "version": APP_VERSION,
             "database": db.health_check(),
             "analytics": analytics.health(),
         }
@@ -1539,6 +1564,121 @@ def create_app(db, config, analytics=None):
     async def analytics_status():
         """DuckDB analitik motor durumunu dondur."""
         return analytics.health()
+
+    @app.get("/api/system/version")
+    async def version():
+        """Calisan sürüm (repo kokundeki VERSION dosyasindan)."""
+        return {"version": APP_VERSION}
+
+    def _parse_ver(v: str):
+        """Semver-ish karsilastirma icin tuple parse et.
+
+        '1.6.0'      -> (1,6,0, False) — stabil
+        '1.7.0-dev'  -> (1,7,0, True)  — pre-release (master'da, release'ten onde)
+        """
+        v = v.strip().lstrip("v")
+        main, _, suffix = v.partition("-")
+        parts = main.split(".")
+        try:
+            nums = tuple(int(p) for p in parts)
+        except ValueError:
+            nums = (0,)
+        return nums + (bool(suffix),)
+
+    @app.get("/api/system/version-check")
+    async def version_check():
+        """GitHub latest release ile yerel sürümü karsilastir.
+
+        Kurumsal aglarda GitHub API'sine erisim yoksa hata yerine
+        `error` alani ile temiz doner — UI banner'i sessizce gizlenir.
+        """
+        import urllib.request
+        import urllib.error
+        import ssl
+
+        api_url = "https://api.github.com/repos/deepdarbe/FILE_ACTIVITY/releases/latest"
+        local = APP_VERSION
+        try:
+            req = urllib.request.Request(api_url, headers={"User-Agent": "file-activity-dashboard"})
+            # TLS dogrulama: kurumsal proxy arkasinda ilerleyebilsin diye
+            # sistem CA store'u kullan; basarisiz olursa sessizce dus
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            remote = (data.get("tag_name") or "").lstrip("v")
+            if not remote:
+                return {"local": local, "remote": None, "update_available": False,
+                        "error": "no tag_name"}
+            local_tuple = _parse_ver(local)
+            remote_tuple = _parse_ver(remote)
+            # Pre-release (suffix=True) kendi base'iyle esitse ilerdedir, update yok
+            local_core = local_tuple[:-1]
+            remote_core = remote_tuple[:-1]
+            is_pre = local_tuple[-1]
+            update_available = (local_core < remote_core) and not (is_pre and local_core == remote_core)
+            return {
+                "local": local,
+                "remote": remote,
+                "update_available": update_available,
+                "release_url": data.get("html_url"),
+                "published_at": data.get("published_at"),
+            }
+        except urllib.error.URLError as e:
+            return {"local": local, "remote": None, "update_available": False,
+                    "error": f"github API erisilemedi: {e.reason}"}
+        except (ssl.SSLError, TimeoutError, OSError) as e:
+            return {"local": local, "remote": None, "update_available": False,
+                    "error": f"ag hatasi: {e}"}
+        except Exception as e:
+            logger.warning("version-check beklenmeyen hata: %s", e)
+            return {"local": local, "remote": None, "update_available": False,
+                    "error": "beklenmeyen hata"}
+
+    @app.post("/api/system/update")
+    async def update():
+        """Yerel update.cmd'yi detached olarak baslat.
+
+        update.cmd setup-source.ps1'i calistirir, bu da calisan python
+        process'ini durdurur ve master'in en son halini indirir. Dashboard
+        30 saniye sonra yeniden baslatilir.
+        """
+        import subprocess
+        import sys
+
+        if sys.platform != "win32":
+            raise HTTPException(400, "Guncelleme sadece Windows uzerinde desteklenir")
+
+        # update.cmd'yi cwd veya kurulum dizininde ara
+        candidates = [
+            os.path.join(os.getcwd(), "update.cmd"),
+            r"C:\FileActivity\update.cmd",
+        ]
+        update_cmd = next((p for p in candidates if os.path.exists(p)), None)
+        if not update_cmd:
+            raise HTTPException(
+                404,
+                f"update.cmd bulunamadi. Kontrol edilen yollar: {candidates}. "
+                "Manuel guncelleme icin setup-source.ps1'i tekrar calistirin."
+            )
+
+        # Detached process: dashboard'u hemen donduruyor, update.cmd
+        # kendi console'unda devam ediyor. CREATE_NEW_CONSOLE ile kullanici
+        # ilerlemeyi gorebilsin.
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_CONSOLE = 0x00000010
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+        subprocess.Popen(
+            ["cmd.exe", "/c", update_cmd],
+            creationflags=DETACHED_PROCESS | CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+            cwd=os.path.dirname(update_cmd),
+        )
+        logger.info("Guncelleme tetiklendi: %s", update_cmd)
+        return {
+            "status": "started",
+            "message": "Guncelleme baslatildi. 30-60 saniye sonra dashboard'u yenileyin.",
+            "update_cmd": update_cmd,
+        }
 
     @app.get("/api/db/stats")
     async def db_stats():

@@ -248,7 +248,11 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="sidebar-header">
         <h1><span class="logo">📊</span> <span>FILE ACTIVITY</span></h1>
         <div class="subtitle">Dosya Analiz & Arsiv</div>
-        <div class="version">v1.4.0</div>
+        <div class="version" id="app-version">...</div>
+        <div id="update-badge" style="display:none;margin-top:8px;padding:8px;background:var(--warning,#f59e0b);color:#000;border-radius:6px;font-size:11px;cursor:pointer" onclick="showUpdateDialog()">
+            <div style="font-weight:600">Yeni sürüm mevcut</div>
+            <div id="update-badge-info" style="margin-top:2px;opacity:0.9"></div>
+        </div>
     </div>
     <div class="nav-section">
         <div class="nav-label">Genel</div>
@@ -1089,6 +1093,26 @@ function browsePath() {
 function selectBrowsePath(path) {
     document.getElementById('src-path').value = path;
     document.getElementById('folder-browser-wrap').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// UPDATE (GitHub release kontrol + uygulama)
+// ═══════════════════════════════════════════════════
+function showUpdateDialog() {
+    const d = window._updateInfo || {};
+    const msg = `Yeni sürüm mevcut: v${d.remote}\nMevcut sürüm: v${d.local}\n\nGuncelle butonuna bastiginizda:\n  - Dashboard kapanir\n  - update.cmd arka planda calisir (yeni pencerede)\n  - master'in en son hali indirilip kurulur (~1-2 dakika)\n  - Verileriniz korunur (data/, config/, logs/)\n\n30-60 saniye sonra dashboard'u yeniden acabilirsiniz.\n\nDevam edilsin mi?`;
+    if (!confirm(msg)) return;
+    fetch('/api/system/update', { method: 'POST' })
+        .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
+        .then(({ ok, data }) => {
+            if (ok) {
+                alert(data.message || 'Guncelleme baslatildi.');
+            } else {
+                alert('Guncelleme baslatilamadi: ' + (data.detail || 'bilinmeyen hata'));
+            }
+        })
+        .catch(e => alert('Ag hatasi: ' + e));
 }
 
 // ═══════════════════════════════════════════════════
@@ -2936,6 +2960,32 @@ async function loadGrowth() {
 // INIT
 // ═══════════════════════════════════════════════════
 (async function init() {
+    // Sidebar sürümünü dinamik cek (VERSION dosyasindan)
+    fetch('/api/system/version')
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+            const el = document.getElementById('app-version');
+            if (el && d && d.version) el.textContent = 'v' + d.version;
+        })
+        .catch(() => {
+            const el = document.getElementById('app-version');
+            if (el) el.textContent = '';
+        });
+
+    // GitHub'da yeni release var mi kontrol et - varsa sidebar'da banner goster
+    fetch('/api/system/version-check')
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+            if (d && d.update_available) {
+                const badge = document.getElementById('update-badge');
+                const info = document.getElementById('update-badge-info');
+                if (badge) badge.style.display = 'block';
+                if (info) info.textContent = `v${d.remote} (mevcut: v${d.local})`;
+                window._updateInfo = d;
+            }
+        })
+        .catch(() => {}); // Ag yoksa sessizce atla
+
     // Dashboard aninda yuklensin - veri arka planda gelsin
     try {
         const initData = await api('/dashboard/init', {silent: true}).catch(() => null);
