@@ -107,6 +107,48 @@ class Database:
                             )
             except Exception as e:
                 logger.warning(f"WAL checkpoint hatasi (kritik degil): {e}")
+
+            # Baslangicta eski scan'leri temizle (retention policy).
+            # Bir musteri 2.5M dosya + N scan ile dashboard'u acmayi bekliyordu;
+            # Overview analytical sorgulari scan_runs x scanned_files uzerinden
+            # cartesian yuk getirdigi icin dakikalarca asiliyordu. Her kaynak
+            # icin son N scan tutulur (default 3), eski olanlar + dosyalari
+            # silinir. Scan sayisi esiginin altindaysa no-op.
+            try:
+                retention = self.config.get("retention", {}) or {}
+                if retention.get("auto_cleanup_on_startup", True):
+                    keep_n = int(retention.get("keep_last_n_scans", 3))
+                    # Temizlik gerekli mi? Once say
+                    count_row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM scan_runs"
+                    ).fetchone()
+                    total_scans = count_row[0] if count_row else 0
+                    source_row = conn.execute(
+                        "SELECT COUNT(DISTINCT source_id) AS cnt FROM scan_runs"
+                    ).fetchone()
+                    total_sources = source_row[0] if source_row else 0
+                    # total_scans > keep_n * sources varsa temizle (hissini hizli kontrol)
+                    if total_scans > keep_n * max(total_sources, 1):
+                        logger.info(
+                            "Startup retention temizligi: %d scan var, her kaynak icin son %d tutuluyor",
+                            total_scans, keep_n,
+                        )
+                        result = self.cleanup_old_scans(keep_last_n=keep_n)
+                        if result.get("deleted_runs"):
+                            logger.info(
+                                "Temizlendi: %d scan_run, %d dosya kaydi silindi",
+                                result.get("deleted_runs", 0),
+                                result.get("deleted_files", 0),
+                            )
+                            # Silme sonrasi VACUUM incremental — disk alanini geri al
+                            try:
+                                conn.execute("PRAGMA incremental_vacuum(1000)")
+                            except Exception:
+                                pass
+                        elif "error" in result:
+                            logger.warning("Retention temizligi hatasi: %s", result["error"])
+            except Exception as e:
+                logger.warning("Retention temizligi sirasinda hata (kritik degil): %s", e)
         except Exception as e:
             self.connected = False
             raise DatabaseConnectionError(
