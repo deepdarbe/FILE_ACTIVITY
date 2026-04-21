@@ -1746,7 +1746,62 @@ function renderHeatmap(data) {
 async function loadUserDetail(username) {
     try {
         const data = await api(`/users/${username}/detail`);
-        alert(JSON.stringify(data.summary, null, 2));
+        const ad = data.ad || {};
+        const s = data.summary || {};
+
+        // AD source etiketi (tooltip icin)
+        const adSourceLabel = {
+            live: 'canli AD sorgusu',
+            cache: 'yerel cache (taze)',
+            'stale-cache': 'yerel cache (eski - AD erisilemedi)',
+        }[ad.source] || 'AD devre disi';
+
+        const adBlock = ad.found || ad.email ? `
+            <div style="background:var(--bg-primary);padding:12px;border-radius:8px;margin-bottom:16px;border-left:3px solid var(--accent)">
+                <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Active Directory</div>
+                ${ad.display_name ? `<div style="font-size:15px;font-weight:600">${ad.display_name}</div>` : ''}
+                ${ad.email ? `<div style="font-size:13px;color:var(--accent)"><a href="mailto:${ad.email}" style="color:inherit">${ad.email}</a></div>` : '<div style="font-size:12px;color:var(--text-muted)">E-posta bulunamadi</div>'}
+                <div style="font-size:10px;color:var(--text-muted);margin-top:4px" title="${adSourceLabel}">Kaynak: ${adSourceLabel}</div>
+            </div>
+        ` : `
+            <div style="background:var(--bg-primary);padding:12px;border-radius:8px;margin-bottom:16px;border-left:3px solid var(--text-muted)">
+                <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Active Directory</div>
+                <div style="font-size:13px;color:var(--text-muted)">AD bilgisi yok</div>
+                <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${adSourceLabel}</div>
+            </div>
+        `;
+
+        const modalId = 'modal-user-detail';
+        const body = `
+            <h3 style="margin:0 0 16px 0">Kullanici Detay: ${username}</h3>
+            ${adBlock}
+            <div class="cards">
+                <div class="card accent"><div class="card-label">Toplam Erisim</div><div class="card-value">${formatNum(s.total_access||0)}</div></div>
+                <div class="card success"><div class="card-label">Benzersiz Dosya</div><div class="card-value">${formatNum(s.unique_files||0)}</div></div>
+                <div class="card purple"><div class="card-label">Aktif Gun</div><div class="card-value">${formatNum(s.active_days||0)}</div></div>
+                <div class="card warning"><div class="card-label">Veri Boyutu</div><div class="card-value" style="font-size:16px">${s.total_data_formatted||'0 B'}</div></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px;font-size:12px">
+                <div style="flex:1;padding:10px;background:var(--bg-primary);border-radius:6px"><strong>Okuma:</strong> ${formatNum(s.reads||0)}</div>
+                <div style="flex:1;padding:10px;background:var(--bg-primary);border-radius:6px"><strong>Yazma:</strong> ${formatNum(s.writes||0)}</div>
+                <div style="flex:1;padding:10px;background:var(--bg-primary);border-radius:6px"><strong>Silme:</strong> ${formatNum(s.deletes||0)}</div>
+            </div>
+            <div style="text-align:right;margin-top:16px">
+                <button class="btn btn-outline" onclick="closeModal('${modalId}')">Kapat</button>
+            </div>
+        `;
+
+        let modal = document.getElementById(modalId);
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = modalId;
+            modal.className = 'modal-overlay';
+            modal.innerHTML = '<div class="modal" style="max-width:700px;width:90%"></div>';
+            modal.onclick = (e) => { if (e.target === modal) closeModal(modalId); };
+            document.body.appendChild(modal);
+        }
+        modal.querySelector('.modal').innerHTML = body;
+        modal.classList.add('active');
     } catch(e) { notify(e.message, 'error'); }
 }
 

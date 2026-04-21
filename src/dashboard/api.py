@@ -116,19 +116,27 @@ def _read_version() -> str:
 APP_VERSION = _read_version()
 
 
-def create_app(db, config, analytics=None):
+def create_app(db, config, analytics=None, ad_lookup=None):
     """FastAPI uygulamasini olustur.
 
     analytics: Opsiyonel AnalyticsEngine. Verilmezse config.analytics'e gore
     olusturulur; DuckDB yoksa veya basarisiz olursa `available=False` ile
     doner ve endpoint'ler SQLite fallback'ine duser.
+
+    ad_lookup: Opsiyonel ADLookup. Verilmezse config.active_directory'den
+    olusturulur; ldap3 yoksa veya enabled=false ise available=False ile
+    doner ve endpoint'ler cache degeri / None doner.
     """
     if analytics is None:
         from src.storage.analytics import AnalyticsEngine
         analytics = AnalyticsEngine(db.db_path, config.get("analytics", {}))
+    if ad_lookup is None:
+        from src.user_activity.ad_lookup import ADLookup
+        ad_lookup = ADLookup(db, config)
 
     app = FastAPI(title="FILE ACTIVITY Dashboard", version=APP_VERSION)
     app.state.analytics = analytics
+    app.state.ad_lookup = ad_lookup
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
@@ -776,7 +784,19 @@ def create_app(db, config, analytics=None):
         # recent_activity - not available from get_user_activity
         recent = []
 
+        # AD lookup: e-posta + display name (yoksa null alanlar)
+        ad_info = ad_lookup.lookup(username) or {
+            "email": None, "display_name": None, "found": False, "source": None
+        }
+
         return {
+            "username": username,
+            "ad": {
+                "email": ad_info.get("email"),
+                "display_name": ad_info.get("display_name"),
+                "found": ad_info.get("found", False),
+                "source": ad_info.get("source"),
+            },
             "summary": {
                 "total_access": total_access,
                 "unique_files": unique_files,
@@ -1569,6 +1589,29 @@ def create_app(db, config, analytics=None):
     async def version():
         """Calisan sürüm (repo kokundeki VERSION dosyasindan)."""
         return {"version": APP_VERSION}
+
+    @app.get("/api/system/ad/status")
+    async def ad_status():
+        """AD/LDAP baglanti durumu + bind testi."""
+        return ad_lookup.health()
+
+    @app.get("/api/users/{username}/ad-info")
+    async def user_ad_info(username: str, refresh: bool = False):
+        """Kullanici adindan e-posta + display name cozumle.
+
+        AD devre disi veya erisilmez ise cache'ten doner; cache yoksa
+        null alanlarla sessizce doner.
+        """
+        info = ad_lookup.lookup(username, force_refresh=refresh)
+        if info is None:
+            return {
+                "username": username,
+                "email": None,
+                "display_name": None,
+                "found": False,
+                "source": None,
+            }
+        return info
 
     def _parse_ver(v: str):
         """Semver-ish karsilastirma icin tuple parse et.

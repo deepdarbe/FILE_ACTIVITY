@@ -17,6 +17,21 @@ analytics:
   memory_limit: "512MB"           # DuckDB bellek siniri
   threads: 4                      # DuckDB paralel thread sayisi
 
+active_directory:
+  # Kullanici adindan e-posta ve tam ad cozumleme. Kullanici aktivite
+  # detay sekmesinde gosterilir, bildirim e-postalari icin kullanilir.
+  # enabled=false ise tum AD cagrilari no-op calisir (cache varsa doner).
+  enabled: false
+  server: ""                      # ornek: ldap://dc.firma.local veya ldaps://dc.firma.local:636
+  bind_dn: ""                     # ornek: CN=svc_fileactivity,CN=Users,DC=firma,DC=local
+  bind_password: ""               # Guvenlik: bos birakip AD_BIND_PASSWORD env var kullanin
+  base_dn: ""                     # ornek: DC=firma,DC=local
+  user_filter: "(sAMAccountName={username})"
+  email_attribute: "mail"
+  name_attribute: "displayName"
+  cache_ttl_minutes: 60           # Sonuclar TTL boyunca SQLite'ta cache'lenir
+  timeout_seconds: 5
+
 sources: []
   # Örnek:
   # - name: "Engineering"
