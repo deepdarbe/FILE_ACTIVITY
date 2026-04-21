@@ -8,6 +8,14 @@ general:
 
 database:
   path: "data/file_activity.db"    # SQLite veritabani dosyasi
+  retention:
+    # Her kaynak icin kac eski scan tutulacak. Uygulamayi her baslattigimda
+    # (Dashboard acilmadan once) eski scan'ler + ilgili scanned_files
+    # silinir. Dashboard'un ilk acilista asili kalmamasi icin sart;
+    # Overview sorgulari scan_runs x scanned_files cartesian yuku olusturur.
+    # 0 = hic scan tutma (sadece en son), N = son N + guncel
+    auto_cleanup_on_startup: true
+    keep_last_n_scans: 3
 
 analytics:
   # DuckDB tabanli analitik motor. SQLite dosyasini salt-okunur ATTACH eder,
