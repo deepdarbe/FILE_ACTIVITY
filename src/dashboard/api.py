@@ -812,12 +812,21 @@ def create_app(db, config, analytics=None):
     # --- FILE WATCHER API ---
 
     @app.post("/api/watcher/{source_id}/start")
-    async def start_watcher(source_id: int, interval: int = 300):
-        from src.scanner.file_watcher import FileWatcher, get_watcher_status
+    async def start_watcher(source_id: int,
+                             interval: Optional[int] = Query(
+                                 default=None, ge=10, le=3600,
+                                 description="Polling araligi (saniye). "
+                                             "Bos birakilirsa config.watcher.poll_interval_seconds "
+                                             "veya 60 saniye kullanilir."
+                             )):
+        from src.scanner.file_watcher import FileWatcher, DEFAULT_POLL_INTERVAL
         src = _get_source(db, source_id)
+        if interval is None:
+            interval = int(config.get("watcher", {}).get("poll_interval_seconds",
+                                                          DEFAULT_POLL_INTERVAL))
         watcher = FileWatcher(db, src.id, src.unc_path, interval)
         watcher.start()
-        return {"status": "started", "interval": interval}
+        return {"status": "started", "interval": watcher.interval}
 
     @app.post("/api/watcher/{source_id}/stop")
     async def stop_watcher(source_id: int):
