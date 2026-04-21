@@ -30,12 +30,18 @@ def get_watcher_status(source_id: int = None) -> dict:
         return {"status": "inactive"}
 
 
+DEFAULT_POLL_INTERVAL = 60  # Polling aralığı — config.yaml ile override edilebilir
+MIN_POLL_INTERVAL = 10      # Daha düşük değerler DoS etkisi yaratır, reddedilir
+
+
 class FileWatcher:
-    def __init__(self, db: Database, source_id: int, path: str, interval: int = 300):
+    def __init__(self, db: Database, source_id: int, path: str,
+                 interval: int = DEFAULT_POLL_INTERVAL):
         self.db = db
         self.source_id = source_id
         self.path = path
-        self.interval = interval  # seconds between checks
+        # Minimum sinir uygula — cok dusuk degerler FS'i sarsitir
+        self.interval = max(MIN_POLL_INTERVAL, interval)
         self._running = False
         self._thread = None
         self._stats_lock = threading.Lock()

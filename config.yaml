@@ -24,6 +24,12 @@ sources: []
   #   archive_dest: "D:\\Archive\\engineering"
   #   enabled: true
 
+watcher:
+  # Dosya degisikligi izleme (polling-based). Yeni/degisen/silinen dosyalar
+  # bu aralikta scan_runs tablosuna yansir. Cok dusuk degerler FS'i yorar,
+  # cok yuksek degerler degisikliklerin gorunmesini geciktirir.
+  poll_interval_seconds: 60   # varsayilan 60 sn, minimum 10 sn (API zorlar)
+
 scanner:
   max_workers: 4              # paralel dizin tarayıcı sayısı
   batch_size: 1000            # DB batch insert boyutu
