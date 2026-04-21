@@ -67,10 +67,6 @@ def _grade(score: int) -> str:
     return "E"
 
 
-def _pluralize(count: int, singular: str, plural: str) -> str:
-    return f"{count} {singular if count == 1 else plural}"
-
-
 def compute_user_score(db, username: str,
                         source_id: Optional[int] = None,
                         scan_id: Optional[int] = None) -> dict:
