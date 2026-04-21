@@ -116,7 +116,7 @@ def _read_version() -> str:
 APP_VERSION = _read_version()
 
 
-def create_app(db, config, analytics=None, ad_lookup=None):
+def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     """FastAPI uygulamasini olustur.
 
     analytics: Opsiyonel AnalyticsEngine. Verilmezse config.analytics'e gore
@@ -126,6 +126,10 @@ def create_app(db, config, analytics=None, ad_lookup=None):
     ad_lookup: Opsiyonel ADLookup. Verilmezse config.active_directory'den
     olusturulur; ldap3 yoksa veya enabled=false ise available=False ile
     doner ve endpoint'ler cache degeri / None doner.
+
+    email_notifier: Opsiyonel EmailNotifier. Verilmezse config.smtp'den
+    olusturulur; smtp.enabled=false ise available=False ile doner ve
+    e-posta endpoint'leri {"skipped": true} doner.
     """
     if analytics is None:
         from src.storage.analytics import AnalyticsEngine
@@ -133,10 +137,14 @@ def create_app(db, config, analytics=None, ad_lookup=None):
     if ad_lookup is None:
         from src.user_activity.ad_lookup import ADLookup
         ad_lookup = ADLookup(db, config)
+    if email_notifier is None:
+        from src.user_activity.email_notifier import EmailNotifier
+        email_notifier = EmailNotifier(db, config)
 
     app = FastAPI(title="FILE ACTIVITY Dashboard", version=APP_VERSION)
     app.state.analytics = analytics
     app.state.ad_lookup = ad_lookup
+    app.state.email_notifier = email_notifier
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
@@ -1599,12 +1607,125 @@ def create_app(db, config, analytics=None, ad_lookup=None):
             "version": APP_VERSION,
             "database": db.health_check(),
             "analytics": analytics.health(),
+            "email": email_notifier.health(),
         }
 
     @app.get("/api/system/analytics")
     async def analytics_status():
         """DuckDB analitik motor durumunu dondur."""
         return analytics.health()
+
+    # --- NOTIFICATIONS API ---
+
+    class TestEmailRequest(BaseModel):
+        to: str
+        username: Optional[str] = "test"
+        display_name: Optional[str] = None
+
+    @app.get("/api/notifications/status")
+    async def notifications_status():
+        """SMTP konfigurasyon ozeti + canli bind testi."""
+        info = email_notifier.health()
+        if email_notifier.available:
+            info["probe"] = email_notifier.test_connection()
+        return info
+
+    @app.post("/api/notifications/test")
+    async def notifications_test(payload: TestEmailRequest):
+        """Belirtilen adrese kucuk bir dogrulama e-postasi gonder.
+
+        Kullanim: SMTP ayarlarini dogrulamak icin. Gercek skor degil,
+        sabit ornek skor verisi gonderilir. Admin CC varsa CC'ye eklenir.
+        """
+        if not email_notifier.available:
+            raise HTTPException(400, f"SMTP kullanilamaz: {email_notifier._init_error}")
+        fake_score = {
+            "score": 85, "grade": "B", "total_penalty": 15,
+            "factors": [
+                {"name": "stale_files", "label": "Test: 1+ yildir erisilmeyen dosyalar",
+                 "count": 42, "penalty": 8, "max": 30},
+                {"name": "oversized_files", "label": "Test: 100 MB'dan buyuk dosyalar",
+                 "count": 7, "penalty": 7, "max": 15},
+            ],
+            "non_compliance": {"stale_files": 42, "oversized_files": 7,
+                                "naming_violations": 0, "duplicate_files": 0,
+                                "dormant": False},
+            "suggestions": [
+                "Bu bir TEST mesajidir. SMTP ayarlariniz dogru calisiyor.",
+                "Gercek rapor zamanli bildirim zamanlayicisi (PR D) ile gelecek.",
+            ],
+            "total_files": 100, "total_size": 5 * 1024 * 1024 * 1024,
+        }
+        result = email_notifier.send_user_report(
+            username=payload.username or "test",
+            email=payload.to,
+            score_result=fake_score,
+            display_name=payload.display_name,
+        )
+        if not result.get("ok"):
+            raise HTTPException(500, result.get("error") or "Gonderim basarisiz")
+        return result
+
+    @app.post("/api/notifications/send-to/{username}")
+    async def notifications_send_to(username: str):
+        """Tek kullaniciya gercek verimlilik raporu gonder.
+
+        Kullanici e-postasi AD'den cozulur; yoksa 400 doner.
+        """
+        if not email_notifier.available:
+            raise HTTPException(400, f"SMTP kullanilamaz: {email_notifier._init_error}")
+
+        # AD lookup opsiyonel; ADLookup mevcutsa kullan
+        ad_info = None
+        try:
+            ad = getattr(app.state, "ad_lookup", None)
+            if ad and ad.available:
+                ad_info = ad.lookup(username)
+        except Exception:
+            ad_info = None
+
+        if not ad_info or not ad_info.get("email"):
+            raise HTTPException(404, f"{username} icin e-posta bulunamadi (AD lookup sonucu yok)")
+
+        from src.user_activity.efficiency_score import compute_user_score
+        score = compute_user_score(db, username)
+        result = email_notifier.send_user_report(
+            username=username,
+            email=ad_info["email"],
+            score_result=score,
+            display_name=ad_info.get("display_name"),
+        )
+        if not result.get("ok"):
+            raise HTTPException(500, result.get("error") or "Gonderim basarisiz")
+        return {"sent_to": ad_info["email"], "cc": result.get("cc"), "score": score["score"]}
+
+    @app.get("/api/notifications/log")
+    async def notifications_log(username: Optional[str] = None,
+                                 status: Optional[str] = None,
+                                 page: int = Query(1, ge=1, le=10000),
+                                 page_size: int = Query(50, ge=1, le=500)):
+        """Gonderim log listesi (sayfalanmis)."""
+        offset = (page - 1) * page_size
+        conditions = []
+        params: list = []
+        if username:
+            conditions.append("username = ?")
+            params.append(username)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        with db.get_cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) AS cnt FROM notification_log{where}", params)
+            total = cur.fetchone()["cnt"]
+            cur.execute(
+                f"""SELECT id, username, email, cc, subject, status, error, sent_at
+                    FROM notification_log{where}
+                    ORDER BY sent_at DESC LIMIT ? OFFSET ?""",
+                params + [page_size, offset],
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        return {"total": total, "rows": rows, "page": page, "page_size": page_size}
 
     @app.get("/api/system/version")
     async def version():

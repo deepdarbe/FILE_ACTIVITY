@@ -32,6 +32,24 @@ active_directory:
   cache_ttl_minutes: 60           # Sonuclar TTL boyunca SQLite'ta cache'lenir
   timeout_seconds: 5
 
+smtp:
+  # Kullanici verimlilik raporlari icin SMTP sunucu ayarlari.
+  # enabled=false iken tum e-posta endpoint'leri no-op calisir.
+  enabled: false
+  host: ""                        # ornek: smtp.office365.com, smtp.gmail.com
+  port: 587                       # 587 STARTTLS icin, 465 SSL icin, 25 plain
+  use_tls: true                   # STARTTLS (587 kullaniyorsaniz true)
+  use_ssl: false                  # Implicit TLS (465 kullaniyorsaniz true + use_tls: false)
+  username: ""
+  password: ""                    # Tavsiye: bos birakip SMTP_PASSWORD env var kullanin
+  from_address: ""                # ornek: fileactivity@firma.local
+  from_name: "File Activity System"
+  timeout_seconds: 10
+
+notifications:
+  admin_cc_email: ""              # Her bildirime CC eklenecek yonetici adresi
+  subject_prefix: "[File Activity]"
+
 sources: []
   # Örnek:
   # - name: "Engineering"
