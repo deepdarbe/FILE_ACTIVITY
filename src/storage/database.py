@@ -166,6 +166,14 @@ class Database:
                             logger.warning("Retention temizligi hatasi: %s", result["error"])
             except Exception as e:
                 logger.warning("Retention temizligi sirasinda hata (kritik degil): %s", e)
+
+            # Scan summary backfill — summary_json olmayan scan'ler icin
+            # hesapla. Dashboard Overview bunu okur, file table'i taramaz.
+            # Ilk acilista birkac saniye sürebilir, sonrasi anlik.
+            try:
+                self.backfill_missing_summaries()
+            except Exception as e:
+                logger.warning("Summary backfill hatasi (kritik degil): %s", e)
         except Exception as e:
             self.connected = False
             raise DatabaseConnectionError(
@@ -265,9 +273,25 @@ class Database:
                 total_files     INTEGER DEFAULT 0,
                 total_size      INTEGER DEFAULT 0,
                 errors          INTEGER DEFAULT 0,
-                status          TEXT DEFAULT 'running'
+                status          TEXT DEFAULT 'running',
+                summary_json    TEXT,
+                summary_computed_at TEXT
             )
         """)
+
+        # Eski veritabanlari icin ALTER TABLE — summary kolonu yoksa ekle.
+        # SQLite'ta IF NOT EXISTS ALTER ADD COLUMN yok, bu yuzden try/except.
+        for col_def in (
+            "summary_json TEXT",
+            "summary_computed_at TEXT",
+        ):
+            col_name = col_def.split()[0]
+            try:
+                cur.execute(f"ALTER TABLE scan_runs ADD COLUMN {col_def}")
+                logger.info("scan_runs tablosuna %s kolonu eklendi", col_name)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    logger.warning("scan_runs ALTER %s hatasi: %s", col_name, e)
 
         # Taranan dosyalar
         cur.execute("""
@@ -1852,6 +1876,164 @@ class Database:
                 c["percentage"] = (c["file_count"] / total_files * 100) if total_files > 0 else 0
 
             return creators
+
+    def compute_scan_summary(self, scan_id: int) -> dict:
+        """scan_runs.summary_json'a tek bir sorgu dizisiyle KPI'lari yaz.
+
+        Dashboard Overview sayfasi bu JSON'u okur, scanned_files tablosunu
+        hic taramaz. 2.5M+ satirli taramalarda da overview saniye alti
+        acilir. Summary bir defa hesaplanir, scan sirasinda +1, scan
+        bittikten sonra yenilenmez (scan verisi degismez).
+
+        Hesaplanan KPI'lar:
+          total_files, total_size, owner_count
+          stale_count, stale_size (1+ yil erisilmemis)
+          risky_count (.exe .bat .ps1 .vbs .cmd .com .scr)
+          large_count (>100MB), large_size
+          duplicate_groups, duplicate_waste_size, duplicate_files
+          top_extensions (ilk 10, dosya sayisina gore)
+          top_owners (ilk 10, boyuta gore)
+        """
+        from datetime import datetime, timedelta
+        summary: dict = {}
+        risky_exts = ("exe", "bat", "ps1", "vbs", "cmd", "com", "scr", "msi")
+        stale_cutoff = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        oversized_bytes = 100 * 1024 * 1024
+
+        with self.get_cursor() as cur:
+            # Temel sayim
+            row = cur.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(file_size),0) s, "
+                "COUNT(DISTINCT owner) o FROM scanned_files WHERE scan_id=?",
+                (scan_id,),
+            ).fetchone()
+            summary["total_files"] = row["c"]
+            summary["total_size"] = row["s"]
+            summary["owner_count"] = row["o"]
+
+            # Stale (1+ yil erisilmemis)
+            row = cur.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(file_size),0) s "
+                "FROM scanned_files WHERE scan_id=? "
+                "AND last_access_time IS NOT NULL AND last_access_time <= ?",
+                (scan_id, stale_cutoff),
+            ).fetchone()
+            summary["stale_count"] = row["c"]
+            summary["stale_size"] = row["s"]
+
+            # Riskli uzantili dosyalar
+            placeholders = ",".join(["?"] * len(risky_exts))
+            row = cur.execute(
+                f"SELECT COUNT(*) c FROM scanned_files "
+                f"WHERE scan_id=? AND extension IN ({placeholders})",
+                (scan_id, *risky_exts),
+            ).fetchone()
+            summary["risky_count"] = row["c"]
+
+            # Buyuk dosyalar
+            row = cur.execute(
+                "SELECT COUNT(*) c, COALESCE(SUM(file_size),0) s "
+                "FROM scanned_files WHERE scan_id=? AND file_size > ?",
+                (scan_id, oversized_bytes),
+            ).fetchone()
+            summary["large_count"] = row["c"]
+            summary["large_size"] = row["s"]
+
+            # Duplike gruplar (ayni isim + boyut)
+            row = cur.execute(
+                """
+                SELECT COUNT(*) g, COALESCE(SUM(cnt),0) f,
+                       COALESCE(SUM((cnt-1)*file_size),0) w
+                FROM (
+                    SELECT file_name, file_size, COUNT(*) AS cnt
+                    FROM scanned_files
+                    WHERE scan_id=? AND file_size > 0
+                    GROUP BY file_name, file_size
+                    HAVING COUNT(*) > 1
+                )
+                """,
+                (scan_id,),
+            ).fetchone()
+            summary["duplicate_groups"] = row["g"]
+            summary["duplicate_files"] = row["f"]
+            summary["duplicate_waste_size"] = row["w"]
+
+            # Top 10 uzanti
+            ext_rows = cur.execute(
+                "SELECT extension, COUNT(*) c, COALESCE(SUM(file_size),0) s "
+                "FROM scanned_files WHERE scan_id=? "
+                "GROUP BY extension ORDER BY c DESC LIMIT 10",
+                (scan_id,),
+            ).fetchall()
+            summary["top_extensions"] = [
+                {"extension": r["extension"] or "(uzantisiz)",
+                 "count": r["c"], "size": r["s"]}
+                for r in ext_rows
+            ]
+
+            # Top 10 sahip
+            owner_rows = cur.execute(
+                "SELECT owner, COUNT(*) c, COALESCE(SUM(file_size),0) s "
+                "FROM scanned_files WHERE scan_id=? AND owner IS NOT NULL "
+                "GROUP BY owner ORDER BY s DESC LIMIT 10",
+                (scan_id,),
+            ).fetchall()
+            summary["top_owners"] = [
+                {"owner": r["owner"], "count": r["c"], "size": r["s"]}
+                for r in owner_rows
+            ]
+
+            # Kaydet
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute(
+                "UPDATE scan_runs SET summary_json=?, summary_computed_at=? WHERE id=?",
+                (json.dumps(summary, ensure_ascii=False), now, scan_id),
+            )
+
+        summary["scan_id"] = scan_id
+        summary["computed_at"] = now
+        return summary
+
+    def get_scan_summary(self, scan_id: int) -> Optional[dict]:
+        """Kayitli scan summary'yi oku. Hic hesaplanmamissa None doner."""
+        with self.get_cursor() as cur:
+            row = cur.execute(
+                "SELECT summary_json, summary_computed_at FROM scan_runs WHERE id=?",
+                (scan_id,),
+            ).fetchone()
+        if not row or not row["summary_json"]:
+            return None
+        try:
+            d = json.loads(row["summary_json"])
+        except Exception:
+            return None
+        d["scan_id"] = scan_id
+        d["computed_at"] = row["summary_computed_at"]
+        return d
+
+    def backfill_missing_summaries(self) -> int:
+        """summary_json olmayan tamamlanmis scan'ler icin hesapla.
+
+        Startup'ta calistirilir. Mevcut eski kurulumlarda scan'ler
+        summary'siz geldigi icin ilk acilista backfill yapilir (her scan
+        icin birkac saniye). Sonrasi acilislar anlik.
+        """
+        with self.get_cursor() as cur:
+            rows = cur.execute(
+                "SELECT id FROM scan_runs "
+                "WHERE status='completed' AND summary_json IS NULL"
+            ).fetchall()
+        pending = [r["id"] for r in rows]
+        if not pending:
+            return 0
+        logger.info("Backfill: %d scan icin summary hesaplanacak", len(pending))
+        for sid in pending:
+            try:
+                self.compute_scan_summary(sid)
+            except Exception as e:
+                logger.warning("Summary backfill hatasi scan %s: %s", sid, e)
+        logger.info("Backfill tamamlandi: %d scan", len(pending))
+        return len(pending)
 
     def cleanup_old_scans(self, keep_last_n: int = 5) -> dict:
         """Eski tarama verilerini temizle. Her kaynak icin son N taramayi koru.
