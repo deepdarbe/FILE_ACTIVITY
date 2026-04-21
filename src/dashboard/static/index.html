@@ -253,6 +253,10 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <div style="font-weight:600">Yeni sürüm mevcut</div>
             <div id="update-badge-info" style="margin-top:2px;opacity:0.9"></div>
         </div>
+        <div id="wal-warning-badge" style="display:none;margin-top:8px;padding:8px;background:var(--danger,#dc2626);color:#fff;border-radius:6px;font-size:11px;cursor:pointer" onclick="showWalDialog()">
+            <div style="font-weight:600">DB Bakimi Onerilir</div>
+            <div id="wal-warning-info" style="margin-top:2px;opacity:0.9"></div>
+        </div>
     </div>
     <div class="nav-section">
         <div class="nav-label">Genel</div>
@@ -1113,6 +1117,20 @@ function showUpdateDialog() {
             }
         })
         .catch(e => alert('Ag hatasi: ' + e));
+}
+
+function showWalDialog() {
+    const w = window._walWarning || {};
+    const msg = `Veritabani Bakimi Onerilir\n\nSQLite WAL dosyasi: ${w.wal_size_formatted || '(bilinmiyor)'}\nSiddet: ${w.severity || 'warning'}\n\nBuyuk WAL dosyalari sorgulari yavaslatir ve disk alani yer. "Optimize Et" butonu:\n  - WAL'i sifirdan tekrar olusturur (checkpoint TRUNCATE)\n  - Tablolari VACUUM + ANALYZE ile siker\n  - Sorgu planlarini gunceller\n\nIslem sirasinda dashboard birkac saniye askida kalabilir.\n\nKaynaklar sayfasina gitmek ister misiniz?`;
+    if (!confirm(msg)) return;
+    // Kaynaklar sayfasina goturelim
+    if (typeof showPage === 'function') {
+        showPage('sources');
+    } else {
+        // showPage yoksa scroll
+        const el = document.querySelector('[onclick*="sources"]');
+        if (el) el.click();
+    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -3114,6 +3132,26 @@ async function loadGrowth() {
             }
         })
         .catch(() => {}); // Ag yoksa sessizce atla
+
+    // WAL dosyasi buyuduyse sidebar'da uyari banner'i goster
+    fetch('/api/system/health')
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+            if (d && d.wal_warning) {
+                const badge = document.getElementById('wal-warning-badge');
+                const info = document.getElementById('wal-warning-info');
+                if (badge) {
+                    badge.style.display = 'block';
+                    // Kritik durumda daha belirgin kirmizi
+                    if (d.wal_warning.severity === 'critical') {
+                        badge.style.background = '#991b1b';
+                    }
+                }
+                if (info) info.textContent = `WAL: ${d.wal_warning.wal_size_formatted}`;
+                window._walWarning = d.wal_warning;
+            }
+        })
+        .catch(() => {});
 
     // Dashboard aninda yuklensin - veri arka planda gelsin
     try {

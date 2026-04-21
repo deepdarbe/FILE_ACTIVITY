@@ -73,16 +73,38 @@ class Database:
             logger.info(f"SQLite baglantisi kuruldu: {self.db_path}")
             self._create_tables()
 
-            # Baslangicta WAL checkpoint - buyuk WAL dosyalarini temizle
+            # Baslangicta WAL checkpoint — buyuk WAL dosyalarini temizle.
+            # Strateji: 10 MB-1 GB arasi PASSIVE dene (aktif reader kilitlemesin),
+            # 1 GB ustunde TRUNCATE (agresif, WAL dosyasini tamamen sifirlar).
+            # Bir musteri 156 GB WAL ile takildi; PASSIVE hic kuculdememisti,
+            # TRUNCATE bu durumu surekli olarak onlemek icin.
             try:
                 wal_path = self.db_path + "-wal"
                 if os.path.exists(wal_path):
                     wal_size = os.path.getsize(wal_path)
                     if wal_size > 10_000_000:  # 10MB'dan buyukse checkpoint yap
-                        logger.info(f"WAL checkpoint baslatiliyor ({wal_size / 1048576:.1f} MB)...")
-                        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                        mode = "TRUNCATE" if wal_size > 1_073_741_824 else "PASSIVE"
+                        logger.info(
+                            f"WAL checkpoint baslatiliyor ({wal_size / 1048576:.1f} MB, mode={mode})..."
+                        )
+                        conn.execute(f"PRAGMA wal_checkpoint({mode})")
                         wal_after = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
-                        logger.info(f"WAL checkpoint tamamlandi: {wal_size / 1048576:.1f} MB -> {wal_after / 1048576:.1f} MB")
+                        logger.info(
+                            f"WAL checkpoint tamamlandi: {wal_size / 1048576:.1f} MB "
+                            f"-> {wal_after / 1048576:.1f} MB"
+                        )
+                        # PASSIVE kuculmediyse TRUNCATE'e yukselt
+                        if mode == "PASSIVE" and wal_after >= wal_size * 0.9 and wal_after > 500_000_000:
+                            logger.warning(
+                                "PASSIVE checkpoint WAL'i kuculmedi (%.1f MB), TRUNCATE deneniyor",
+                                wal_after / 1048576,
+                            )
+                            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                            wal_after2 = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+                            logger.info(
+                                f"TRUNCATE sonucu: {wal_after / 1048576:.1f} MB "
+                                f"-> {wal_after2 / 1048576:.1f} MB"
+                            )
             except Exception as e:
                 logger.warning(f"WAL checkpoint hatasi (kritik degil): {e}")
         except Exception as e:
