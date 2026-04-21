@@ -53,8 +53,8 @@ class ScheduleCreate(BaseModel):
     @field_validator("task_type")
     @classmethod
     def _validate_task_type(cls, v: str) -> str:
-        if v not in ("scan", "archive"):
-            raise ValueError("task_type must be 'scan' or 'archive'")
+        if v not in ("scan", "archive", "notify_users"):
+            raise ValueError("task_type must be 'scan', 'archive' or 'notify_users'")
         return v
 
     @field_validator("cron_expression")
@@ -488,6 +488,22 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         if db.remove_scheduled_task(task_id):
             return {"message": "Gorev silindi"}
         raise HTTPException(404, "Gorev bulunamadi")
+
+    @app.post("/api/schedules/notify-users/run-now/{source_id}")
+    async def notify_users_run_now(source_id: int):
+        """notify_users gorevi zamanlayiciyi beklemeden hemen calistir.
+
+        EmailNotifier ve ADLookup app.state'ten alinir; ikisi de yoksa
+        scheduler'in _run_notify_users'i 'skipped' sonucu doner (hata
+        atmaz). Gonderim sonucu: her kullanici icin sayisal ozet.
+        """
+        from src.scheduler.task_scheduler import TaskScheduler
+        src = _get_source(db, source_id)
+        ad = getattr(app.state, "ad_lookup", None)
+        notifier = getattr(app.state, "email_notifier", None)
+        ts = TaskScheduler(db, config, ad_lookup=ad, email_notifier=notifier)
+        fake_task = {"id": 0, "source_id": src.id, "task_type": "notify_users"}
+        return ts._run_notify_users(fake_task)
 
     # --- REPORT EXPORT API ---
 

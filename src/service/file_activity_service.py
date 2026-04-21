@@ -62,11 +62,27 @@ class FileActivityService:
             except Exception as e:
                 logger.error("Watcher failed for %s: %s", src.name, e)
 
-        # Start scheduler
+        # Start scheduler (with AD + email notifier wired in for notify_users tasks)
         try:
-            self.scheduler = TaskScheduler(self.db, self.config)
+            try:
+                from src.user_activity.ad_lookup import ADLookup
+                ad_lookup = ADLookup(self.db, self.config)
+            except Exception as e:
+                logger.warning("ADLookup baslatilamadi: %s", e)
+                ad_lookup = None
+            try:
+                from src.user_activity.email_notifier import EmailNotifier
+                email_notifier = EmailNotifier(self.db, self.config)
+            except Exception as e:
+                logger.warning("EmailNotifier baslatilamadi: %s", e)
+                email_notifier = None
+            self.scheduler = TaskScheduler(self.db, self.config,
+                                           ad_lookup=ad_lookup,
+                                           email_notifier=email_notifier)
             self.scheduler.start()
-            logger.info("Task scheduler started")
+            logger.info("Task scheduler started (ad=%s, smtp=%s)",
+                        getattr(ad_lookup, "available", False),
+                        getattr(email_notifier, "available", False))
         except Exception as e:
             logger.error("Scheduler failed: %s", e)
 
