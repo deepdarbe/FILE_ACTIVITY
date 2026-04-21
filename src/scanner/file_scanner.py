@@ -654,9 +654,8 @@ class FileScanner:
             file_count, format_size(total_size), elapsed, fps, errors
         )
 
-        # KPI summary hesapla (Overview sayfasi bu JSON'u okur, scanned_files
-        # tablosunu taramaz). Scan basarili olmayabilir (hata/kismi),
-        # yine de mumkun oldugu kadar ozet cikart.
+        # KPI summary + AI insights cache — Dashboard Overview + AI Onerileri
+        # paneli bu JSON'lari okur, scanned_files tablosunu taramaz.
         if status == "completed" and file_count > 0:
             try:
                 t0 = time.time()
@@ -667,6 +666,19 @@ class FileScanner:
                 )
             except Exception as e:
                 logger.warning("Scan summary hesaplanamadi (scan_id=%d): %s", scan_id, e)
+
+            try:
+                from src.analyzer.ai_insights import InsightsEngine
+                t0 = time.time()
+                engine = InsightsEngine(self.db)
+                insights_result = engine.generate_insights(source_id)
+                self.db.save_scan_insights(scan_id, insights_result)
+                logger.info(
+                    "AI insights hesaplandi ve cache'lendi (scan_id=%d, %d insight, %.1f sn)",
+                    scan_id, len(insights_result.get("insights", [])), time.time() - t0,
+                )
+            except Exception as e:
+                logger.warning("AI insights hesaplanamadi (scan_id=%d): %s", scan_id, e)
 
         # Son ilerleme durumunu guncelle
         progress.update({
