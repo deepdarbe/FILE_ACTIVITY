@@ -28,6 +28,7 @@ Tum bildirimler gonderim logu (notification_log tablosu) tutulur:
 enabled=false ise modul no-op calisir, send_* None doner.
 """
 
+import html
 import json
 import logging
 import os
@@ -144,13 +145,17 @@ class EmailNotifier:
                          "D": "#dc2626", "E": "#991b1b"}
         grade_color = grade_colors.get(grade, "#64748b")
 
+        # HTML escaping: label/suggestions kullaniciya ait metadata'dan gelebiliyor
+        # (username, display_name, file_name tabanli iceriği yok bu uretimde ama
+        # yine de defense-in-depth — email client'i stripse bile iyi hijyen).
+        esc = html.escape
         factors_rows = ""
         for f in score_result.get("factors", []):
             factors_rows += (
                 f'<tr>'
-                f'<td style="padding:8px;border-bottom:1px solid #e5e7eb">{f.get("label", "")}</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">{f.get("count", 0)}</td>'
-                f'<td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;color:#dc2626;font-weight:600">-{f.get("penalty", 0)}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #e5e7eb">{esc(str(f.get("label", "")))}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">{int(f.get("count", 0) or 0)}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right;color:#dc2626;font-weight:600">-{int(f.get("penalty", 0) or 0)}</td>'
                 f'</tr>'
             )
         if not factors_rows:
@@ -160,11 +165,11 @@ class EmailNotifier:
             )
 
         suggestions = "".join(
-            f'<li style="margin-bottom:8px">{s}</li>'
+            f'<li style="margin-bottom:8px">{esc(str(s))}</li>'
             for s in score_result.get("suggestions", [])
         ) or '<li style="color:#64748b">Herhangi bir oneri yok.</li>'
 
-        greeting = f"Merhaba {display_name or username},"
+        greeting = f"Merhaba {esc(display_name or username)},"
 
         return f"""<!DOCTYPE html>
 <html lang="tr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
