@@ -207,49 +207,74 @@ class TaskScheduler:
         # Her 25 kullanicida bir ilerleme logu
         progress_step = max(25, total // 10)
 
-        for idx, owner in enumerate(owners, start=1):
-            if idx % progress_step == 0 or idx == total:
-                logger.info(
-                    "notify_users ilerleme: %d/%d (sent=%d, skipped=%d, failed=%d)",
-                    idx, total, sent, skipped, failed,
-                )
-            # 1. Skor hesapla
+        # Persistent SMTP session — her kullanicida yeni TCP baglanti
+        # acmamak icin (rate-limited sunucularda onemli). EmailNotifier'in
+        # session() API'si yoksa eski fallback'e (her send kendi baglantisi).
+        session_cm = None
+        if hasattr(self.email_notifier, "session"):
             try:
-                score = compute_user_score(self.db, owner, scan_id=scan_id)
+                session_cm = self.email_notifier.session()
+                smtp_session = session_cm.__enter__()
             except Exception as e:
-                logger.warning("skor hesaplama hatasi %s: %s", owner, e)
-                failed += 1
-                continue
+                logger.warning("SMTP oturumu acilamadi, per-send baglanti: %s", e)
+                session_cm = None
+                smtp_session = None
+        else:
+            smtp_session = None
 
-            # 2. AD'den e-posta coz
-            email = None
-            display_name = None
-            if self.ad_lookup is not None:
+        try:
+            for idx, owner in enumerate(owners, start=1):
+                if idx % progress_step == 0 or idx == total:
+                    logger.info(
+                        "notify_users ilerleme: %d/%d (sent=%d, skipped=%d, failed=%d)",
+                        idx, total, sent, skipped, failed,
+                    )
+                # 1. Skor hesapla
                 try:
-                    info = self.ad_lookup.lookup(owner)
-                    if info:
-                        email = info.get("email")
-                        display_name = info.get("display_name")
+                    score = compute_user_score(self.db, owner, scan_id=scan_id)
                 except Exception as e:
-                    logger.debug("AD lookup hatasi %s: %s", owner, e)
-            if not email:
-                skipped += 1
-                skipped_users.append({"owner": owner, "reason": "no email"})
-                continue
+                    logger.warning("skor hesaplama hatasi %s: %s", owner, e)
+                    failed += 1
+                    continue
 
-            # 3. Gonder
-            result = self.email_notifier.send_user_report(
-                username=owner,
-                email=email,
-                score_result=score,
-                display_name=display_name,
-            )
-            if result.get("ok"):
-                sent += 1
-            else:
-                failed += 1
-                logger.warning("notify gonderilemedi %s (%s): %s", owner, email,
-                               result.get("error"))
+                # 2. AD'den e-posta coz
+                email = None
+                display_name = None
+                if self.ad_lookup is not None:
+                    try:
+                        info = self.ad_lookup.lookup(owner)
+                        if info:
+                            email = info.get("email")
+                            display_name = info.get("display_name")
+                    except Exception as e:
+                        logger.debug("AD lookup hatasi %s: %s", owner, e)
+                if not email:
+                    skipped += 1
+                    skipped_users.append({"owner": owner, "reason": "no email"})
+                    continue
+
+                # 3. Gonder — smtp_session varsa onu kullan, yoksa per-send
+                send_kwargs = {
+                    "username": owner,
+                    "email": email,
+                    "score_result": score,
+                    "display_name": display_name,
+                }
+                if smtp_session is not None:
+                    send_kwargs["smtp_session"] = smtp_session
+                result = self.email_notifier.send_user_report(**send_kwargs)
+                if result.get("ok"):
+                    sent += 1
+                else:
+                    failed += 1
+                    logger.warning("notify gonderilemedi %s (%s): %s", owner, email,
+                                   result.get("error"))
+        finally:
+            if session_cm is not None:
+                try:
+                    session_cm.__exit__(None, None, None)
+                except Exception as e:
+                    logger.debug("SMTP oturumu kapatma hatasi: %s", e)
 
         status = "completed" if failed == 0 else ("partial" if sent > 0 else "error")
         return {
