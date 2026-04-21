@@ -1,0 +1,83 @@
+name: Release
+
+# Tetikleyici: v*.*.* sekilinde semver tag push'u
+# Ornek: git tag v1.7.0 && git push --tags
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows EXE + package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install -r requirements.txt
+
+      - name: Build EXE via file_activity.spec
+        run: |
+          python -m PyInstaller file_activity.spec --noconfirm --log-level WARN
+
+      - name: Assemble deploy package
+        shell: pwsh
+        run: |
+          $DIST = "dist\FileActivity"
+          $PKG  = "dist\FileActivity-Package"
+          if (-not (Test-Path $DIST)) {
+            throw "PyInstaller output not found at $DIST"
+          }
+          New-Item -ItemType Directory -Force -Path `
+            "$PKG\bin","$PKG\config","$PKG\scripts","$PKG\logs","$PKG\reports" | Out-Null
+          Copy-Item "$DIST\*" "$PKG\bin\" -Recurse -Force
+          Copy-Item "config.yaml"                 "$PKG\config\config.yaml"         -Force
+          Copy-Item "scripts\init_db.py"          "$PKG\scripts\"                   -Force
+          Copy-Item "deploy\install.bat"          "$PKG\install.bat"                -Force
+          Copy-Item "deploy\uninstall.bat"        "$PKG\uninstall.bat"              -Force
+          Copy-Item "deploy\service_install.bat"  "$PKG\service_install.bat"        -Force
+
+      - name: Smoke test the built EXE
+        shell: pwsh
+        run: |
+          $exe = "dist\FileActivity-Package\bin\FileActivity.exe"
+          if (-not (Test-Path $exe)) { throw "EXE not produced at $exe" }
+          # Basit dogrulama: --help exit code 0 dondurmeli
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw "EXE --help exited $LASTEXITCODE" }
+
+      - name: Create FileActivity-Deploy.zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\FileActivity-Package\*" `
+                           -DestinationPath "dist\FileActivity-Deploy.zip" `
+                           -Force
+          $size = [math]::Round((Get-Item "dist\FileActivity-Deploy.zip").Length / 1MB, 1)
+          Write-Host "Package size: $size MB"
+
+      - name: Upload as workflow artifact (retain for 30 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: FileActivity-Deploy
+          path: dist/FileActivity-Deploy.zip
+          retention-days: 30
+
+      - name: Create GitHub Release with asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/FileActivity-Deploy.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

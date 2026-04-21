@@ -11,10 +11,18 @@ ROOT = os.path.abspath('.')
 sys.path.insert(0, ROOT)
 
 # Use PyInstaller's collect helpers
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
 
 # Collect ALL submodules from src package
 src_imports = collect_submodules('src')
+
+# DuckDB C extension libraries (duckdb.dll) must be bundled
+duckdb_binaries = []
+try:
+    duckdb_binaries = collect_dynamic_libs('duckdb')
+    print(f"[SPEC] DuckDB binaries: {len(duckdb_binaries)}")
+except Exception as e:
+    print(f"[SPEC] DuckDB binary collection skipped: {e}")
 print(f"[SPEC] Collected {len(src_imports)} src submodules:")
 for m in sorted(src_imports):
     print(f"  {m}")
@@ -57,11 +65,13 @@ print(f"[SPEC] Data files: {len(data_files)}")
 a = Analysis(
     ['main.py'],
     pathex=[ROOT],
-    binaries=[],
+    binaries=duckdb_binaries,
     datas=data_files,
     hiddenimports=src_imports + [
         # SQLite (built-in, but ensure it's bundled)
         'sqlite3',
+        # DuckDB analytics engine (optional, SQLite fallback if absent)
+        'duckdb',
         # Win32 (pywin32 hidden modules)
         'win32timezone',
         'win32api',

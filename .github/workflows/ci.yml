@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax:
+    name: Python syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: py_compile across src/ and entry points
+        run: |
+          python -m compileall -q src/ main.py dev_server.py
+
+      - name: Import-level smoke test for cross-platform modules
+        run: |
+          # AnalyticsEngine and Database models import cleanly on Linux
+          # (no pywin32 required). Scanner/archiver import pywin32 and are
+          # skipped here; they run in the release workflow on windows-latest.
+          python -m pip install --upgrade pip --quiet
+          python -m pip install duckdb pydantic --quiet
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, '.')
+          from src.storage.analytics import AnalyticsEngine
+          from src.storage.models import Source, ScannedFile, ArchivedFile
+          engine = AnalyticsEngine("/tmp/nonexistent.db", {"enabled": True})
+          print(f"AnalyticsEngine available={engine.available} (expected: may be False without attached DB)")
+          PY
+
+  lint:
+    name: Ruff lint (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: python -m pip install ruff --quiet
+
+      - name: Run ruff (report only)
+        run: ruff check src/ main.py dev_server.py --output-format=github || true
+
+  powershell-syntax:
+    name: PowerShell syntax check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse deploy/*.ps1
+        shell: pwsh
+        run: |
+          $errors = 0
+          Get-ChildItem deploy\*.ps1 | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              Write-Host "::error file=$($_.FullName)::Parse errors in $($_.Name)"
+              $parseErrors | ForEach-Object { Write-Host "  $_" }
+              $errors += $parseErrors.Count
+            } else {
+              Write-Host "[OK] $($_.Name)"
+            }
+          }
+          if ($errors -gt 0) { exit 1 }
