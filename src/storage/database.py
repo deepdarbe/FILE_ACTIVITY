@@ -1795,7 +1795,7 @@ class Database:
                         deleted_runs += cur.rowcount
             return {"deleted_runs": deleted_runs, "deleted_files": deleted_files}
         except Exception as e:
-            self.logger.error(f"Cleanup error: {e}")
+            logger.error(f"Cleanup error: {e}")
             return {"error": str(e)}
 
     def optimize_database(self) -> dict:
@@ -1833,7 +1833,7 @@ class Database:
                 "wal_cleared": wal_size_before,
             }
         except Exception as e:
-            self.logger.error(f"Optimize error: {e}")
+            logger.error(f"Optimize error: {e}")
             return {"error": str(e)}
 
     def get_db_stats(self) -> dict:
