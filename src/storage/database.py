@@ -121,20 +121,24 @@ class Database:
                 if retention.get("auto_cleanup_on_startup", True):
                     keep_n = int(retention.get("keep_last_n_scans", 3))
                     # Hizli orphan tespiti — eger varsa bunlari da temizleyecegiz
+                    # NOT: conn.row_factory = dict_factory oldugu icin
+                    # row[0] -> KeyError(0) atar. Sutun adiyla erismek
+                    # zorundayiz veya tek-deger SELECT'i icin scalar() yerine
+                    # alias + dict erisim. Asagida hep alias kullaniyoruz.
                     orphan_row = conn.execute(
-                        "SELECT COUNT(*) FROM scanned_files "
+                        "SELECT COUNT(*) AS cnt FROM scanned_files "
                         "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
                     ).fetchone()
-                    orphan_count = orphan_row[0] if orphan_row else 0
+                    orphan_count = (orphan_row["cnt"] if orphan_row else 0) or 0
 
                     count_row = conn.execute(
                         "SELECT COUNT(*) AS cnt FROM scan_runs"
                     ).fetchone()
-                    total_scans = count_row[0] if count_row else 0
+                    total_scans = (count_row["cnt"] if count_row else 0) or 0
                     source_row = conn.execute(
                         "SELECT COUNT(DISTINCT source_id) AS cnt FROM scan_runs"
                     ).fetchone()
-                    total_sources = source_row[0] if source_row else 0
+                    total_sources = (source_row["cnt"] if source_row else 0) or 0
 
                     needs_retention = total_scans > keep_n * max(total_sources, 1)
                     needs_orphan = orphan_count > 0
