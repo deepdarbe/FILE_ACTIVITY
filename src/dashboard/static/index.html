@@ -1188,13 +1188,20 @@ async function loadOverview() {
     }
 
     try {
-        // Tum API cagrilarini paralel yap (500ms gecikme kaldirildi)
-        const [riskData, trendData, freqData, insightsData] = await Promise.all([
+        // HIZLI YOL: risk-score ve trend her ikisi de cached (scan_runs.summary_json).
+        // Ag sorgusu olmadan milisaniyede gelirler. Sayfa bunlarla hemen dolar.
+        const [riskData, trendData] = await Promise.all([
             api(`/risk-score/${sid}`, {silent:true}).catch(()=>({risk_score:0, kpis:{}})),
             api(`/trend/${sid}`, {silent:true}).catch(()=>({scans:[], growth:null})),
-            api(`/reports/frequency/${sid}`, {silent:true}).catch(()=>({frequency:[]})),
-            api(`/insights/${sid}`, {silent:true}).catch(()=>({insights:[], score:0})),
         ]);
+
+        // YAVAS ENDPOINT'LER: frequency + insights arka planda, UI beklemez.
+        // Her ikisi de cache miss'te agir oldugu icin await edilmezler; geldiklerinde
+        // ilgili karti/panelini guncellerler. Boylece Overview dakikalarca takilmaz.
+        const freqPromise = api(`/reports/frequency/${sid}`, {silent:true})
+            .catch(()=>({frequency:[]}));
+        const insightsPromise = api(`/insights/${sid}`, {silent:true})
+            .catch(()=>({insights:[], score:0}));
 
         // KPI Cards
         const rs = riskData.risk_score || 0;
@@ -1228,28 +1235,31 @@ async function loadOverview() {
 
         document.getElementById('ov-dups').textContent = formatNum(kpi.dup_groups || 0);
 
-        // Age distribution chart (horizontal bar)
-        const freq = freqData.frequency || [];
+        // Age distribution chart (horizontal bar) — frequency endpoint'i yavas
+        // olabilir, arka planda doldur. Once bos yer tut, cevap gelince ciz.
         destroyChart('ov-age-chart');
-        if (freq.length) {
-            const ageColors = freq.map(f => {
-                const d = f.days || 0;
-                if (d >= 365) return '#ef4444';
-                if (d >= 180) return '#f59e0b';
-                if (d >= 90) return '#eab308';
-                return '#10b981';
-            });
-            chartInstances['ov-age-chart'] = new Chart(document.getElementById('ov-age-chart'), {
-                type: 'bar', data: {
-                    labels: freq.map(f => f.label),
-                    datasets: [{
-                        label: 'Dosya Sayisi', data: freq.map(f => f.file_count),
-                        backgroundColor: ageColors.map(c=>c+'cc'), borderColor: ageColors, borderWidth: 1, borderRadius: 4
-                    }]
-                }, options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } },
-                    scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
-            });
-        }
+        freqPromise.then(freqData => {
+            const freq = freqData.frequency || [];
+            if (freq.length) {
+                const ageColors = freq.map(f => {
+                    const d = f.days || 0;
+                    if (d >= 365) return '#ef4444';
+                    if (d >= 180) return '#f59e0b';
+                    if (d >= 90) return '#eab308';
+                    return '#10b981';
+                });
+                chartInstances['ov-age-chart'] = new Chart(document.getElementById('ov-age-chart'), {
+                    type: 'bar', data: {
+                        labels: freq.map(f => f.label),
+                        datasets: [{
+                            label: 'Dosya Sayisi', data: freq.map(f => f.file_count),
+                            backgroundColor: ageColors.map(c=>c+'cc'), borderColor: ageColors, borderWidth: 1, borderRadius: 4
+                        }]
+                    }, options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } },
+                        scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
+                });
+            }
+        });
 
         // Growth trend chart (line)
         const scans = trendData.scans || [];
@@ -1268,26 +1278,34 @@ async function loadOverview() {
             });
         }
 
-        // AI Recommendations (top 5)
-        const insights = (insightsData.insights || []).slice(0, 5);
+        // AI Recommendations (top 5) — insights cache miss'te agir olabilir.
+        // Arka planda ac, bekleme. Spinner yerine once cached olmayacagini soyleyen
+        // mesaj goster, gelince degistir.
         const sevColors = { critical: 'var(--danger)', warning: 'var(--warning)', info: 'var(--info)', success: 'var(--success)' };
         const recEl = document.getElementById('ov-recommendations');
-        if (insights.length) {
-            recEl.innerHTML = insights.map(i => `
-                <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-secondary);border-radius:8px;border-left:3px solid ${sevColors[i.severity]||'var(--border)'}">
-                    <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${sevColors[i.severity]||'var(--border)'}22;color:${sevColors[i.severity]||'var(--text-muted)'};flex-shrink:0">${(i.severity||'info').toUpperCase()}</span>
-                    <div style="flex:1;min-width:0">
-                        <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${i.title}</div>
-                        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${i.description}</div>
-                    </div>
-                    ${i.impact_size ? `<span style="font-size:12px;color:var(--text-muted);flex-shrink:0">${formatSize(i.impact_size)}</span>` : ''}
-                    <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'temp_files','duplicates':'duplicates','security':'temp_files','growth':'stale_180','recommendation':'large_files','audit':'stale_1year'}[i.category] || 'all_files')}', ${sid})" style="flex-shrink:0">Incele</button>
-                    ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
-                </div>
-            `).join('');
-        } else {
-            recEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px">Tarama yapildiktan sonra oneriler goruntulenecek</div>';
+        if (recEl) {
+            recEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px">AI onerileri arka planda hazirlaniyor, hazir olunca burada gorunecek...</div>';
         }
+        insightsPromise.then(insightsData => {
+            const insights = (insightsData.insights || []).slice(0, 5);
+            if (!recEl) return;
+            if (insights.length) {
+                recEl.innerHTML = insights.map(i => `
+                    <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-secondary);border-radius:8px;border-left:3px solid ${sevColors[i.severity]||'var(--border)'}">
+                        <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${sevColors[i.severity]||'var(--border)'}22;color:${sevColors[i.severity]||'var(--text-muted)'};flex-shrink:0">${(i.severity||'info').toUpperCase()}</span>
+                        <div style="flex:1;min-width:0">
+                            <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${i.title}</div>
+                            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${i.description}</div>
+                        </div>
+                        ${i.impact_size ? `<span style="font-size:12px;color:var(--text-muted);flex-shrink:0">${formatSize(i.impact_size)}</span>` : ''}
+                        <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'temp_files','duplicates':'duplicates','security':'temp_files','growth':'stale_180','recommendation':'large_files','audit':'stale_1year'}[i.category] || 'all_files')}', ${sid})" style="flex-shrink:0">Incele</button>
+                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
+                    </div>
+                `).join('');
+            } else {
+                recEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px">Tarama yapildiktan sonra oneriler goruntulenecek</div>';
+            }
+        });
     } catch(e) { console.error(e); }
 }
 
@@ -3176,9 +3194,10 @@ async function loadGrowth() {
                     document.getElementById('ov-size').textContent = summary.total_size_formatted || formatSize(summary.total_size);
                     document.getElementById('ov-risk-text').textContent = '...';
 
-                    // Yukleniyor gostergesi
+                    // Yukleniyor gostergesi — loadOverview insightsPromise'i
+                    // arka planda baslatacak, hazir olunca icerik gelecek.
                     const recEl = document.getElementById('ov-recommendations');
-                    if (recEl) recEl.innerHTML = '<div style="text-align:center;padding:20px"><div class="loading-spinner" style="margin:0 auto"></div><div style="color:var(--text-muted);font-size:12px;margin-top:8px">Gecmis analiz yukleniyor...</div></div>';
+                    if (recEl) recEl.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px">AI onerileri arka planda hazirlaniyor — dashboard kullanima hazir</div>';
                 }
 
                 // Agir verileri arka planda yukle
