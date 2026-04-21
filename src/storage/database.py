@@ -275,7 +275,9 @@ class Database:
                 errors          INTEGER DEFAULT 0,
                 status          TEXT DEFAULT 'running',
                 summary_json    TEXT,
-                summary_computed_at TEXT
+                summary_computed_at TEXT,
+                insights_json   TEXT,
+                insights_computed_at TEXT
             )
         """)
 
@@ -284,6 +286,8 @@ class Database:
         for col_def in (
             "summary_json TEXT",
             "summary_computed_at TEXT",
+            "insights_json TEXT",
+            "insights_computed_at TEXT",
         ):
             col_name = col_def.split()[0]
             try:
@@ -1993,6 +1997,35 @@ class Database:
         summary["scan_id"] = scan_id
         summary["computed_at"] = now
         return summary
+
+    def save_scan_insights(self, scan_id: int, insights_payload: dict) -> None:
+        """InsightsEngine cikti'sini scan_runs'a kaydet.
+
+        Payload: {insights: [...], score: N, generated_at, scan_id}
+        """
+        from datetime import datetime as _dt
+        now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self.get_cursor() as cur:
+            cur.execute(
+                "UPDATE scan_runs SET insights_json=?, insights_computed_at=? WHERE id=?",
+                (json.dumps(insights_payload, ensure_ascii=False, default=str), now, scan_id),
+            )
+
+    def get_scan_insights(self, scan_id: int) -> Optional[dict]:
+        """Kayitli insights'i oku. None ise hic hesaplanmamis."""
+        with self.get_cursor() as cur:
+            row = cur.execute(
+                "SELECT insights_json, insights_computed_at FROM scan_runs WHERE id=?",
+                (scan_id,),
+            ).fetchone()
+        if not row or not row["insights_json"]:
+            return None
+        try:
+            d = json.loads(row["insights_json"])
+            d["cached_at"] = row["insights_computed_at"]
+            return d
+        except Exception:
+            return None
 
     def get_scan_summary(self, scan_id: int) -> Optional[dict]:
         """Kayitli scan summary'yi oku. Hic hesaplanmamissa None doner."""

@@ -919,10 +919,42 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     # --- INSIGHTS API ---
 
     @app.get("/api/insights/{source_id}")
-    async def get_insights(source_id: int):
+    async def get_insights(source_id: int, refresh: bool = False):
+        """AI Insights: son scan icin cached sonucu doner, yoksa hesaplar.
+
+        refresh=true ile yeniden hesaplamayi force ederek cache'i tazeler.
+        Cache'te yoksa ilk cagri agir; sonraki cagrilar anlik.
+        """
         from src.analyzer.ai_insights import InsightsEngine
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not refresh and scan_id:
+            cached = db.get_scan_insights(scan_id)
+            if cached:
+                cached["from_cache"] = True
+                return cached
+
         engine = InsightsEngine(db)
-        return engine.generate_insights(source_id)
+        result = engine.generate_insights(source_id)
+        # Sonraki acilislar anlik olsun diye scan_id varsa cache'e yaz
+        if scan_id:
+            try:
+                db.save_scan_insights(scan_id, result)
+            except Exception as e:
+                logger.warning("insights cache yazilamadi: %s", e)
+        result["from_cache"] = False
+        return result
+
+    @app.post("/api/insights/{source_id}/recompute")
+    async def insights_recompute(source_id: int):
+        """Insights'i yeniden hesapla ve cache'i tazele."""
+        from src.analyzer.ai_insights import InsightsEngine
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, "Tamamlanmis scan yok")
+        result = InsightsEngine(db).generate_insights(source_id)
+        db.save_scan_insights(scan_id, result)
+        return {"status": "ok", "scan_id": scan_id,
+                "insights_count": len(result.get("insights", []))}
 
     # --- RISK SCORE API ---
 
