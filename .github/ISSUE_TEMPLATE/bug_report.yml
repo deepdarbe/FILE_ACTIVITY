@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a reproducible bug in FILE ACTIVITY
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill in the fields below so we can reproduce quickly.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `fa source add -n SRV01 -p \\server\share ...`
+        2. Run `fa scan -s SRV01`
+        3. Open dashboard, click ...
+        4. See error ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit SHA
+      description: "Output of `fa version` or `git rev-parse HEAD`"
+      placeholder: "v1.7.0 or 100d95b"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - One-command (setup-source.ps1)
+        - EXE release (setup.ps1 / install.bat)
+        - Manual source clone
+        - Windows Service
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows Server 2019 / Windows 11 22H2"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version (if source install)
+      placeholder: "3.11.9"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: "From `C:\\FileActivity\\logs\\file_activity.log` or dashboard error output. Strip any UNC paths / share names if sensitive."
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config (optional)
+      description: "Scrubbed snippet from config.yaml — no credentials."
+      render: yaml
