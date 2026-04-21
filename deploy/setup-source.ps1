@@ -10,7 +10,12 @@
     EXE release'i GEREKTIRMEZ. Tek gereksinim: hedef sunucuda Python 3.10+
 
     Kullanim (Yonetici PowerShell):
-    powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
+    powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
+
+    Bastaki TLS 1.2 atamasi, eski PowerShell 5.1 (Windows Server 2012/2016)
+    varsayili TLS 1.0/1.1 kullandigi icin GitHub'a HTTPS isteginin calismasini
+    garanti eder. Daha yeni sistemlerde zararsiz, guvenli tarafta kalmak icin
+    kanonik komut olarak onerilir.
 
     Ayni komut guncelleme icin de kullanilabilir: mevcut data\, config\,
     logs\ ve reports\ dizinleri korunur, sadece kaynak kod yenilenir.
@@ -270,10 +275,11 @@ pause
 Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 
 # Update launcher: ayni script'i tekrar cagirir (guncelleme)
+# Eski PowerShell'lerde TLS 1.2'yi onceden set etmek zorunlu (irm basarisiz olmasin)
 $updateCmd = @"
 @echo off
 echo FILE ACTIVITY guncelleniyor (master branch)...
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/setup-source.ps1 | iex"
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/setup-source.ps1 | iex"
 "@
 Set-Content "$InstallDir\update.cmd" $updateCmd
 

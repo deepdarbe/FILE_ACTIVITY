@@ -18,13 +18,18 @@ Enterprise file share analysis tool that detects risky/stale/duplicate files, ar
 
 ```powershell
 # PowerShell (Run as Admin):
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
 ```
 
-Installs to `C:\FileActivity\`, creates a Python venv, installs all
-dependencies (including DuckDB analytics), configures firewall, and offers to
-start the dashboard. Re-run the same command any time to update — data,
-logs, reports, and `config.yaml` are preserved.
+The leading TLS 1.2 assignment is required on Windows Server 2012/2016 where
+PowerShell 5.1 still defaults to TLS 1.0/1.1 (GitHub rejects both since 2018).
+Harmless on newer systems — keep it as the canonical form.
+
+Installs to `C:\FileActivity\`, auto-installs Python 3.11 if missing, creates a
+Python venv, installs all dependencies (including DuckDB analytics),
+configures firewall, and offers to start the dashboard. Re-run the same
+command any time to update — data, logs, reports, and `config.yaml` are
+preserved.
 
 To update later: `C:\FileActivity\update.cmd`
 
