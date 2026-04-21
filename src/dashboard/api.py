@@ -1617,6 +1617,24 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
 
     @app.get("/api/system/health")
     async def health():
+        # WAL ve toplam disk durumu
+        wal_warning = None
+        try:
+            wal_path = db.db_path + "-wal"
+            wal_size = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
+            if wal_size > 500_000_000:
+                wal_warning = {
+                    "wal_size_bytes": wal_size,
+                    "wal_size_formatted": f"{wal_size / 1073741824:.2f} GB"
+                                          if wal_size > 1073741824
+                                          else f"{wal_size / 1048576:.0f} MB",
+                    "severity": "critical" if wal_size > 5_000_000_000 else "warning",
+                    "recommendation": "Kaynaklar -> Veritabani Bakimi -> Optimize Et butonuna basarak "
+                                       "WAL'i temizleyin.",
+                }
+        except Exception:
+            pass
+
         return {
             "status": "ok",
             "time": datetime.now().isoformat(),
@@ -1624,6 +1642,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "database": db.health_check(),
             "analytics": analytics.health(),
             "email": email_notifier.health(),
+            "wal_warning": wal_warning,
         }
 
     @app.get("/api/system/analytics")
