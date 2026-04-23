@@ -288,6 +288,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('naming')"><span class="icon">📐</span> <span>Adlandirma Uyumu</span></div>
         <div class="nav-item" onclick="showPage('policies')"><span class="icon">📋</span> <span>Politikalar</span></div>
         <div class="nav-item" onclick="showPage('schedules')"><span class="icon">⏰</span> <span>Zamanlama</span></div>
+        <div class="nav-item" onclick="showPage('sqlquery')"><span class="icon">🔍</span> <span>Sorgu</span></div>
     </div>
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
@@ -715,6 +716,43 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div id="insights-list" style="display:grid;gap:12px"></div>
 </div>
 
+<!-- ============ SORGU (issue #48) ============ -->
+<div class="page" id="page-sqlquery">
+    <div class="page-header">
+        <div><h2>SQL Sorgu Paneli</h2><div class="desc">Salt-okunur DuckDB sorgu calistirici (whitelist korumali)</div></div>
+        <div class="actions">
+            <select id="sqlq-saved" onchange="sqlqLoadSaved(this.value)" style="width:240px">
+                <option value="">Kayitli sorgular...</option>
+            </select>
+            <button class="btn" onclick="sqlqSaveCurrent()">Kaydet</button>
+            <button class="btn" onclick="sqlqDeleteSaved()">Sil</button>
+        </div>
+    </div>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
+        <textarea id="sqlq-text" rows="5" spellcheck="false"
+            placeholder="SELECT file_name, file_size FROM scanned_files ORDER BY file_size DESC LIMIT 50"
+            style="width:100%;font-family:'Consolas','Courier New',monospace;font-size:13px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-light);border-radius:6px;padding:10px;resize:vertical;box-sizing:border-box"></textarea>
+        <div style="display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap">
+            <button class="btn btn-primary" onclick="sqlqRun()">Calistir</button>
+            <label style="font-size:12px;color:var(--text-muted)">
+                Maks satir
+                <input type="number" id="sqlq-max" value="1000" min="1" max="10000"
+                    style="width:80px;margin-left:6px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-light);border-radius:4px;padding:4px 6px"/>
+            </label>
+            <span id="sqlq-status" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.5">
+            Izinli tablolar: scanned_files, scan_runs, archived_files, archive_operations,
+            duplicate_hash_groups, duplicate_hash_members, ransomware_alerts,
+            audit_log_chain, scheduled_tasks, sources, policies. INSERT/UPDATE/DELETE/DROP
+            ve diger DDL anahtar kelimeleri reddedilir.
+        </div>
+    </div>
+    <div class="table-wrap" style="overflow:auto;max-height:60vh;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius)">
+        <table id="sqlq-result" style="width:100%;border-collapse:collapse"></table>
+    </div>
+</div>
+
 </div><!-- /main -->
 
 <!-- ============ MODALS ============ -->
@@ -855,7 +893,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit };
     if (loaders[name]) loaders[name]();
 }
 
@@ -3217,6 +3255,98 @@ async function loadGrowth() {
         loadAnomalies();
     }
 })();
+
+// ═══════════════════════════════════════════════════
+// SQL QUERY PANEL (issue #48)
+// localStorage namespace: file_activity.sqlq.saved -> {name: sql, ...}
+// ═══════════════════════════════════════════════════
+const SQLQ_STORE_KEY = 'file_activity.sqlq.saved';
+
+function sqlqLoadStore() {
+    try { return JSON.parse(localStorage.getItem(SQLQ_STORE_KEY) || '{}'); }
+    catch { return {}; }
+}
+function sqlqSaveStore(obj) {
+    localStorage.setItem(SQLQ_STORE_KEY, JSON.stringify(obj));
+}
+function sqlqRefreshDropdown() {
+    const sel = document.getElementById('sqlq-saved');
+    const store = sqlqLoadStore();
+    const names = Object.keys(store).sort();
+    sel.innerHTML = '<option value="">Kayitli sorgular...</option>' +
+        names.map(n => `<option value="${n}">${n}</option>`).join('');
+}
+function sqlqInit() {
+    sqlqRefreshDropdown();
+    const ta = document.getElementById('sqlq-text');
+    if (ta && !ta.value) ta.value = 'SELECT id, file_name, file_size FROM scanned_files ORDER BY file_size DESC LIMIT 50';
+}
+function sqlqLoadSaved(name) {
+    if (!name) return;
+    const store = sqlqLoadStore();
+    if (store[name]) document.getElementById('sqlq-text').value = store[name];
+}
+function sqlqSaveCurrent() {
+    const sql = document.getElementById('sqlq-text').value.trim();
+    if (!sql) { notify('Bos sorgu kaydedilemez', 'warning'); return; }
+    const name = prompt('Sorgu adi:');
+    if (!name) return;
+    const store = sqlqLoadStore();
+    store[name] = sql;
+    sqlqSaveStore(store);
+    sqlqRefreshDropdown();
+    document.getElementById('sqlq-saved').value = name;
+    notify(`Kaydedildi: ${name}`, 'success');
+}
+function sqlqDeleteSaved() {
+    const sel = document.getElementById('sqlq-saved');
+    const name = sel.value;
+    if (!name) { notify('Once bir kayit secin', 'warning'); return; }
+    if (!confirm(`Sil: ${name}?`)) return;
+    const store = sqlqLoadStore();
+    delete store[name];
+    sqlqSaveStore(store);
+    sqlqRefreshDropdown();
+    notify('Silindi', 'success');
+}
+function sqlqEscape(v) {
+    if (v === null || v === undefined) return '<span style="color:var(--text-muted)">NULL</span>';
+    const s = String(v);
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function sqlqRun() {
+    const sql = document.getElementById('sqlq-text').value.trim();
+    const max_rows = parseInt(document.getElementById('sqlq-max').value, 10) || 1000;
+    const status = document.getElementById('sqlq-status');
+    const tbl = document.getElementById('sqlq-result');
+    if (!sql) { notify('Bos sorgu', 'warning'); return; }
+    status.textContent = 'Calisiyor...';
+    tbl.innerHTML = '';
+    try {
+        const r = await api('/analytics/query', {
+            method: 'POST',
+            body: JSON.stringify({ sql, max_rows }),
+        });
+        const cols = r.columns || [];
+        const rows = r.rows || [];
+        let html = '<thead><tr>' +
+            cols.map(c => `<th style="position:sticky;top:0;background:var(--bg-secondary);padding:8px 10px;text-align:left;font-size:12px;border-bottom:1px solid var(--border-light)">${sqlqEscape(c)}</th>`).join('') +
+            '</tr></thead><tbody>';
+        if (rows.length === 0) {
+            html += `<tr><td colspan="${Math.max(cols.length,1)}" style="padding:18px;text-align:center;color:var(--text-muted)">Sonuc bulunamadi</td></tr>`;
+        } else {
+            for (const row of rows) {
+                html += '<tr>' + row.map(v => `<td style="padding:6px 10px;font-size:12px;border-bottom:1px solid var(--border);font-family:Consolas,monospace">${sqlqEscape(v)}</td>`).join('') + '</tr>';
+            }
+        }
+        html += '</tbody>';
+        tbl.innerHTML = html;
+        const flag = r.truncated ? ' <span style="color:var(--warning)">(kesildi)</span>' : '';
+        status.innerHTML = `${r.row_count} satir - ${r.elapsed_ms} ms${flag}`;
+    } catch (e) {
+        status.textContent = 'Hata';
+    }
+}
 </script>
 
 <!-- Drill-down Modal -->
