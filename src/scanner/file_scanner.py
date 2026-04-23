@@ -18,6 +18,8 @@ from src.scanner.win_attributes import (
     get_file_times, is_hidden, is_system, check_ntfs_last_access_enabled, _long_path
 )
 from src.scanner.share_resolver import get_relative_path, test_connectivity
+from src.scanner.backends import ScannerBackend
+from src.scanner.backends.smb_parallel import SmbParallelBackend
 from src.storage.database import Database
 from src.i18n.messages import t
 from src.utils.size_formatter import format_size
@@ -473,6 +475,21 @@ class FileScanner:
         self.exclude_patterns = self.config.get("exclude_patterns", [])
         self.read_owner = self.config.get("read_owner", False)
         self._ntfs_access_checked = False
+        # Keep the full config dict around so backends can read their own keys.
+        self._full_config = config if isinstance(config, dict) else {"scanner": self.config}
+
+    def _select_backend(self, path: str) -> ScannerBackend:
+        """Return the walk backend to use for ``path``.
+
+        Today every path routes to :class:`SmbParallelBackend` — the MFT
+        (Windows local NTFS) and FindFirstFileEx backends are tracked as
+        separate issues. UNC paths are detected explicitly so the intent is
+        obvious in the logs.
+        """
+        is_unc = path.startswith("\\\\")
+        backend_name = "smb_parallel (UNC)" if is_unc else "smb_parallel (local)"
+        logger.debug("Scanner backend: %s for %s", backend_name, path)
+        return SmbParallelBackend(self._full_config)
 
     def scan_source(self, source_id: int, source_name: str, path: str) -> dict:
         """Bir kaynagi tara ve sonuclari veritabanina yaz.
@@ -541,58 +558,52 @@ class FileScanner:
         mit_analyzer = MITNamingAnalyzer()
 
         try:
-            for entry in self._recursive_scandir(path, progress):
-                if not entry.is_file(follow_symlinks=False):
-                    continue
-
-                if self._should_skip(entry):
+            backend = self._select_backend(path)
+            for record in backend.walk(path):
+                file_path = record.get("file_path")
+                if not file_path:
                     continue
 
                 # Resume: skip already scanned files
-                if scanned_paths and entry.path in scanned_paths:
+                if scanned_paths and file_path in scanned_paths:
                     continue
 
                 try:
-                    times = get_file_times(entry.path, read_owner=self.read_owner)
+                    file_name = record.get("file_name") or os.path.basename(file_path)
+                    file_size = int(record.get("file_size") or 0)
+                    creation_time = record.get("creation_time")
+                    last_access_time = record.get("last_access_time")
+                    last_modify_time = record.get("last_modify_time")
+                    owner = record.get("owner")
+                    attributes = int(record.get("attributes") or 0)
 
-                    # get_file_times bos donerse entry.stat() ile boyut al
-                    if times.file_size == 0 and times.creation_time is None:
-                        try:
-                            st = entry.stat(follow_symlinks=False)
-                            times.file_size = st.st_size
-                            times.creation_time = datetime.fromtimestamp(st.st_ctime).strftime("%Y-%m-%d %H:%M:%S")
-                            times.last_access_time = datetime.fromtimestamp(st.st_atime).strftime("%Y-%m-%d %H:%M:%S")
-                            times.last_modify_time = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                        except Exception:
-                            pass  # En azindan dosya adi kaydedilsin
-
-                    rel_path = get_relative_path(entry.path, path)
-                    ext = os.path.splitext(entry.name)[1].lower().lstrip(".")
+                    rel_path = get_relative_path(file_path, path)
+                    ext = os.path.splitext(file_name)[1].lower().lstrip(".")
                     if not ext:
                         ext = None
 
                     row = {
                         "source_id": source_id,
                         "scan_id": scan_id,
-                        "file_path": entry.path,
+                        "file_path": file_path,
                         "relative_path": rel_path,
-                        "file_name": entry.name,
+                        "file_name": file_name,
                         "extension": ext,
-                        "file_size": times.file_size,
-                        "creation_time": times.creation_time,
-                        "last_access_time": times.last_access_time,
-                        "last_modify_time": times.last_modify_time,
-                        "owner": times.owner,
-                        "attributes": times.win32_attributes,
+                        "file_size": file_size,
+                        "creation_time": creation_time,
+                        "last_access_time": last_access_time,
+                        "last_modify_time": last_modify_time,
+                        "owner": owner,
+                        "attributes": attributes,
                     }
 
                     batch.append(row)
                     file_count += 1
-                    total_size += times.file_size
+                    total_size += file_size
 
                     # Dosya adi uyumluluk analizi
-                    name_analyzer.analyze(entry.path, entry.name)
-                    mit_analyzer.analyze(entry.path, entry.name)
+                    name_analyzer.analyze(file_path, file_name)
+                    mit_analyzer.analyze(file_path, file_name)
 
                     # Batch insert
                     if len(batch) >= self.batch_size:
@@ -607,6 +618,7 @@ class FileScanner:
                     if file_count % 500 == 0 or (now - last_log_time) >= 2.0:
                         elapsed = now - start_time
                         fps = file_count / elapsed if elapsed > 0 else 0
+                        progress["current_dir"] = os.path.dirname(file_path)
                         progress.update({
                             "file_count": file_count,
                             "total_size": total_size,
@@ -626,10 +638,10 @@ class FileScanner:
 
                 except PermissionError:
                     errors += 1
-                    logger.debug("Erisim reddedildi: %s", entry.path)
+                    logger.debug("Erisim reddedildi: %s", record.get("file_path"))
                 except OSError as e:
                     errors += 1
-                    logger.debug("Dosya hatasi: %s - %s", entry.path, e)
+                    logger.debug("Dosya hatasi: %s - %s", record.get("file_path"), e)
 
             # Kalan batch'i yaz
             if batch:
