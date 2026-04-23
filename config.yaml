@@ -24,6 +24,13 @@ analytics:
   enabled: true
   memory_limit: "512MB"           # DuckDB bellek siniri
   threads: 4                      # DuckDB paralel thread sayisi
+  query_panel:
+    # Yonetici ad-hoc SQL sorgu paneli (#48). DuckDB uzerinden SQLite'a
+    # salt-okunur calisir, whitelist tablolar disindaki tum sorgulari
+    # reddeder. Audit log'a sorgu kaydi yazilir (event_type=sql_query).
+    enabled: true
+    max_rows: 10000
+    timeout_seconds: 30
 
 active_directory:
   # Kullanici adindan e-posta ve tam ad cozumleme. Kullanici aktivite

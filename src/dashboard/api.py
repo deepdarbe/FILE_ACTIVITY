@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 
 # ── Arka plan export kuyrugu ──
@@ -2169,6 +2169,41 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         """VACUUM + ANALYZE ile veritabanini optimize et."""
         result = db.optimize_database()
         return result
+
+    # ── AD-HOC SQL SORGU PANELI (issue #48) ──
+    # Whitelist-guarded read-only DuckDB executor. Frontend "Sorgu" sekmesi
+    # buradan beslenir; SQL'i once SqlQueryGuard.validate suzgecinden gecirir,
+    # ardindan audit_event yazip DuckDB uzerinden SQLite'a salt-okunur calistirir.
+
+    class QueryRequest(BaseModel):
+        sql: str
+        max_rows: int = Field(default=1000, ge=1, le=10000)
+
+    @app.post("/api/analytics/query")
+    async def analytics_query(req: QueryRequest, request: Request):
+        from src.dashboard.sql_query import SqlQueryGuard
+        panel_cfg = (config.get("analytics", {}) or {}).get("query_panel", {}) or {}
+        if not panel_cfg.get("enabled", True):
+            raise HTTPException(403, "Sorgu paneli devre disi")
+        max_rows = min(int(req.max_rows), int(panel_cfg.get("max_rows", 10000)))
+        guard = SqlQueryGuard(
+            max_rows=max_rows,
+            timeout_seconds=int(panel_cfg.get("timeout_seconds", 30)),
+        )
+        ok, reason = guard.validate(req.sql)
+        if not ok:
+            raise HTTPException(400, f"Sorgu reddedildi: {reason}")
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="sql_query", username="admin",
+                file_path=None, details=req.sql[:500], detected_by="dashboard",
+            )
+        except Exception as e:  # pragma: no cover - audit best-effort
+            logger.warning("sql_query audit yazilamadi: %s", e)
+        try:
+            return guard.execute(db, req.sql)
+        except Exception as e:
+            raise HTTPException(500, f"Sorgu hatasi: {e}")
 
     # ── ARKA PLAN EXPORT SISTEMI ──
 
