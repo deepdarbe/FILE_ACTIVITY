@@ -658,6 +658,43 @@ class Database:
             "ON orphan_sid_cache(resolved)"
         )
 
+        # GDPR PII findings (issue #58). Per-file detection rows produced
+        # by ``PiiEngine.scan_source``; each row records a pattern hit
+        # count + a redacted sample snippet so an Article 17/30 export
+        # can reconstruct "every file mentioning data subject X" without
+        # ever persisting raw PII (snippets are masked).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pii_findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER REFERENCES scan_runs(id) ON DELETE CASCADE,
+                file_path TEXT NOT NULL,
+                pattern_name TEXT NOT NULL,
+                hit_count INTEGER NOT NULL,
+                sample_snippet TEXT,
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_pii_pattern ON pii_findings(pattern_name)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_pii_path ON pii_findings(file_path)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_pii_scan ON pii_findings(scan_id)")
+
+        # GDPR retention policies (issue #58). Operator-defined rules of
+        # the form "files matching <fnmatch> older than <N> days ->
+        # archive|delete". Applied in dry-run by default; non-dry-run
+        # appends a ``retention_archive`` / ``retention_delete`` row to
+        # ``file_audit_events`` for the attestation report.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS retention_policies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                pattern_match TEXT,
+                retain_days INTEGER NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('archive', 'delete')),
+                enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(

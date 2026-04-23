@@ -187,6 +187,31 @@ security:
     max_unique_sids: 1000
     require_dual_approval_for_reassign: false
 
+compliance:
+  # GDPR PII detection + retention engine (issue #58).
+  # PII engine walks scanned_files for the latest scan, opens text-only
+  # files (skipping binaries by extension), runs configurable regex
+  # patterns and persists *redacted* hits to pii_findings. Snippets
+  # never carry the raw match (e.g. "j***n@x.com"), so the table itself
+  # is not a new PII liability. find_for_subject() is the Article 17/30
+  # export driver. Retention engine evaluates fnmatch+age rules and
+  # archives or deletes matching files; dry-run is the default.
+  pii:
+    enabled: false
+    text_extensions:
+      - txt
+      - csv
+      - html
+      - md
+      - json
+      - xml
+      - yaml
+    max_file_bytes: 1048576    # 1 MB per file scan
+    snippet_max_length: 60
+    patterns: {}               # extend DEFAULT_PATTERNS
+  retention:
+    enabled: false
+
 audit:
   # Tamper-evident hash-chained audit log (issue #38).
   # When chain_enabled=true, every audit event written via the
