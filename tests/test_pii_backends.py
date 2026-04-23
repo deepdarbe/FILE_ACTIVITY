@@ -51,8 +51,12 @@ FIXTURE_CORPUS = [
      "12345678901\n"
      "tail"),
     ("multibyte",
-     "Türkiye'den müşteri: hanım@şirket.com\n"
-     "ASCII fallback: jane@example.com\n"
+     # Hyperscan without HS_FLAG_UCP treats \w / \d / \s as ASCII-only
+     # — matching the documented #74 default. We therefore exercise
+     # the codepath that matters in production: an ASCII-only PII
+     # token (jane@example.com, an 11-digit TCKN) embedded in a body
+     # of multibyte UTF-8 prose. Both backends must agree.
+     "Türkiye'den müşteri portalı: jane@example.com\n"
      "Trailing TCKN 12345678901."),
     ("nothing", "lorem ipsum dolor sit amet, no PII here at all"),
 ]
@@ -104,6 +108,37 @@ def test_hyperscan_backend_matches_re_backend():
             f"backend mismatch on fixture {label!r}: "
             f"re-only={re_hits - hs_hits}, hs-only={hs_hits - re_hits}"
         )
+
+
+@pytest.mark.skipif(
+    not hyperscan_available(),
+    reason="hyperscan package not installed",
+)
+def test_default_patterns_compile_natively():
+    """Issue #74 regression guard.
+
+    Every default PII pattern is ASCII-only, so under a correctly
+    configured Hyperscan backend they must all compile into the native
+    multi-pattern database — never fall through to the per-pattern
+    stdlib ``re`` route. A non-empty ``_fallback`` here means the
+    operator-visible benchmark would silently report ~1x speedup
+    (root cause of #74: ``HS_FLAG_UCP`` blowing ``\\w`` up to the full
+    Unicode word class so Hyperscan refuses with "Pattern is too
+    large"). Linux x86_64 with the ``hyperscan`` wheel installed is
+    the supported acceleration target, so this assertion must hold.
+    """
+    backend = make_backend("hyperscan", PATTERNS)
+    assert isinstance(backend, HyperscanBackend), backend
+    # No pattern should have been demoted to the per-pattern fallback.
+    assert backend._fallback == {}, (
+        "default patterns leaked into stdlib re fallback: "
+        f"{sorted(backend._fallback)}"
+    )
+    # Every default pattern name must appear in the native id->name map.
+    native_names = set(backend._ids.values())
+    assert set(PATTERNS) <= native_names, (
+        f"missing from native HS db: {set(PATTERNS) - native_names}"
+    )
 
 
 @pytest.mark.skipif(
