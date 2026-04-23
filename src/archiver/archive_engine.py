@@ -77,12 +77,27 @@ class ArchiveEngine:
                     if not is_dry_run:
                         try:
                             archive_path = os.path.join(archive_dest, file_info.get("relative_path", ""))
-                            self.db.insert_audit_event_simple(
-                                source_id, 'archive', 'system',
-                                file_info["file_path"],
-                                f'Archived to {archive_path} | Policy: {archived_by}',
-                                detected_by='archiver'
-                            )
+                            details = f'Archived to {archive_path} | Policy: {archived_by}'
+                            # Issue #38: prefer chained variant when available
+                            # so audit.chain_enabled=true gets a hash-chain row
+                            # for archive ops too. With flag off this is a
+                            # straight insert (no extra writes).
+                            if hasattr(self.db, "insert_audit_event_chained"):
+                                self.db.insert_audit_event_chained({
+                                    "source_id": source_id,
+                                    "event_type": "archive",
+                                    "username": "system",
+                                    "file_path": file_info["file_path"],
+                                    "details": details,
+                                    "detected_by": "archiver",
+                                })
+                            else:
+                                self.db.insert_audit_event_simple(
+                                    source_id, 'archive', 'system',
+                                    file_info["file_path"],
+                                    details,
+                                    detected_by='archiver'
+                                )
                         except Exception as e:
                             logger.warning("Audit event kaydedilemedi %s: %s",
                                            file_info.get("file_path", "?"), e)

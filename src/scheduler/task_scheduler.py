@@ -89,6 +89,9 @@ class TaskScheduler:
                 result = self._run_archive(task)
             elif task_type == "notify_users":
                 result = self._run_notify_users(task)
+            elif task_type == "audit_export":
+                # Issue #38: WORM export of hash-chained audit log.
+                result = self._run_audit_export(task)
             else:
                 result = {"status": "error", "message": f"Bilinmeyen görev türü: {task_type}"}
 
@@ -288,6 +291,26 @@ class TaskScheduler:
             # Ilk 20 atlanani detay icin ekle — log cok sisirilmesin
             "skipped_users_sample": skipped_users[:20],
         }
+
+    def _run_audit_export(self, task):
+        """Run a WORM JSONL export of the audit chain since the last export.
+
+        Source-id is ignored — exports are global. Output dir + signing key
+        come from ``audit:`` config. Returns the AuditExporter result dict
+        with task status injected so the scheduler run-log is meaningful.
+        """
+        try:
+            from src.storage.audit_export import AuditExporter
+        except Exception as e:
+            return {"status": "error", "message": f"AuditExporter import failed: {e}"}
+        try:
+            exporter = AuditExporter(self.db, self.config)
+            result = exporter.export_since_last()
+            result["status"] = "completed"
+            return result
+        except Exception as e:
+            logger.error("audit_export task failed: %s", e)
+            return {"status": "error", "message": str(e)}
 
     def reload_tasks(self):
         """Görevleri yeniden yükle."""

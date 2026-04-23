@@ -53,8 +53,11 @@ class ScheduleCreate(BaseModel):
     @field_validator("task_type")
     @classmethod
     def _validate_task_type(cls, v: str) -> str:
-        if v not in ("scan", "archive", "notify_users"):
-            raise ValueError("task_type must be 'scan', 'archive' or 'notify_users'")
+        # Issue #38: 'audit_export' added for scheduled WORM export.
+        if v not in ("scan", "archive", "notify_users", "audit_export"):
+            raise ValueError(
+                "task_type must be 'scan', 'archive', 'notify_users' or 'audit_export'"
+            )
         return v
 
     @field_validator("cron_expression")
@@ -505,7 +508,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     @app.post("/api/schedules")
     async def add_schedule(data: ScheduleCreate):
         from src.storage.models import ScheduledTask
-        src = _get_source(db, data.source_id)
+        # audit_export tasks are global — no source. Accept source_id=0
+        # as the "ignored" sentinel; require a real source for everything else.
+        if data.task_type == "audit_export":
+            source_id_val = data.source_id  # stored but ignored by runner
+        else:
+            src = _get_source(db, data.source_id)
+            source_id_val = src.id
 
         policy_id = None
         if data.policy_name:
@@ -515,7 +524,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             policy_id = pol["id"]
 
         task = ScheduledTask(
-            task_type=data.task_type, source_id=src.id,
+            task_type=data.task_type, source_id=source_id_val,
             policy_id=policy_id, cron_expression=data.cron_expression
         )
         tid = db.add_scheduled_task(task)
@@ -949,6 +958,31 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     @app.get("/api/audit/summary")
     async def audit_summary(source_id: int = None, days: int = 7):
         return db.get_audit_summary(source_id, days)
+
+    # --- AUDIT CHAIN API (issue #38) ---
+
+    @app.get("/api/audit/verify")
+    async def audit_verify(since_seq: int = Query(1, ge=1),
+                           end_seq: Optional[int] = None):
+        """Verify the tamper-evident audit chain from since_seq onward.
+
+        Returns ``{verified, total, broken_at, broken_reason}``.
+        """
+        return db.verify_audit_chain(start_seq=since_seq, end_seq=end_seq)
+
+    @app.get("/api/audit/chain")
+    async def audit_chain(page: int = Query(1, ge=1),
+                          page_size: int = Query(100, ge=1, le=1000)):
+        """Paginated chain rows joined with file_audit_events (newest first)."""
+        return db.get_audit_chain_page(page=page, page_size=page_size)
+
+    @app.post("/api/audit/export")
+    async def audit_export(start_date: Optional[str] = None,
+                           end_date: Optional[str] = None):
+        """Trigger a WORM JSONL export of the chain in [start_date, end_date]."""
+        from src.storage.audit_export import AuditExporter
+        exporter = AuditExporter(db, config)
+        return exporter.export_range(start_date, end_date)
 
     # --- INSIGHTS API ---
 
