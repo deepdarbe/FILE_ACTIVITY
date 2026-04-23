@@ -1893,20 +1893,55 @@ class Database:
         acilir. Summary bir defa hesaplanir, scan sirasinda +1, scan
         bittikten sonra yenilenmez (scan verisi degismez).
 
-        Hesaplanan KPI'lar:
+        Hesaplanan KPI'lar (v2):
           total_files, total_size, owner_count
           stale_count, stale_size (1+ yil erisilmemis)
-          risky_count (.exe .bat .ps1 .vbs .cmd .com .scr)
+          risky_count (.exe .bat .ps1 .vbs .cmd .com .scr .msi .js .wsf)
           large_count (>100MB), large_size
           duplicate_groups, duplicate_waste_size, duplicate_files
           top_extensions (ilk 10, dosya sayisina gore)
           top_owners (ilk 10, boyuta gore)
+          age_buckets (0-30, 31-90, 91-180, 181-365, 366+)
+          size_buckets (config.analysis.size_buckets)
+          extension_size_breakdown (top 20, toplam boyuta gore)
+          top_risky_files (top 50 riskli dosya, boyuta gore)
+          top_large_files (top 50 buyuk dosya)
+          orphan_owner_count (owner NULL veya bos)
+          summary_json_version = 2
         """
         from datetime import datetime, timedelta
         summary: dict = {}
-        risky_exts = ("exe", "bat", "ps1", "vbs", "cmd", "com", "scr", "msi")
-        stale_cutoff = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+        # Riskli uzantilari: dashboard/api.py ile ayni set tutulur
+        risky_exts = ("exe", "bat", "ps1", "vbs", "cmd", "com", "scr", "msi", "js", "wsf")
+        now_dt = datetime.now()
+        stale_cutoff = (now_dt - timedelta(days=365)).strftime('%Y-%m-%d')
         oversized_bytes = 100 * 1024 * 1024
+
+        # Yas kovasi kesim noktalari — last_access_time veya last_modify_time
+        # bugunden N gun onceki tarih (yyyy-mm-dd) olarak karsilastirilir.
+        age_bucket_defs = [
+            ("0-30", 0, 30),
+            ("31-90", 31, 90),
+            ("91-180", 91, 180),
+            ("181-365", 181, 365),
+            ("366+", 366, None),
+        ]
+
+        def _age_cutoff(days: int) -> str:
+            return (now_dt - timedelta(days=days)).strftime('%Y-%m-%d')
+
+        # Boyut kovasi tanimlari — config'ten oku, yoksa DEFAULT_CONFIG ile ayni
+        size_buckets_cfg = self._get_size_buckets_config()
+        # Siralamayi garanti altina al: deger kucukten buyuge
+        sb_sorted = sorted(size_buckets_cfg.items(), key=lambda kv: kv[1])
+        # Kovalar: [(label, min_bytes, max_bytes_exclusive_or_None)]
+        size_bucket_defs = []
+        prev_max = 0
+        for label, threshold in sb_sorted:
+            size_bucket_defs.append((label, prev_max, threshold))
+            prev_max = threshold
+        # En ustu "huge" acik ust sinir
+        size_bucket_defs.append(("huge", prev_max, None))
 
         with self.get_cursor() as cur:
             # Temel sayim
@@ -1991,16 +2026,197 @@ class Database:
                 for r in owner_rows
             ]
 
-            # Kaydet
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # --- v2: Yeni aggregate'ler ---
+
+            # age_buckets: last_access_time NULL ise last_modify_time kullan.
+            # Tek bir CASE-WHEN GROUP BY sorgusu.
+            age_case_parts = []
+            age_params = []
+            for label, dmin, dmax in age_bucket_defs:
+                # ts >= cutoff_min (en fazla dmin gun once)
+                cutoff_max = _age_cutoff(dmin)  # yeni sinir (0 gun -> bugun)
+                if dmax is None:
+                    # 366+: ts < _age_cutoff(dmin)
+                    age_case_parts.append(
+                        "WHEN ts IS NOT NULL AND ts < ? THEN ?"
+                    )
+                    age_params.extend([cutoff_max, label])
+                else:
+                    cutoff_min = _age_cutoff(dmax + 1)  # bundan eskileri hariç tut
+                    # dmin-dmax aralık: cutoff_min < ts <= cutoff_max
+                    age_case_parts.append(
+                        "WHEN ts IS NOT NULL AND ts > ? AND ts <= ? THEN ?"
+                    )
+                    age_params.extend([cutoff_min, cutoff_max, label])
+            age_case_sql = " ".join(age_case_parts)
+            age_rows = cur.execute(
+                f"""
+                SELECT bucket, COUNT(*) c, COALESCE(SUM(file_size),0) s FROM (
+                    SELECT file_size,
+                        CASE {age_case_sql} ELSE NULL END AS bucket
+                    FROM (
+                        SELECT file_size,
+                            COALESCE(last_access_time, last_modify_time) AS ts
+                        FROM scanned_files WHERE scan_id=?
+                    )
+                )
+                WHERE bucket IS NOT NULL
+                GROUP BY bucket
+                """,
+                (*age_params, scan_id),
+            ).fetchall()
+            age_counts = {r["bucket"]: (r["c"], r["s"]) for r in age_rows}
+            summary["age_buckets"] = []
+            for label, dmin, dmax in age_bucket_defs:
+                c, s = age_counts.get(label, (0, 0))
+                summary["age_buckets"].append({
+                    "label": label,
+                    "days_min": dmin,
+                    "days_max": dmax,
+                    "file_count": c,
+                    "total_size": s,
+                })
+
+            # size_buckets: tek CASE-WHEN GROUP BY
+            size_case_parts = []
+            size_params = []
+            for label, bmin, bmax in size_bucket_defs:
+                if bmax is None:
+                    size_case_parts.append("WHEN file_size >= ? THEN ?")
+                    size_params.extend([bmin, label])
+                else:
+                    size_case_parts.append(
+                        "WHEN file_size >= ? AND file_size < ? THEN ?"
+                    )
+                    size_params.extend([bmin, bmax, label])
+            size_case_sql = " ".join(size_case_parts)
+            size_rows = cur.execute(
+                f"""
+                SELECT bucket, COUNT(*) c, COALESCE(SUM(file_size),0) s FROM (
+                    SELECT file_size,
+                        CASE {size_case_sql} ELSE NULL END AS bucket
+                    FROM scanned_files WHERE scan_id=?
+                )
+                WHERE bucket IS NOT NULL
+                GROUP BY bucket
+                """,
+                (*size_params, scan_id),
+            ).fetchall()
+            size_counts = {r["bucket"]: (r["c"], r["s"]) for r in size_rows}
+            summary["size_buckets"] = []
+            for label, bmin, bmax in size_bucket_defs:
+                c, s = size_counts.get(label, (0, 0))
+                summary["size_buckets"].append({
+                    "label": label,
+                    "bytes_min": bmin,
+                    "bytes_max": bmax,
+                    "file_count": c,
+                    "total_size": s,
+                })
+
+            # extension_size_breakdown: top 20, toplam boyuta gore
+            ext_size_rows = cur.execute(
+                "SELECT extension, COUNT(*) c, COALESCE(SUM(file_size),0) s "
+                "FROM scanned_files WHERE scan_id=? "
+                "GROUP BY extension ORDER BY s DESC LIMIT 20",
+                (scan_id,),
+            ).fetchall()
+            summary["extension_size_breakdown"] = [
+                {"extension": r["extension"] or "(uzantisiz)",
+                 "count": r["c"], "size": r["s"]}
+                for r in ext_size_rows
+            ]
+
+            # top_risky_files: boyuta gore en buyuk 50 riskli dosya
+            risky_rows = cur.execute(
+                f"SELECT file_path, relative_path, file_size, owner, "
+                f"last_access_time, extension FROM scanned_files "
+                f"WHERE scan_id=? AND extension IN ({placeholders}) "
+                f"ORDER BY file_size DESC LIMIT 50",
+                (scan_id, *risky_exts),
+            ).fetchall()
+            summary["top_risky_files"] = [
+                {
+                    "file_path": r["file_path"],
+                    "relative_path": r["relative_path"],
+                    "file_size": r["file_size"],
+                    "owner": r["owner"],
+                    "last_access_time": r["last_access_time"],
+                    "extension": r["extension"],
+                }
+                for r in risky_rows
+            ]
+
+            # top_large_files: en buyuk 50 dosya (uzanti farketmez)
+            large_rows = cur.execute(
+                "SELECT file_path, relative_path, file_size, owner, "
+                "last_access_time, extension FROM scanned_files "
+                "WHERE scan_id=? ORDER BY file_size DESC LIMIT 50",
+                (scan_id,),
+            ).fetchall()
+            summary["top_large_files"] = [
+                {
+                    "file_path": r["file_path"],
+                    "relative_path": r["relative_path"],
+                    "file_size": r["file_size"],
+                    "owner": r["owner"],
+                    "last_access_time": r["last_access_time"],
+                    "extension": r["extension"],
+                }
+                for r in large_rows
+            ]
+
+            # orphan_owner_count: owner NULL veya bos string
+            row = cur.execute(
+                "SELECT COUNT(*) c FROM scanned_files "
+                "WHERE scan_id=? AND (owner IS NULL OR owner='')",
+                (scan_id,),
+            ).fetchone()
+            summary["orphan_owner_count"] = row["c"]
+
+            # Versiyon isareti — backfill bu anahtara bakar
+            summary["summary_json_version"] = 2
+
+            # Kaydet (kompakt JSON, ensure_ascii=False)
+            now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
             cur.execute(
                 "UPDATE scan_runs SET summary_json=?, summary_computed_at=? WHERE id=?",
-                (json.dumps(summary, ensure_ascii=False), now, scan_id),
+                (json.dumps(summary, ensure_ascii=False, separators=(",", ":")), now, scan_id),
             )
 
         summary["scan_id"] = scan_id
         summary["computed_at"] = now
         return summary
+
+    def _get_size_buckets_config(self) -> dict:
+        """config.yaml'dan analysis.size_buckets oku. Database __init__'e
+        sadece 'database' subsection veriliyor; tam config'i config.yaml'dan
+        yuklemeye calis. Yoksa DEFAULT_CONFIG ile ayni varsayilanlari don.
+        """
+        default = {
+            "tiny": 102400,
+            "small": 1048576,
+            "medium": 104857600,
+            "large": 1073741824,
+        }
+        try:
+            # Database init'inde 'analysis' key'i varsa kullan (test yolu)
+            analysis = self.config.get("analysis") if isinstance(self.config, dict) else None
+            if analysis and isinstance(analysis.get("size_buckets"), dict):
+                return analysis["size_buckets"]
+        except Exception:
+            pass
+        try:
+            # config.yaml'i disk'ten oku (runtime yolu)
+            from src.utils.config_loader import load_config
+            cfg_path = self.config.get("_config_path", "config.yaml") if isinstance(self.config, dict) else "config.yaml"
+            full = load_config(cfg_path)
+            sb = full.get("analysis", {}).get("size_buckets")
+            if isinstance(sb, dict) and sb:
+                return sb
+        except Exception as e:
+            logger.debug("size_buckets config yuklenemedi, default kullaniliyor: %s", e)
+        return default
 
     def save_scan_insights(self, scan_id: int, insights_payload: dict) -> None:
         """InsightsEngine cikti'sini scan_runs'a kaydet.
@@ -2049,18 +2265,36 @@ class Database:
         return d
 
     def backfill_missing_summaries(self) -> int:
-        """summary_json olmayan tamamlanmis scan'ler icin hesapla.
+        """summary_json olmayan ya da eski versiyonlu scan'ler icin hesapla.
 
         Startup'ta calistirilir. Mevcut eski kurulumlarda scan'ler
         summary'siz geldigi icin ilk acilista backfill yapilir (her scan
         icin birkac saniye). Sonrasi acilislar anlik.
+
+        v2: summary_json_version mevcut degilse veya < 2 ise yeniden
+        hesaplar — boylece mevcut kurulumlar ilk startup'ta yeni
+        aggregate'leri otomatik kazanir.
         """
+        current_version = 2
         with self.get_cursor() as cur:
             rows = cur.execute(
-                "SELECT id FROM scan_runs "
-                "WHERE status='completed' AND summary_json IS NULL"
+                "SELECT id, summary_json FROM scan_runs "
+                "WHERE status='completed'"
             ).fetchall()
-        pending = [r["id"] for r in rows]
+        pending = []
+        for r in rows:
+            sj = r["summary_json"]
+            if not sj:
+                pending.append(r["id"])
+                continue
+            try:
+                parsed = json.loads(sj)
+                ver = parsed.get("summary_json_version")
+                if not isinstance(ver, int) or ver < current_version:
+                    pending.append(r["id"])
+            except Exception:
+                # Bozuk JSON — yeniden hesapla
+                pending.append(r["id"])
         if not pending:
             return 0
         logger.info("Backfill: %d scan icin summary hesaplanacak", len(pending))
