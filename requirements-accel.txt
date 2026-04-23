@@ -1,0 +1,23 @@
+# FILE ACTIVITY - Optional hardware-acceleration dependencies (issue #64).
+#
+# These packages are NOT required for normal operation. Install them on
+# AVX2/AVX-512-capable hosts to unlock the accelerated code paths; the
+# software falls back to the pure-Python stdlib path automatically when
+# any of them is missing.
+#
+# Install:
+#   pip install -r requirements-accel.txt
+#
+# Verify (after restart):
+#   curl http://localhost:8085/api/compliance/pii/backend
+#   # -> {"backend": "hyperscan", "version": "0.8.x", ...}
+#
+# ──────────────────────────────────────────────────────────────────────
+# Intel Hyperscan PII regex engine (#64)
+#
+# Compiles all configured compliance.pii.patterns into one multi-pattern
+# automaton and scans bytes via SIMD. 10-100x faster than CPython's
+# stdlib `re` on text-heavy file shares. Linux x86_64 wheels ship via
+# PyPI; on Windows install via vcpkg or use the stdlib fallback (which
+# is what `compliance.pii.engine: "auto"` selects automatically).
+hyperscan>=0.7

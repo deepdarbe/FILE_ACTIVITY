@@ -198,6 +198,14 @@ compliance:
   # archives or deletes matching files; dry-run is the default.
   pii:
     enabled: false
+    # Regex backend (issue #64). "auto" picks Intel Hyperscan when the
+    # `hyperscan` Python package is importable (10-100x faster on
+    # AVX2/AVX-512 CPUs), else falls back to stdlib `re`. Force one or
+    # the other with "hyperscan" / "re". When "hyperscan" is requested
+    # but unavailable a warning is logged and the engine falls back
+    # rather than crashing the scan. Install the optional dep with:
+    #   pip install -r requirements-accel.txt
+    engine: "auto"             # "auto" | "hyperscan" | "re"
     text_extensions:
       - txt
       - csv

@@ -35,6 +35,8 @@ import re
 import time
 from typing import Optional
 
+from src.compliance._pii_backends import make_backend
+
 logger = logging.getLogger("file_activity.compliance.pii_engine")
 
 
@@ -81,14 +83,19 @@ class PiiEngine:
                     continue
                 merged[str(name)] = str(regex)
 
-        # Pre-compile (case-insensitive). Bad patterns are dropped with
-        # a warning rather than aborting the whole engine.
-        self.patterns: dict[str, "re.Pattern[str]"] = {}
-        for name, regex in merged.items():
-            try:
-                self.patterns[name] = re.compile(regex, re.IGNORECASE)
-            except re.error as e:
-                logger.warning("PII pattern %s ignored (bad regex): %s", name, e)
+        # Backend selection (issue #64). Defaults to "auto" which
+        # picks Hyperscan when importable, else stdlib re. Operators
+        # may force one or the other via ``compliance.pii.engine``.
+        engine_pref = str(cfg.get("engine", "auto") or "auto")
+        self.backend = make_backend(engine_pref, merged)
+        self.engine_name = self.backend.name
+
+        # ``self.patterns`` retained for backwards compatibility with
+        # callers/tests that introspected the compiled stdlib map.
+        # Both backends expose the same shape via ``.patterns``.
+        self.patterns: dict[str, "re.Pattern[str]"] = getattr(
+            self.backend, "patterns", {}
+        )
 
         # Text extensions: user-supplied list wholly replaces defaults
         # if provided (matches the YAML comment "text_extensions"). An
@@ -216,18 +223,16 @@ class PiiEngine:
                 logger.debug("PII scan_file: undecodable %s", path)
                 return result
 
+        # Single pass through the configured backend (stdlib re or
+        # Hyperscan). Backend yields raw matches; redaction policy
+        # below is identical across backends so on-disk findings stay
+        # backend-agnostic.
+        grouped: dict[str, list[str]] = {}
+        for name, raw_match in self.backend.scan(text):
+            grouped.setdefault(name, []).append(raw_match)
+
         hits: dict[str, list[str]] = {}
-        for name, regex in self.patterns.items():
-            matches = regex.findall(text)
-            if not matches:
-                continue
-            # ``findall`` may return tuples for grouped patterns.
-            flat: list[str] = []
-            for m in matches:
-                if isinstance(m, tuple):
-                    flat.append("".join(m))
-                else:
-                    flat.append(m)
+        for name, flat in grouped.items():
             redacted = [self._redact(v) for v in flat[:10]]
             hits[name] = redacted
 
