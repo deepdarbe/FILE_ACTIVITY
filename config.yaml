@@ -73,6 +73,7 @@ watcher:
 
 scanner:
   max_workers: 4              # paralel dizin tarayıcı sayısı
+  smb_workers: 32             # parallel os.scandir backend thread count (SMB: 32 sweet spot)
   batch_size: 1000            # DB batch insert boyutu
   skip_hidden: true           # Hidden attribute'lu dosyaları atla
   skip_system: true           # System attribute'lu dosyaları atla

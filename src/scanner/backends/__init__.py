@@ -1,42 +1,45 @@
-"""Scanner backends package.
+"""Pluggable scanner backend package.
 
-Backends implement the :class:`ScannerBackend` protocol and provide
-alternate walk strategies for the file scanner (e.g. ctypes-based Win32
-``FindFirstFileExW`` for faster local Windows scans, SMB parallel
-backend for multi-threaded UNC scans, etc.).
+A scanner backend is any object implementing :class:`ScannerBackend`.
+Backends abstract the low level directory walk so ``FileScanner`` can
+stay focused on DB writes, progress reporting and analyzer integration
+while the raw walk strategy (parallel scandir, MFT, FindFirstFileEx)
+varies per target.
 
-The :class:`FileScanner` can dispatch to any backend that conforms to
-this protocol. The protocol intentionally stays minimal: a backend is
-just something that, given a root path, yields file records as dicts.
+Every yielded dict MUST contain at minimum the keys consumed by
+``FileScanner.scan_source``:
+
+* ``file_path``       (str)           absolute path
+* ``file_name``       (str)           basename
+* ``file_size``       (int)           size in bytes
+* ``last_modify_time`` (Optional[str]) "YYYY-MM-DD HH:MM:SS"
+* ``creation_time``    (Optional[str])
+* ``last_access_time`` (Optional[str])
+* ``attributes``       (int)           Win32 attribute bitmask (0 on non-Windows)
+* ``owner``            (Optional[str]) only populated when ``read_owner`` is set
 """
 
 from __future__ import annotations
 
-from typing import Iterator, Protocol, runtime_checkable
+from typing import Any, Dict, Iterator, Protocol, runtime_checkable
 
 
 @runtime_checkable
 class ScannerBackend(Protocol):
-    """Protocol all scanner backends implement.
+    """Protocol implemented by every scanner backend.
 
-    A backend is initialized with a configuration dictionary (typically
-    the project ``config.yaml`` loaded as a dict) and exposes a single
-    :meth:`walk` method that yields one dict per file encountered under
-    ``root``.
-
-    Yielded dicts should at minimum contain:
-
-    - ``file_path``: absolute path as ``str``
-    - ``file_size``: size in bytes as ``int``
-    - ``creation_time``: ``"YYYY-MM-DD HH:MM:SS"`` or ``None``
-    - ``last_access_time``: ``"YYYY-MM-DD HH:MM:SS"`` or ``None``
-    - ``last_modify_time``: ``"YYYY-MM-DD HH:MM:SS"`` or ``None``
-    - ``attributes``: raw Win32 attribute bitmask as ``int``
+    A backend is initialized with the project configuration dict (typically
+    ``config.yaml`` loaded) and exposes ``walk(root)`` which yields one
+    metadata dict per file. Implementations should be resilient:
+    permission / OS errors on a subtree must be swallowed (ideally logged
+    at ``DEBUG``) so a single bad folder cannot abort the whole scan.
     """
 
     def __init__(self, config: dict) -> None: ...
 
-    def walk(self, root: str) -> Iterator[dict]: ...
+    def walk(self, root: str) -> Iterator[Dict[str, Any]]:
+        """Yield one metadata dict per file under ``root``."""
+        ...
 
 
 __all__ = ["ScannerBackend"]
