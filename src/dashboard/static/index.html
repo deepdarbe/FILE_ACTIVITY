@@ -257,6 +257,10 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <div style="font-weight:600">DB Bakimi Onerilir</div>
             <div id="wal-warning-info" style="margin-top:2px;opacity:0.9"></div>
         </div>
+        <div id="legal-hold-badge" style="display:none;margin-top:8px;padding:8px;background:var(--danger,#dc2626);color:#fff;border-radius:6px;font-size:11px;cursor:pointer" onclick="showPage('legal-holds')">
+            <div style="font-weight:600" id="legal-hold-badge-title">0 aktif legal hold</div>
+            <div id="legal-hold-badge-info" style="margin-top:2px;opacity:0.9"></div>
+        </div>
     </div>
     <div class="nav-section">
         <div class="nav-label">Genel</div>
@@ -753,6 +757,34 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     </div>
 </div>
 
+<!-- ============ LEGAL HOLDS (issue #59 placeholder) ============ -->
+<div class="page" id="page-legal-holds">
+    <div class="page-header">
+        <div><h2>Legal Holds</h2><div class="desc">Yasal/uyumluluk donmus dosya yollari — arsiv ve retention disinda tutulur</div></div>
+    </div>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+        <div style="color:var(--text-muted);font-size:13px;line-height:1.5">
+            Aktif legal hold'lar API uzerinden listelenir:
+            <code style="color:var(--accent)">GET /api/compliance/legal-holds/active</code>.
+            Yeni hold ekleme: <code style="color:var(--accent)">POST /api/compliance/legal-holds</code>.
+            Tam UI bir sonraki release'te. Bu sayfada simdilik salt-okunur tablo gosterilir.
+        </div>
+    </div>
+    <div class="table-wrap" style="overflow:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius)">
+        <table id="legal-holds-table" style="width:100%;border-collapse:collapse">
+            <thead><tr>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">ID</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Pattern</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Sebep</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Dava No</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Olusturan</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Tarih</th>
+            </tr></thead>
+            <tbody id="legal-holds-tbody"><tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
 </div><!-- /main -->
 
 <!-- ============ MODALS ============ -->
@@ -893,7 +925,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds };
     if (loaders[name]) loaders[name]();
 }
 
@@ -3160,6 +3192,35 @@ async function loadGrowth() {
 }
 
 // ═══════════════════════════════════════════════════
+// LEGAL HOLDS (issue #59)
+// ═══════════════════════════════════════════════════
+async function loadLegalHolds() {
+    try {
+        const r = await fetch('/api/compliance/legal-holds/active');
+        const d = r.ok ? await r.json() : { holds: [] };
+        const tbody = document.getElementById('legal-holds-tbody');
+        if (!tbody) return;
+        const holds = d.holds || [];
+        if (!holds.length) {
+            tbody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Aktif legal hold yok</td></tr>';
+            return;
+        }
+        const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        tbody.innerHTML = holds.map(h => `
+            <tr>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">#${esc(h.id)}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${esc(h.path_pattern)}</code></td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.reason)}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.case_reference || '-')}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.created_by)}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.created_at)}</td>
+            </tr>`).join('');
+    } catch (e) {
+        console.error('loadLegalHolds error:', e);
+    }
+}
+
+// ═══════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════
 (async function init() {
@@ -3208,6 +3269,30 @@ async function loadGrowth() {
             }
         })
         .catch(() => {});
+
+    // Issue #59 — Legal hold sidebar badge. Polled every 5 minutes
+    // (cheap endpoint, just two COUNTs against legal_holds + scanned_files).
+    function refreshLegalHoldBadge() {
+        fetch('/api/compliance/legal-holds/badge')
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+                if (!d) return;
+                const badge = document.getElementById('legal-hold-badge');
+                const title = document.getElementById('legal-hold-badge-title');
+                const info = document.getElementById('legal-hold-badge-info');
+                if (!badge) return;
+                if ((d.active_count || 0) > 0) {
+                    badge.style.display = 'block';
+                    if (title) title.textContent = d.active_count + ' aktif legal hold';
+                    if (info) info.textContent = (d.held_paths_count || 0) + ' dosya donduruldu';
+                } else {
+                    badge.style.display = 'none';
+                }
+            })
+            .catch(() => {});
+    }
+    refreshLegalHoldBadge();
+    setInterval(refreshLegalHoldBadge, 5 * 60 * 1000);
 
     // Dashboard aninda yuklensin - veri arka planda gelsin
     try {

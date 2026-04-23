@@ -3009,4 +3009,71 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         engine = _get_retention_engine()
         return engine.attestation_report(since_days=since_days)
 
+    # ──────────────────────────────────────────────
+    # Compliance — Legal Hold Registry (issue #59)
+    # ──────────────────────────────────────────────
+    # Constructed once per app; the registry itself is stateless beyond
+    # the DB handle, so a single shared instance is safe across requests.
+    from src.compliance.legal_hold import LegalHoldRegistry
+    app.state.legal_hold = LegalHoldRegistry(db, config)
+
+    @app.get("/api/compliance/legal-holds/active")
+    async def legal_holds_active():
+        return {"holds": app.state.legal_hold.list_active()}
+
+    @app.get("/api/compliance/legal-holds/history")
+    async def legal_holds_history(page: int = Query(1, ge=1),
+                                  page_size: int = Query(50, ge=1, le=500)):
+        return app.state.legal_hold.list_history(page=page, page_size=page_size)
+
+    @app.post("/api/compliance/legal-holds")
+    async def legal_holds_add(body: dict):
+        pattern = (body or {}).get("pattern")
+        reason = (body or {}).get("reason")
+        case_ref = (body or {}).get("case_ref")
+        created_by = (body or {}).get("created_by") or "dashboard"
+        try:
+            hold_id = app.state.legal_hold.add_hold(
+                pattern=pattern,
+                reason=reason,
+                case_ref=case_ref,
+                created_by=created_by,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"id": hold_id, "ok": True}
+
+    @app.post("/api/compliance/legal-holds/{hold_id}/release")
+    async def legal_holds_release(hold_id: int, body: dict):
+        released_by = (body or {}).get("released_by") or "dashboard"
+        try:
+            ok = app.state.legal_hold.release_hold(hold_id, released_by)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not ok:
+            # Either unknown id or already released — same response so
+            # the dashboard can treat it idempotently.
+            return {"ok": False, "reason": "not_found_or_already_released"}
+        return {"ok": True}
+
+    @app.get("/api/compliance/legal-holds/check")
+    async def legal_holds_check(path: str = Query(..., min_length=1)):
+        held = app.state.legal_hold.is_held(path)
+        return {"path": path, "is_held": held is not None, "hold": held}
+
+    @app.get("/api/compliance/legal-holds/badge")
+    async def legal_holds_badge():
+        """Sidebar badge data — cheap polling endpoint."""
+        registry = app.state.legal_hold
+        actives = registry.list_active()
+        try:
+            held_paths = registry.count_held_paths()
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.warning("legal_hold count_held_paths failed: %s", e)
+            held_paths = 0
+        return {
+            "active_count": len(actives),
+            "held_paths_count": held_paths,
+        }
+
     return app

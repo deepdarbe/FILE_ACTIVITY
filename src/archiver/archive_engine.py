@@ -21,9 +21,12 @@ class ArchiveEngine:
 
     def __init__(self, db: Database, config: dict):
         self.db = db
+        self.config = config
         self.verify_checksum = config.get("archiving", {}).get("verify_checksum", True)
         self.dry_run = config.get("archiving", {}).get("dry_run", False)
         self.cleanup_empty = config.get("archiving", {}).get("cleanup_empty_dirs", True)
+        # Issue #59: legal hold registry is lazy-built on first use.
+        self._hold_registry = None
 
     def archive_files(self, files: list[dict], archive_dest: str,
                        source_unc: str, source_id: int,
@@ -61,10 +64,57 @@ class ArchiveEngine:
 
         archived = 0
         failed = 0
+        skipped_held = 0
         total_size = 0
         errors = []
 
+        # Issue #59: respect active legal holds. The registry is built
+        # lazily (first archive call per process) and cached on the
+        # instance — subsequent calls reuse it. ``is_held()`` consults
+        # the legal_holds table on every call, so newly added holds
+        # take effect mid-process without restart.
+        hold_registry = self._hold_registry
+        if hold_registry is None:
+            try:
+                from src.compliance.legal_hold import LegalHoldRegistry
+                hold_registry = LegalHoldRegistry(self.db, self.config or {})
+                self._hold_registry = hold_registry
+            except Exception as e:  # pragma: no cover - defensive only
+                logger.warning("LegalHoldRegistry init failed: %s", e)
+                hold_registry = None
+
         for file_info in files:
+            # Legal-hold gate runs before *any* archive work (including
+            # dry-run). A held file is reported as skipped + audited so
+            # operators can see why retention numbers fell short.
+            if hold_registry is not None:
+                try:
+                    held = hold_registry.is_held(file_info.get("file_path"))
+                except Exception as e:
+                    logger.warning("legal_hold check failed for %s: %s",
+                                   file_info.get("file_path", "?"), e)
+                    held = None
+                if held:
+                    skipped_held += 1
+                    if not is_dry_run:
+                        try:
+                            self.db.insert_audit_event_simple(
+                                source_id=source_id,
+                                event_type='archive_skipped_legal_hold',
+                                username='system',
+                                file_path=file_info["file_path"],
+                                details=(
+                                    f"Hold #{held['id']}: {held['reason']}"
+                                ),
+                                detected_by='archive',
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "legal_hold skip audit failed %s: %s",
+                                file_info.get("file_path", "?"), e
+                            )
+                    continue
+
             try:
                 result = self._archive_single_file(
                     file_info, archive_dest, source_unc, source_id,
@@ -124,6 +174,7 @@ class ArchiveEngine:
         summary = {
             "archived": archived,
             "failed": failed,
+            "skipped_held": skipped_held,
             "total_size": total_size,
             "total_size_formatted": format_size(total_size),
             "dry_run": is_dry_run,
