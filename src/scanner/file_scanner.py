@@ -19,6 +19,7 @@ from src.scanner.win_attributes import (
 )
 from src.scanner.share_resolver import get_relative_path, test_connectivity
 from src.scanner.backends import ScannerBackend
+from src.scanner.backends.ntfs_mft import NtfsMftBackend
 from src.scanner.backends.smb_parallel import SmbParallelBackend
 from src.storage.database import Database
 from src.storage.staging import ParquetStager
@@ -482,12 +483,26 @@ class FileScanner:
     def _select_backend(self, path: str) -> ScannerBackend:
         """Return the walk backend to use for ``path``.
 
-        Today every path routes to :class:`SmbParallelBackend` — the MFT
-        (Windows local NTFS) and FindFirstFileEx backends are tracked as
-        separate issues. UNC paths are detected explicitly so the intent is
-        obvious in the logs.
+        Backend selection order (fastest first):
+          1. :class:`NtfsMftBackend` — local NTFS + admin only.
+          2. :class:`SmbParallelBackend` — universal fallback (UNC + local).
+
+        Each candidate is asked whether it can serve the path; failures
+        (NotImplementedError, OSError) fall through to the next backend.
+        UNC paths are detected explicitly so the intent is obvious in the
+        logs.
         """
         is_unc = path.startswith("\\\\")
+
+        # Try NTFS MFT first (fastest, requires local NTFS + admin).
+        try:
+            mft = NtfsMftBackend(self._full_config)
+            if mft.is_supported(path):
+                logger.debug("Scanner backend: ntfs_mft for %s", path)
+                return mft
+        except (NotImplementedError, OSError) as exc:
+            logger.debug("ntfs_mft backend unavailable for %s: %s", path, exc)
+
         backend_name = "smb_parallel (UNC)" if is_unc else "smb_parallel (local)"
         logger.debug("Scanner backend: %s for %s", backend_name, path)
         return SmbParallelBackend(self._full_config)
