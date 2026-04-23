@@ -640,6 +640,24 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_acl_trustee ON file_acl_snapshots(trustee_sid)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_acl_scan ON file_acl_snapshots(scan_id)")
 
+        # Orphan-SID cache (#56). Memoises AD lookup results keyed by the
+        # owner string (SID or DOMAIN\Name) so re-running detect_orphans
+        # doesn't hammer AD for SIDs we just checked. resolved=0 means
+        # the principal didn't resolve last time we asked; the analyzer
+        # rechecks once cache_ttl_minutes have elapsed.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS orphan_sid_cache (
+                sid TEXT PRIMARY KEY,
+                resolved INTEGER NOT NULL DEFAULT 0,
+                resolved_name TEXT,
+                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_orphan_sid_resolved "
+            "ON orphan_sid_cache(resolved)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(

@@ -175,6 +175,18 @@ security:
     auto_kill_session: false           # opt-in: SMB oturumunu Close-SmbSession ile sonlandir
     notification_email: ""             # bos degilse bu adrese kritik uyari maili gider
 
+  # Orphaned-SID report + bulk reassignment (#56). Surfaces files whose
+  # owner principal no longer resolves in AD (departed users, deleted
+  # service accounts) and supports bulk re-owner to a manager / archive
+  # account. Reassignment is Windows-only; the report itself works on
+  # any platform. dry_run defaults true on the API; flip
+  # require_dual_approval_for_reassign to enforce a 2-person rule.
+  orphan_sid:
+    enabled: true
+    cache_ttl_minutes: 1440
+    max_unique_sids: 1000
+    require_dual_approval_for_reassign: false
+
 audit:
   # Tamper-evident hash-chained audit log (issue #38).
   # When chain_enabled=true, every audit event written via the

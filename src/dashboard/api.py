@@ -2669,6 +2669,130 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         return result
 
     # ─────────────────────────────────────────────────────────────────
+    # Orphaned-SID report + bulk reassignment (#56)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _get_orphan_analyzer():
+        existing = getattr(app.state, "orphan_sid_analyzer", None)
+        if existing is not None:
+            return existing
+        from src.security.orphan_sid import OrphanSidAnalyzer
+        analyzer = OrphanSidAnalyzer(db, config, ad_lookup=ad_lookup)
+        app.state.orphan_sid_analyzer = analyzer
+        return analyzer
+
+    @app.get("/api/security/orphan-sids/{source_id}")
+    async def orphan_sids_report(source_id: int,
+                                 max_unique_sids: Optional[int] = None):
+        """Detect orphan owner SIDs in the latest scan for ``source_id``."""
+        analyzer = _get_orphan_analyzer()
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, f"No scan_runs found for source {source_id}")
+        cap = max_unique_sids if max_unique_sids is not None else analyzer.max_unique_sids_default
+        result = analyzer.detect_orphans(scan_id, max_unique_sids=int(cap))
+        result["source_id"] = source_id
+        return result
+
+    @app.get("/api/security/orphan-sids/{source_id}/files")
+    async def orphan_sid_files(source_id: int,
+                               sid: str = Query(..., min_length=1),
+                               page: int = Query(1, ge=1),
+                               page_size: int = Query(100, ge=1, le=1000)):
+        analyzer = _get_orphan_analyzer()
+        return analyzer.get_orphan_files(source_id, sid, page=page, page_size=page_size)
+
+    class OrphanReassignRequest(BaseModel):
+        source_id: int
+        sid: str
+        new_owner: str
+        dry_run: bool = True
+        max_files: Optional[int] = None
+
+    @app.post("/api/security/orphan-sids/reassign")
+    async def orphan_sid_reassign(req: OrphanReassignRequest):
+        analyzer = _get_orphan_analyzer()
+        # Honour the opt-in dual-approval rule: refuse non-dry-run runs
+        # unless the caller explicitly asked for it. (Dual-approval UX
+        # itself is out of scope for this PR — this just blocks an
+        # accidental single-button live reassignment.)
+        if (not req.dry_run) and analyzer.require_dual_approval_for_reassign:
+            raise HTTPException(
+                403,
+                "Live reassignment requires dual approval; submit via the "
+                "approval workflow or set dry_run=true to preview.",
+            )
+        if (not req.dry_run) and not analyzer.is_supported():
+            raise HTTPException(501, "Live reassignment requires Windows + pywin32")
+        try:
+            return analyzer.reassign_owner(
+                req.source_id, req.sid, req.new_owner,
+                dry_run=req.dry_run, max_files=req.max_files,
+            )
+        except NotImplementedError as e:
+            raise HTTPException(501, str(e)) from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/security/orphan-sids/{source_id}/export.csv")
+    async def orphan_sid_export_csv(source_id: int):
+        """Streaming CSV download of orphan files for offline review."""
+        from fastapi.responses import StreamingResponse
+        import io
+
+        analyzer = _get_orphan_analyzer()
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, f"No scan_runs found for source {source_id}")
+
+        # Detect, then stream the file rows. We re-implement the row
+        # generation here (instead of writing to a temp file) so the
+        # response can stream incrementally on million-row shares.
+        report = analyzer.detect_orphans(scan_id)
+        orphan_sids = [row["sid"] for row in report.get("orphan_sids", [])]
+
+        def _iter():
+            buf = io.StringIO()
+            writer = __import__("csv").writer(buf)
+            writer.writerow([
+                "path", "owner_sid", "file_size",
+                "last_modify_time", "owner_resolved",
+            ])
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+
+            if not orphan_sids:
+                return
+
+            placeholders = ",".join(["?"] * len(orphan_sids))
+            params: list = [source_id, scan_id, *orphan_sids]
+            with db.get_cursor() as cur:
+                cur.execute(
+                    f"""SELECT file_path, owner, file_size, last_modify_time
+                        FROM scanned_files
+                        WHERE source_id = ? AND scan_id = ?
+                          AND owner IN ({placeholders})
+                        ORDER BY file_path""",
+                    tuple(params),
+                )
+                for r in cur.fetchall():
+                    writer.writerow([
+                        r["file_path"], r["owner"], r["file_size"],
+                        r["last_modify_time"] or "", "false",
+                    ])
+                    yield buf.getvalue()
+                    buf.seek(0)
+                    buf.truncate(0)
+
+        filename = f"orphan_sids_source{source_id}_scan{scan_id}.csv"
+        return StreamingResponse(
+            _iter(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    # ─────────────────────────────────────────────────────────────────
     # Syslog/CEF integration (#50)
     # ─────────────────────────────────────────────────────────────────
 
