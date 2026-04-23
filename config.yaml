@@ -100,6 +100,15 @@ analysis:
     large: 1073741824         # < 1 GB
     # üstü = huge
 
+content_duplicates:
+  # Icerik-tabanli kopya tespiti (tiered hash pipeline). Ayni boyutta
+  # dosyalari once prefix hash (4 KB) ile eler, sonra tam SHA-256 ile
+  # dogrular. Isim+boyut eslesmesinden daha yavas ama kesin.
+  enabled: true
+  min_bytes: 1048576          # 1 MB altindaki dosyalari atla
+  workers: 4                  # ProcessPoolExecutor boyutu (CPU-bound)
+  prefix_bytes: 4096          # Ilk 4 KB hash icin
+
 archiving:
   verify_checksum: true       # SHA-256 doğrulama
   dry_run: false              # taşımadan sadece raporla

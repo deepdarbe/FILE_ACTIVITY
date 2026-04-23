@@ -1391,6 +1391,68 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
+    # --- CONTENT-HASH DUPLICATE DETECTION (issue #35) ---
+    # Tiered pipeline: size -> 4 KB prefix hash -> full SHA-256.
+    # Recompute endpoint'i hash'leri yeniden hesaplar ve persist eder;
+    # GET endpoint'i cached sonuclari (duplicate_hash_groups) okur.
+
+    @app.post("/api/duplicates/content/{source_id}/compute")
+    async def content_duplicates_compute(source_id: int):
+        """Icerik-tabanli kopya tespitini calistir ve sonuclari persist et.
+
+        Son tamamlanmis scan_id bulunur, `ContentDuplicateEngine.compute`
+        tetiklenir. Donus degeri pipeline istatistikleri.
+        """
+        from src.analyzer.content_duplicates import ContentDuplicateEngine
+        from src.utils.size_formatter import format_size
+
+        _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, "Tamamlanmis scan yok")
+
+        engine = ContentDuplicateEngine(db, config)
+        stats = engine.compute(scan_id)
+        stats["scan_id"] = scan_id
+        stats["bytes_hashed_formatted"] = format_size(stats.get("bytes_hashed", 0))
+        return stats
+
+    @app.get("/api/duplicates/content/{source_id}")
+    async def content_duplicates_report(
+        source_id: int,
+        page: int = Query(1, ge=1, le=10000),
+        page_size: int = Query(50, ge=1, le=500),
+    ):
+        """Cached icerik-hash kopya raporunu oku (waste_size DESC sirali).
+
+        Hesaplama yapmaz — `POST .../compute` endpoint'i ile uretilir.
+        """
+        from src.analyzer.content_duplicates import ContentDuplicateEngine
+        from src.utils.size_formatter import format_size
+
+        _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            return {
+                "has_data": False,
+                "reason": "no_completed_scan",
+                "scan_id": None,
+                "total_groups": 0,
+                "groups": [],
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 1,
+            }
+
+        engine = ContentDuplicateEngine(db, config)
+        result = engine.get_report(scan_id, page=page, page_size=page_size)
+        result["has_data"] = True
+        result["total_waste_size_formatted"] = format_size(result.get("total_waste_size", 0))
+        for g in result.get("groups", []):
+            g["file_size_formatted"] = format_size(g.get("file_size", 0))
+            g["waste_size_formatted"] = format_size(g.get("waste_size", 0))
+        return result
+
     @app.post("/api/archive/selective")
     async def archive_selective(request):
         """Secili dosyalari arsivle (duplicate cleanup icin)."""
