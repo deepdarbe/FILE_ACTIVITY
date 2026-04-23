@@ -182,18 +182,44 @@ Details to be refined after enterprise-use-case research completes.
 
 ### Everything (voidtools) — why it's fast
 
-- Reads NTFS **Master File Table** (`$MFT`) directly via `\\.\C:` raw
-  handle. Builds a name index in 1-3 s for 1M files.
-- Subscribes to the **USN Change Journal** for real-time deltas —
-  no polling.
-- In-memory sorted name array + filter bitmaps; queries are
-  substring scans over contiguous memory.
-- Memory footprint: ~100-500 MB for 10M files.
+**MFT enumeration** via `FSCTL_ENUM_USN_DATA` on the raw volume handle
+`\\.\C:`. Despite the name, this call walks the MFT (not the journal)
+and returns `USN_RECORD_V2/V3` entries with name, parent FRN, and
+attributes in a single sequential I/O pass. Typical numbers on a
+2.5M-file volume:
 
-**Hard limits**:
-- NTFS only (no ReFS, no SMB shares — **critical for us**)
-- Requires admin / SYSTEM for raw volume read
-- Name-only index; content search out of scope
+| Approach | First scan | Incremental | RAM |
+|---|---|---|---|
+| `os.walk` (Python) | 3-8 min | full rescan | 500 MB - 1.5 GB |
+| `os.scandir` recursive | 90 s - 3 min | full rescan | ~400 MB |
+| `FindFirstFileExW` + `LARGE_FETCH` (C/ctypes) | 30-90 s | full rescan | ~300 MB |
+| `FSCTL_ENUM_USN_DATA` (MFT scan) | **3-10 s** | USN tail | 150-200 MB |
+| Raw MFT cluster read (Everything 1.5, WizTree) | **1-5 s** on NVMe | USN tail | 75 MB / 1M |
+| USN journal tail (incremental) | N/A | **<50 ms latency** | negligible |
+
+**Runtime flow**:
+1. `FSCTL_GET_NTFS_VOLUME_DATA` → cluster size, MFT start LCN
+2. `FSCTL_ENUM_USN_DATA` with `StartFRN=0` → walk MFT, build in-mem index
+3. `FSCTL_QUERY_USN_JOURNAL` → get current USN
+4. Tail `FSCTL_READ_USN_JOURNAL` for deltas — sub-second latency per batch
+
+**Hard limits — why we can't just copy this**:
+- **NTFS only** (ReFS has partial `MFT_ENUM_DATA_V1` support, inconsistent)
+- **Does not work on SMB/network drives** — `DeviceIoControl` fails with
+  `ERROR_INVALID_FUNCTION`. SMB2 has no remote-MFT op.
+- Requires `SeManageVolumePrivilege` (admin token)
+- No exFAT / FAT32 / CDFS / BitLocker-locked
+- Hardlinks need explicit handling (same MFT record, multiple
+  `$FILE_NAME` attrs)
+
+**On SMB — our main case — the honest ceiling**:
+- Everything itself: ~3 min per 1M files (voidtools' own figure)
+- `os.walk` today: 15-40 min per 1M files over 1 Gb link
+- Parallel `os.scandir` (32 threads): **2-5 min per 1M files**
+- Realistic speedup: **5-8×**, not 60×. The ceiling is SMB
+  directory-enumeration latency, not Python.
+- Only way to hit seconds: run an agent on the file server itself
+  (voidtools' `etp_server` is OSS — github.com/voidtools/etp_server).
 
 ### Top customer pain points (from r/sysadmin, ServerFault, vendor research)
 
@@ -254,23 +280,44 @@ Details to be refined after enterprise-use-case research completes.
 - Native Mac/Linux agent (SMB scan from Windows is sufficient)
 - Auto-generated org chart visualisations
 
-### Quick wins — achievable in 1-2 PRs each
+### Quick wins — achievable in 1-2 PRs each, ranked by ROI
 
-1. **Replace `os.walk` with `os.scandir` + thread pool** — 3-5× on
-   SMB, zero new dependencies. `scandir` returns `stat` info in the
-   `DirEntry` (one syscall not two).
+1. **Parallel `os.scandir` + thread pool** (for SMB) — 5-8× on network
+   shares, zero new deps. `scandir` returns `stat` in the `DirEntry`
+   (one syscall not two). 32-thread executor over subtrees fills 1 Gb
+   BDP. **Biggest single win for customer's SMB scenario**.
 2. **`FindFirstFileExW` + `FIND_FIRST_EX_LARGE_FETCH`** on Windows via
-   pywin32/ctypes — 2-3× on large directories, single flag change.
-3. **fdupes / fclones hash pipeline**: size → 4 KB prefix hash → full
-   hash. Typically 10-100× fewer bytes hashed for same duplicate set.
-4. **USN journal incremental for local NTFS** — cuts rescans from
-   hours to seconds. Fallback to full walk on SMB.
-5. **Parquet staging + DuckDB `COPY`** for bulk ingest — 10-50×
+   pywin32/ctypes — 2-3× on large directories, skips 8.3 alt-name
+   lookup, 64 KB result buffers vs one-entry-per-round-trip.
+3. **MFT / USN backend for local NTFS** — `FSCTL_ENUM_USN_DATA` via
+   `ctypes`, feature-detected and fallback to parallel scandir on
+   SMB. **20-60×** on direct-attached drives.
+4. **USN journal tail for incremental scans** — drops rescans from
+   hours to sub-second on local NTFS volumes. Local-only.
+5. **fdupes / fclones hash pipeline**: size → 4 KB prefix hash → full
+   hash. Typically 10-100× fewer bytes hashed for same dup set.
+6. **Parquet staging + DuckDB `COPY`** for bulk ingest — 10-50×
    faster than row-by-row SQLite inserts.
-6. **`fclones` as a subprocess** for dedupe — Apache-2.0, parallel,
+7. **`fclones` as a subprocess** for dedupe — Apache-2.0, parallel,
    JSON output. Ship rather than reimplement.
-7. **`watchdog` + `ReadDirectoryChangesW`** — swap full scans for
-   event-driven updates on hot shares.
+8. **`watchdog` + `ReadDirectoryChangesW`** for local shares — swap
+   polling for event-driven change feed.
+
+### Scanner backend architecture
+
+Design `Scanner` as a protocol with pluggable backends, auto-detected
+by volume type:
+
+```
+Scanner (protocol)
+├── NtfsMftBackend        # local NTFS, admin → FSCTL_ENUM_USN_DATA
+├── Win32FindExBackend    # local non-NTFS or no admin → FindFirstFileEx
+├── SmbParallelBackend    # UNC path → ThreadPoolExecutor(scandir)
+└── LinuxStatxBackend     # Linux → statx + io_uring (future)
+```
+
+Detection: `GetVolumeInformationW` + `GetDriveTypeW`. Graceful
+downgrade on privilege / filesystem mismatch.
 
 ### Architecture borrows
 
