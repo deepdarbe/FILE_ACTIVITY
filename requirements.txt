@@ -28,6 +28,13 @@ reportlab>=4.0.0
 # SQLite remains the source of truth; DuckDB only reads.
 duckdb>=1.0.0
 
+# Parquet staging (optional): pyarrow lets the scanner stage rows to
+# Parquet files which DuckDB then bulk-INSERTs into SQLite via the
+# sqlite_scanner extension. 10-50x faster than per-batch executemany on
+# 100k+ row scans. Missing package -> ParquetStager.available=False and
+# the scanner silently falls back to bulk_insert_scanned_files.
+pyarrow>=14.0
+
 # Active Directory lookup (optional): pure-Python LDAP client.
 # When installed and active_directory.enabled=true, dashboard resolves
 # username -> email/display_name for activity detail + notifications.
