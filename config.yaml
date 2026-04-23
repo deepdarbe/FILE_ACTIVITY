@@ -74,6 +74,12 @@ watcher:
 scanner:
   max_workers: 4              # paralel dizin tarayıcı sayısı
   smb_workers: 32             # parallel os.scandir backend thread count (SMB: 32 sweet spot)
+  # Issue #33: opt-in NTFS USN journal tail. Local NTFS + admin gerekir
+  # (SMB / network drive icin desteklenmez). true ise polling devre disi,
+  # yerine event-driven tail calisir (~sub-second latency). Desteklenmeyen
+  # volume / izin yetersizse otomatik olarak polling'e duser.
+  usn_tail_enabled: false
+  usn_poll_interval_seconds: 1.0
   batch_size: 1000            # DB batch insert boyutu
   skip_hidden: true           # Hidden attribute'lu dosyaları atla
   skip_system: true           # System attribute'lu dosyaları atla

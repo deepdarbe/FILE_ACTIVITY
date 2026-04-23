@@ -37,7 +37,8 @@ MIN_POLL_INTERVAL = 10      # Daha düşük değerler DoS etkisi yaratır, redde
 class FileWatcher:
     def __init__(self, db: Database, source_id: int, path: str,
                  interval: int = DEFAULT_POLL_INTERVAL,
-                 ransomware_detector=None):
+                 ransomware_detector=None,
+                 config: dict = None):
         self.db = db
         self.source_id = source_id
         self.path = path
@@ -47,6 +48,13 @@ class FileWatcher:
         # forwarded via consume_event(...). Wired by the dashboard during
         # /api/watcher/{source_id}/start (or by the service container).
         self.ransomware_detector = ransomware_detector
+        # Issue #33: opt-in USN journal tail. When enabled and supported
+        # (local NTFS + admin), polling loop is replaced by event-driven
+        # tail with sub-second latency. Falls back to polling on any error.
+        self.config = config or {}
+        self._usn_tailer = None
+        self._usn_stop_event = None
+        self._usn_thread = None
         self._running = False
         self._thread = None
         self._stats_lock = threading.Lock()
@@ -65,6 +73,18 @@ class FileWatcher:
         if self._running:
             return
         self._running = True
+        # Issue #33: prefer event-driven USN tail when enabled + supported.
+        # On success we skip the polling thread entirely. On any failure we
+        # fall back to the legacy polling loop — never block the watcher.
+        if self._try_start_usn_tail():
+            with _watchers_lock:
+                _watchers[self.source_id] = self
+            logger.info(
+                "File watcher started (USN tail mode) for source %d",
+                self.source_id,
+            )
+            return
+
         self._thread = threading.Thread(target=self._watch_loop, daemon=True)
         self._thread.start()
         with _watchers_lock:
@@ -73,9 +93,93 @@ class FileWatcher:
 
     def stop(self):
         self._running = False
+        if self._usn_stop_event is not None:
+            self._usn_stop_event.set()
+        if self._usn_tailer is not None:
+            try:
+                self._usn_tailer.close()
+            except Exception:
+                pass
         with _watchers_lock:
             _watchers.pop(self.source_id, None)
         logger.info("File watcher stopped for source %d", self.source_id)
+
+    # ── USN tail integration (issue #33) ─────────────────────────────
+
+    def _try_start_usn_tail(self) -> bool:
+        """If config.scanner.usn_tail_enabled and the volume supports it,
+        spin up a background USN tailer thread and return True. Otherwise
+        return False — caller falls back to polling."""
+        if not self.config.get("scanner", {}).get("usn_tail_enabled", False):
+            return False
+        try:
+            from src.scanner.backends.ntfs_usn_tail import NtfsUsnTailer
+            if not NtfsUsnTailer.is_supported(self.path):
+                return False
+            volume_letter = os.path.splitdrive(os.path.abspath(self.path))[0].rstrip(":")
+            if not volume_letter:
+                return False
+            tailer = NtfsUsnTailer(self.db, self.config, self.source_id, volume_letter)
+            init_result = tailer.initialize()
+            if init_result.get("gap_detected"):
+                logger.warning(
+                    "USN tail kaynak %d icin gap tespit edildi (%s) — full rescan onerilir",
+                    self.source_id, init_result.get("reason"),
+                )
+            self._usn_tailer = tailer
+            self._usn_stop_event = threading.Event()
+            self._usn_thread = threading.Thread(
+                target=tailer.run_loop,
+                args=(self._on_usn_event,),
+                kwargs={
+                    "poll_interval_seconds": float(
+                        self.config.get("scanner", {}).get("usn_poll_interval_seconds", 1.0)
+                    ),
+                    "stop_event": self._usn_stop_event,
+                },
+                daemon=True,
+            )
+            self._usn_thread.start()
+            return True
+        except NotImplementedError:
+            return False
+        except Exception as e:
+            logger.warning("USN tail baslatilamadi (kaynak %d), polling'e dusuluyor: %s",
+                           self.source_id, e)
+            return False
+
+    def _on_usn_event(self, event: dict) -> None:
+        """Bridge USN reasons to existing _record_audit semantics."""
+        reasons = set(event.get("reason") or [])
+        # Choose ONE event_type per record (ordered by priority)
+        if "FILE_DELETE" in reasons:
+            etype = "delete"
+        elif "FILE_CREATE" in reasons:
+            etype = "create"
+        elif "RENAME_NEW_NAME" in reasons:
+            etype = "rename"
+        elif reasons & {"DATA_OVERWRITE", "DATA_EXTEND", "DATA_TRUNCATION"}:
+            etype = "modify"
+        else:
+            # Skip BASIC_INFO_CHANGE / SECURITY_CHANGE / CLOSE noise
+            return
+        # USN gives us the file name, not full path. Best effort path is
+        # the volume root + name; the watcher doesn't reconstruct full
+        # parent path here (would require an MFT lookup).
+        fname = event.get("file_name", "")
+        with self._stats_lock:
+            if etype == "create":
+                self.stats["new_files"] += 1
+            elif etype == "modify":
+                self.stats["modified_files"] += 1
+            elif etype == "delete":
+                self.stats["deleted_files"] += 1
+            self.stats["total_changes"] += 1
+            self.stats["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            self._record_audit(etype, fname, owner=None)
+        except Exception as e:
+            logger.debug("USN _on_usn_event audit hata: %s", e)
 
     def get_status(self):
         with self._stats_lock:
