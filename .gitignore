@@ -17,3 +17,8 @@ node_modules/
 *.zip
 *.exe
 temp_netwrix/
+
+# Benchmark history (issue #70). Local-only — each developer / CI host
+# accumulates its own run-over-run record so regressions are visible
+# against the same hardware. Not committed.
+bench_history.jsonl
