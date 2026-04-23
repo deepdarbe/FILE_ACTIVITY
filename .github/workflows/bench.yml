@@ -1,0 +1,54 @@
+name: Benchmark
+
+# Manual-only — benchmarks are noisy on shared GHA runners and we don't
+# want to gate PRs on them. Run via the Actions tab → Benchmark → Run
+# workflow when validating an optimisation or chasing a regression.
+on:
+  workflow_dispatch:
+    inputs:
+      corpus_size:
+        description: "PII corpus size in MB"
+        required: false
+        default: "100"
+      repeats:
+        description: "Measured repeats per backend"
+        required: false
+        default: "5"
+
+jobs:
+  bench:
+    name: PII engine benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip --quiet
+          # Core deps + optional accelerated backends. ``requirements-accel.txt``
+          # pulls in hyperscan so the harness can run BOTH backends and report
+          # the speedup in the same table.
+          python -m pip install -r requirements.txt --quiet
+          python -m pip install -r requirements-accel.txt --quiet
+
+      - name: Run bench_pii
+        env:
+          CORPUS_SIZE: ${{ github.event.inputs.corpus_size }}
+          REPEATS: ${{ github.event.inputs.repeats }}
+        run: |
+          python -m tests.bench.bench_pii \
+            --corpus-size "${CORPUS_SIZE:-100}" \
+            --repeats "${REPEATS:-5}" \
+            --history bench_history.jsonl
+
+      - name: Upload bench_history.jsonl
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-history
+          path: bench_history.jsonl
+          if-no-files-found: warn
