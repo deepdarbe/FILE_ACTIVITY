@@ -178,6 +178,24 @@ class Database:
                 self.backfill_missing_summaries()
             except Exception as e:
                 logger.warning("Summary backfill hatasi (kritik degil): %s", e)
+
+            # Parquet staging orphan replay: kazadan sonra kalmis .parquet
+            # dosyalarini SQLite'a ingest et. Dashboard ilk acilmadan once
+            # calismali ki kullanicilar eksik kayit gormesin. Stager kendi
+            # kosullarini (pyarrow + duckdb + db_path) ic icin kontrol eder.
+            try:
+                from src.storage.staging import ParquetStager
+                # Config Database'e sadece database alt-kismi ile geldigi
+                # icin parquet_staging.staging_dir override edilemez burada;
+                # default path (data/staging) kullanilir. Tarama sirasinda
+                # yazan stager ayni default'u kullaniyor (config orada full).
+                stager = ParquetStager(self, {"scanner": {"parquet_staging": {}}})
+                if stager.available:
+                    stager.replay_orphans()
+            except Exception as e:
+                logger.warning(
+                    "Parquet staging orphan replay basarisiz (kritik degil): %s", e
+                )
         except Exception as e:
             self.connected = False
             raise DatabaseConnectionError(
