@@ -26,6 +26,19 @@ jobs:
         run: |
           python -m compileall -q src/ main.py dev_server.py
 
+      - name: YAML config smoke check (catch unresolved merge markers)
+        run: |
+          python -c "import yaml; yaml.safe_load(open('config.yaml'))"
+          # Bare grep guard for stray conflict markers in any tracked text file
+          if grep -RnE '^(<<<<<<< |======= ?$|>>>>>>> )' \
+              --include='*.py' --include='*.yml' --include='*.yaml' \
+              --include='*.md' --include='*.html' --include='*.cmd' \
+              --include='*.ps1' --include='*.txt' \
+              --exclude-dir='.git' --exclude-dir='node_modules' . ; then
+            echo "::error::Unresolved Git conflict markers detected"
+            exit 1
+          fi
+
       - name: Import-level smoke test for cross-platform modules
         run: |
           # AnalyticsEngine and Database models import cleanly on Linux
