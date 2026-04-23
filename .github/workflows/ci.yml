@@ -90,7 +90,7 @@ jobs:
             requirements-mcp.txt
             requirements-dev.txt
 
-      - name: Install runtime + dev dependencies
+      - name: Install base + dev dependencies (required)
         run: |
           python -m pip install --upgrade pip
           # NB: pywin32 (in requirements.txt) is a no-op install on
@@ -99,9 +99,16 @@ jobs:
           # collection time.
           python -m pip install \
             -r requirements.txt \
-            -r requirements-accel.txt \
-            -r requirements-mcp.txt \
             -r requirements-dev.txt
+
+      - name: Install optional accelerator + MCP dependencies (advisory)
+        # Hyperscan needs a system C++ toolchain on some runners and
+        # `mcp` pulls in a heavy SDK; either failing should NOT mark
+        # the gating test job red. Tests that need them use
+        # `pytest.importorskip` and skip cleanly when absent.
+        continue-on-error: true
+        run: |
+          python -m pip install -r requirements-accel.txt -r requirements-mcp.txt
 
       - name: Pytest collection summary
         run: |
@@ -109,7 +116,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          python -m pytest -x --tb=short tests/
+          python -m pytest --tb=short tests/
 
   tests-windows:
     # Optional companion to the Linux `tests` job: re-runs the two
