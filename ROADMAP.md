@@ -364,6 +364,69 @@ Research links will be added by the research phase commits. For now:
 
 ---
 
+## Skill / MCP / hardware-acceleration research (2026-04-23)
+
+### Adoptable upstream skills (anthropics/skills, wshobson/agents)
+- **xlsx skill** — formula-based compliance reports + post-write `recalc.py`
+  verifier. Replace today's hardcoded computed totals in CSV/JSON exports
+  so auditors can trust the numbers and edit assumptions in-place.
+- **mcp-builder skill** — methodology for building our own
+  `file-activity-mcp` server (Pydantic schemas, action-prefixed tools,
+  10+ eval questions). High-impact: lets Claude Code users query their
+  own shares in natural language.
+- **skill-creator** — progressive-disclosure pattern for shipping
+  per-customer retention/PII playbooks without bloating system prompts.
+- **wshobson/agents/gdpr-data-handling** — drop-in DSAR / consent
+  drafting helper from our PII engine.
+
+### MCP servers worth wiring
+- `motherduckdb/mcp-server-motherduck` — exposes our DuckDB analytics in
+  natural language; reuses existing Parquet staging layer.
+- `modelcontextprotocol/servers/Filesystem` — scoped read access for
+  Claude to inspect actual files flagged by the PII engine.
+- `grafana/mcp-grafana` — Claude can pull metrics/alerts during
+  ransomware-detector triage (Prometheus + Loki + ES via one server).
+- `WayStation-ai/mcp` — Slack + Notion + Jira + Monday in one MCP for
+  "notify on detection" + "open ticket on legal hold" workflows.
+- `elastic/mcp-server-elasticsearch` (target the new Agent Builder MCP,
+  ES 9.2+) — wires into the planned ES backend.
+
+### Hardware acceleration opportunities (NPU / NVIDIA / CPU SIMD)
+The customer typically runs FILE_ACTIVITY on file servers without
+discrete GPUs, but admin workstations often have NVIDIA cards or Intel
+NPU (Core Ultra). Three tiers, ordered by realism:
+
+1. **CPU SIMD (always-on, no detection needed on modern x86)**
+   - **Intel Hyperscan / Vectorscan for PiiEngine regex** — AVX2/AVX-512
+     accelerated multi-pattern regex; 10-100× faster than `re` for
+     scanning multi-MB text corpora. Drop-in via `python-hyperscan` with
+     graceful fallback to stdlib `re` on non-x86. Biggest practical win.
+   - **SHA-NI for content_duplicates hashing** — stdlib `hashlib` already
+     uses SHA-NI when present; verify by logging `hashlib.algorithms_guaranteed`
+     and add a startup capability probe to surface this in `/api/health`.
+2. **GPU/NPU (opt-in, capability-gated)**
+   - **NER-based PII detection** — small DistilBERT on CUDA / OpenVINO on
+     NPU catches name + address + ID-card patterns regex misses. Off by
+     default; run as a follow-up pass on text files PII-flagged by regex.
+   - **Embedding-based semantic dedup** — sentence-transformers on CUDA
+     to detect "same content, different format" (e.g. .docx vs .pdf of
+     the same contract). Complements byte-level hash dedup.
+3. **Don't bother**
+   - GPU SHA-256 for dedup — disk I/O is the bottleneck on SMB shares,
+     not hash compute. SHA-NI on CPU already saturates a 1 GbE link.
+   - GPU-accelerated SQL — DuckDB has experimental GPU support but it's
+     unstable and our queries are not compute-bound.
+
+### Patterns to borrow (not whole skills)
+- xlsx skill's "formulas, never hardcoded" pattern → compliance Excel exports.
+- mcp-builder's "10+ eval questions per server" → bake into PR template
+  for any new dashboard endpoint or PowerShell cmdlet.
+- skill-creator's progressive disclosure → retention-policy packs.
+- obra/superpowers `systematic-debugging` 4-phase root-cause method →
+  standard runbook template for incident response docs.
+
+---
+
 *This document is mirrored by a pinned GitHub issue for operational
 visibility. Changes here should be reflected in that issue and
 vice-versa.*
