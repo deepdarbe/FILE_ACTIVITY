@@ -556,6 +556,30 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_dhm_group ON duplicate_hash_members(group_id)"
         )
 
+        # Ransomware alerts (issue #37) — canary access, rename velocity,
+        # mass deletion and risky-extension rules persist here. Idempotent.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ransomware_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                triggered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source_id INTEGER,
+                username TEXT,
+                rule_name TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                file_count INTEGER,
+                sample_paths TEXT,
+                details_json TEXT,
+                auto_kill_attempted INTEGER DEFAULT 0,
+                session_killed INTEGER DEFAULT 0,
+                acknowledged_at TIMESTAMP,
+                acknowledged_by TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ransomware_triggered "
+            "ON ransomware_alerts(triggered_at DESC)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(
