@@ -168,6 +168,50 @@ $f="$env:TEMP\fa.ps1"; (New-Object Net.WebClient).DownloadFile("https://raw.gith
 | GET | `/api/users/overview` | User activity overview |
 | GET | `/api/anomalies` | Anomaly alerts |
 
+## PowerShell Module
+
+A PowerShell module ships in `powershell/FileActivity/` and is installed
+automatically by `setup-source.ps1` to `C:\FileActivity\powershell\` (added
+to the user PSModulePath). Cmdlets return PowerShell objects so they pipe
+naturally.
+
+```powershell
+# After install, in a new PowerShell session:
+Import-Module FileActivity
+
+# Latest scan summary, big-file duplicates:
+Get-FileActivitySummary -SourceId 1
+Get-FileActivityDuplicates -SourceId 1 |
+    Where-Object FileSize -gt 1GB |
+    Sort-Object WasteSize -Descending |
+    Select-Object -First 10
+
+# Ransomware alert dashboard for ops:
+Get-FileActivityRansomware | Where-Object Severity -eq 'critical'
+
+# Verify audit chain integrity (compliance reports):
+$result = Test-FileActivityAuditChain
+if (-not $result.Verified) {
+    Write-Warning "AUDIT CHAIN BROKEN at seq $($result.BrokenAtSeq)"
+}
+```
+
+Cmdlets:
+
+| Cmdlet | Endpoint |
+|--------|----------|
+| `Get-FileActivityScan` | `GET /api/sources/{id}/scans` |
+| `Start-FileActivityScan` | `POST /api/scan/{id}` |
+| `Get-FileActivitySummary` | `GET /api/overview/{id}` |
+| `Get-FileActivityDuplicates` | `GET /api/reports/duplicates/{id}` |
+| `Get-FileActivityRansomware` | `GET /api/security/ransomware/alerts` |
+| `Invoke-FileActivityArchive` | `POST /api/archive/run` (or `dry-run`) |
+| `Get-FileActivityAudit` | `GET /api/audit/events` |
+| `Test-FileActivityAuditChain` | `GET /api/audit/verify` |
+
+Override the dashboard URL with `Set-FileActivityBaseUrl 'http://other-host:8085'`
+or by setting `$env:FILEACTIVITY_BASE_URL` before importing the module.
+
 ## Technology Stack
 
 | Layer | Technology |
