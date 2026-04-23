@@ -55,6 +55,18 @@ python main.py dashboard
 C:\FileActivity\bin\FileActivity.exe --config C:\FileActivity\config\config.yaml dashboard
 ```
 
+### Pre-built Windows binary
+
+Each tagged release publishes a single-file `file-activity-<version>-win64.exe`
+(plus a `.sha256` checksum) on the
+[GitHub Releases](https://github.com/deepdarbe/FILE_ACTIVITY/releases) page —
+download, drop next to a `config.yaml`, and double-click to run. No Python or
+admin install required, useful for sites without dev tooling. Source install
+(Option A above) remains the recommended path for any deployment that
+customizes `config.yaml` or expects automatic updates, since the EXE bundles a
+fixed snapshot and reads `config.yaml` from its working directory at every
+launch.
+
 Dashboard: **http://localhost:8085**
 
 ## Project Structure
