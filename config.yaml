@@ -133,3 +133,31 @@ reports:
 dashboard:
   host: "0.0.0.0"
   port: 8085
+
+security:
+  # Fidye yazilimi tespit motoru (#37). Watcher event akisini dinler,
+  # asagidaki dort kuralla anomali yakalar ve opsiyonel olarak SMB
+  # oturumlarini sonlandirir. auto_kill_session varsayilan kapali —
+  # operator bilincli olarak acmali.
+  ransomware:
+    enabled: true
+    rename_velocity_threshold: 50      # > N rename / dakika -> alert
+    rename_velocity_window: 60         # saniye
+    deletion_velocity_threshold: 100   # > M delete / dakika -> alert
+    deletion_velocity_window: 60       # saniye
+    risky_new_extensions:
+      - encrypted
+      - locked
+      - crypto
+      - crypt
+      - wcry
+      - wnry
+      - ryk
+      - lockbit
+      - conti
+      - cuba
+    canary_file_names:
+      - "_AAAA_canary_DO_NOT_DELETE.txt"
+      - "_ZZZZ_canary_DO_NOT_DELETE.txt"
+    auto_kill_session: false           # opt-in: SMB oturumunu Close-SmbSession ile sonlandir
+    notification_email: ""             # bos degilse bu adrese kritik uyari maili gider

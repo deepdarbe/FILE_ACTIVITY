@@ -36,12 +36,17 @@ MIN_POLL_INTERVAL = 10      # Daha düşük değerler DoS etkisi yaratır, redde
 
 class FileWatcher:
     def __init__(self, db: Database, source_id: int, path: str,
-                 interval: int = DEFAULT_POLL_INTERVAL):
+                 interval: int = DEFAULT_POLL_INTERVAL,
+                 ransomware_detector=None):
         self.db = db
         self.source_id = source_id
         self.path = path
         # Minimum sinir uygula — cok dusuk degerler FS'i sarsitir
         self.interval = max(MIN_POLL_INTERVAL, interval)
+        # Optional RansomwareDetector — when set, every audit event is
+        # forwarded via consume_event(...). Wired by the dashboard during
+        # /api/watcher/{source_id}/start (or by the service container).
+        self.ransomware_detector = ransomware_detector
         self._running = False
         self._thread = None
         self._stats_lock = threading.Lock()
@@ -140,11 +145,13 @@ class FileWatcher:
                 self.stats["last_changes"] = changes[-50:]
 
     def _record_audit(self, event_type: str, fpath: str, owner: str = None):
-        """Record file audit event in database."""
+        """Record file audit event in database AND fan out to the
+        ransomware detector if one is wired in."""
+        now = datetime.now()
         try:
             self.db.insert_audit_event(
                 source_id=self.source_id,
-                event_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                event_time=now.strftime("%Y-%m-%d %H:%M:%S"),
                 event_type=event_type,
                 username=owner,
                 file_path=fpath,
@@ -153,6 +160,21 @@ class FileWatcher:
             )
         except Exception as e:
             logger.debug("Audit event error %s: %s", fpath[:60], e)
+
+        # Forward to ransomware detector — issue #37. Failures here are
+        # never fatal; security checks must not break basic auditing.
+        det = self.ransomware_detector
+        if det is not None:
+            try:
+                det.consume_event({
+                    "timestamp": now,
+                    "source_id": self.source_id,
+                    "username": owner,
+                    "file_path": fpath,
+                    "event_type": event_type,
+                })
+            except Exception as e:
+                logger.debug("Ransomware detector error %s: %s", fpath[:60], e)
 
     def _check_changes(self):
         scan_id = self.db.get_latest_scan_id(self.source_id)

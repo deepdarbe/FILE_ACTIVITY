@@ -146,6 +146,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     app.state.ad_lookup = ad_lookup
     app.state.email_notifier = email_notifier
 
+    # Ransomware detector (#37) — watcher pushes events here. Construction is
+    # cheap; safe to do unconditionally. The detector pulls its own config
+    # block out of `config["security"]["ransomware"]`.
+    try:
+        from src.security.ransomware_detector import RansomwareDetector
+        ransomware = RansomwareDetector(db, config)
+        ransomware.email_notifier = email_notifier
+        app.state.ransomware = ransomware
+    except Exception as e:  # pragma: no cover - defensive only
+        logger.warning("RansomwareDetector init failed: %s", e)
+        app.state.ransomware = None
+
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -906,7 +918,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         if interval is None:
             interval = int(config.get("watcher", {}).get("poll_interval_seconds",
                                                           DEFAULT_POLL_INTERVAL))
-        watcher = FileWatcher(db, src.id, src.unc_path, interval)
+        ransomware = getattr(app.state, "ransomware", None)
+        watcher = FileWatcher(db, src.id, src.unc_path, interval,
+                                ransomware_detector=ransomware)
         watcher.start()
         return {"status": "started", "interval": watcher.interval}
 
@@ -2375,5 +2389,113 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         """Tum export islerini listele."""
         with _export_lock:
             return [{"job_id": k, **{kk: vv for kk, vv in v.items() if kk != "file_path"}} for k, v in _export_jobs.items()]
+
+    # --- RANSOMWARE DETECTOR API (issue #37) ---
+
+    def _get_detector():
+        det = getattr(app.state, "ransomware", None)
+        if det is None:
+            raise HTTPException(503, "Ransomware detector kullanilamiyor")
+        return det
+
+    @app.get("/api/security/ransomware/alerts")
+    async def list_ransomware_alerts(since_minutes: int = Query(60, ge=1, le=10080)):
+        """Son N dakikadaki ransomware uyarilarini listele (yeni once)."""
+        det = _get_detector()
+        return det.get_active_alerts(since_minutes=since_minutes)
+
+    @app.post("/api/security/ransomware/alerts/{alert_id}/acknowledge")
+    async def acknowledge_ransomware_alert(alert_id: int, by_user: str = "admin"):
+        """Bir uyariyi onayla — acknowledged_at + acknowledged_by yazilir."""
+        with db.get_cursor() as cur:
+            cur.execute(
+                """UPDATE ransomware_alerts
+                   SET acknowledged_at = datetime('now','localtime'),
+                       acknowledged_by = ?
+                   WHERE id = ?""",
+                (by_user, alert_id),
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(404, f"Uyari bulunamadi (ID: {alert_id})")
+        return {"acknowledged": True, "id": alert_id, "by": by_user}
+
+    @app.post("/api/security/ransomware/canaries/{source_id}/deploy")
+    async def deploy_ransomware_canaries(source_id: int):
+        """Kaynagin paylasim koküne canary dosyalarini birak."""
+        src = _get_source(db, source_id)
+        det = _get_detector()
+        placed = det.deploy_canaries(src.id, src.unc_path)
+        return {
+            "source_id": src.id,
+            "share_root": src.unc_path,
+            "placed": placed,
+            "canary_names": sorted(det.canary_names),
+        }
+
+    @app.post("/api/security/ransomware/test")
+    async def ransomware_test(source_id: Optional[int] = None,
+                                username: str = "test_user",
+                                rule: str = "rename_velocity"):
+        """Sentetik olay enjeksiyonu — kural + e-posta + SMB kill (dry-run)
+        boru hattini hizlica dogrulamak icin. Production'da kullanilmamali.
+
+        rule: 'rename_velocity' | 'risky_extension' | 'mass_deletion' | 'canary_access'
+        """
+        det = _get_detector()
+        if source_id is not None:
+            _get_source(db, source_id)
+
+        rule = (rule or "").strip().lower()
+        last_alert = None
+        if rule == "rename_velocity":
+            for i in range(det.rename_threshold + 1):
+                last_alert = det.consume_event({
+                    "source_id": source_id,
+                    "username": username,
+                    "file_path": f"/test/synth_{i}.bin",
+                    "old_path": f"/test/synth_{i}.txt",
+                    "event_type": "rename",
+                }) or last_alert
+        elif rule == "risky_extension":
+            last_alert = det.consume_event({
+                "source_id": source_id,
+                "username": username,
+                "file_path": "/test/secret.docx.encrypted",
+                "event_type": "modify",
+            })
+        elif rule == "mass_deletion":
+            for i in range(det.delete_threshold + 1):
+                last_alert = det.consume_event({
+                    "source_id": source_id,
+                    "username": username,
+                    "file_path": f"/test/del_{i}.bin",
+                    "event_type": "delete",
+                }) or last_alert
+        elif rule == "canary_access":
+            canary = sorted(det.canary_names)[0] if det.canary_names else "_AAAA_canary_DO_NOT_DELETE.txt"
+            last_alert = det.consume_event({
+                "source_id": source_id,
+                "username": username,
+                "file_path": f"/test/{canary}",
+                "event_type": "access",
+            })
+        else:
+            raise HTTPException(400, f"Bilinmeyen kural: {rule}")
+
+        # SMB kill her zaman dry-run pipeline'i ile dogrulanir.
+        smb_dry = None
+        try:
+            from src.security.smb_session import kill_user_session
+            smb_dry = kill_user_session(username, dry_run=True)
+        except Exception as e:  # pragma: no cover - defensive
+            smb_dry = {"error": f"smb_session_unavailable: {e}", "killed": 0}
+
+        return {
+            "rule": rule,
+            "alert": last_alert,
+            "smb_dry_run": smb_dry,
+            "auto_kill_session": det.auto_kill_session,
+            "notification_email": det.notification_email or None,
+        }
 
     return app
