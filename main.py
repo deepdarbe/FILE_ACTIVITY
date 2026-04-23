@@ -36,8 +36,52 @@ class AppContext:
 pass_ctx = click.make_pass_decorator(AppContext, ensure=True)
 
 
+def _read_version_string():
+    """Resolve the VERSION file content next to the entrypoint or PyInstaller bundle.
+
+    Used by `--version`. Falls back to "unknown" rather than raising so a
+    misbuilt EXE still exits 0 on smoke tests instead of crashing.
+    """
+    candidates = []
+    # Source checkout: VERSION sits next to main.py
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(here, "VERSION"))
+    # PyInstaller --onefile: read-only bundle root (bundled via --add-data)
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(os.path.join(meipass, "VERSION"))
+    # Frozen exe: also try alongside the executable (in case user dropped a VERSION file)
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "VERSION"))
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                value = fh.read().strip()
+                if value:
+                    return value
+        except OSError:
+            continue
+    return "unknown"
+
+
+def _print_version(ctx, param, value):
+    """Click eager callback for --version: print VERSION file then exit 0."""
+    if not value or ctx.resilient_parsing:
+        return
+    click.echo(_read_version_string())
+    ctx.exit(0)
+
+
 @click.group()
 @click.option("--config", "-c", default="config.yaml", help="Konfigurasyon dosyasi yolu")
+@click.option(
+    "--version",
+    is_flag=True,
+    expose_value=False,
+    is_eager=True,
+    callback=_print_version,
+    help="Print VERSION file content and exit.",
+)
 @click.pass_context
 def cli(ctx, config):
     """FILE ACTIVITY - Windows Dosya Paylasim Analiz ve Arsivleme Sistemi"""
