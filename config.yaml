@@ -230,3 +230,12 @@ audit:
   # Optional Ed25519 PEM (or raw 32-byte) private key for detached
   # signatures over the export's SHA-256. Empty = no signing.
   signing_key_path: ""
+
+compliance:
+  # Legal hold registry (issue #59). Glob-tabanli yol donduruculer
+  # arsiv / retention / cleanup adimlarinda eslesen yollari atlatir.
+  # Hold'lar silinemez — sadece release edilebilir; tum add/release
+  # olaylari audit log'a (chain'li mod aktifse hash-zincirine) yazilir.
+  legal_hold:
+    enabled: true
+    poll_interval_minutes: 5

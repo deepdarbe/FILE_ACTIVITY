@@ -695,6 +695,31 @@ class Database:
             )
         """)
 
+        # Legal holds (issue #59) — glob-based path freeze registry. Holds
+        # block archive / retention / cleanup of matching scanned_files
+        # rows. Application code must NEVER DELETE from this table; the
+        # only mutation is UPDATE released_at via release_hold().
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS legal_holds (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                path_pattern    TEXT NOT NULL,
+                reason          TEXT NOT NULL,
+                case_reference  TEXT,
+                created_by      TEXT NOT NULL,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                released_at     TIMESTAMP,
+                released_by     TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_legal_hold_active "
+            "ON legal_holds(released_at)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_legal_hold_created "
+            "ON legal_holds(created_at DESC)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(
