@@ -147,7 +147,6 @@ dashboard:
   host: "0.0.0.0"
   port: 8085
 
-<<<<<<< HEAD
 security:
   # Fidye yazilimi tespit motoru (#37). Watcher event akisini dinler,
   # asagidaki dort kuralla anomali yakalar ve opsiyonel olarak SMB
@@ -175,7 +174,7 @@ security:
       - "_ZZZZ_canary_DO_NOT_DELETE.txt"
     auto_kill_session: false           # opt-in: SMB oturumunu Close-SmbSession ile sonlandir
     notification_email: ""             # bos degilse bu adrese kritik uyari maili gider
-=======
+
 audit:
   # Tamper-evident hash-chained audit log (issue #38).
   # When chain_enabled=true, every audit event written via the
@@ -194,4 +193,3 @@ audit:
   # Optional Ed25519 PEM (or raw 32-byte) private key for detached
   # signatures over the export's SHA-256. Empty = no signing.
   signing_key_path: ""
->>>>>>> 64a1ba5 (Tamper-evident audit log chain + WORM export (closes #38))
