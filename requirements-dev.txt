@@ -1,0 +1,18 @@
+# FILE ACTIVITY - Development / test-only dependencies (issue #68).
+#
+# These packages are NOT required to run the dashboard, scanner, or MCP
+# server. Install them on developer workstations and CI runners that need
+# to execute the test suite under tests/:
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# Kept separate from requirements.txt so production deployments stay slim
+# and don't pull pytest + plugins into the runtime image.
+#
+# ──────────────────────────────────────────────────────────────────────
+# Test runner. Pinned to a recent 8.x; compatible with Python 3.10-3.12.
+pytest>=8.0,<9
+
+# Optional: handy when iterating locally to print captured stdout on
+# failure with nicer formatting. Not required by the suite itself.
+# pytest-sugar>=1.0
