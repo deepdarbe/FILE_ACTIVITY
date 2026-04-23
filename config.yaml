@@ -6,6 +6,22 @@ general:
   log_level: "INFO"
   log_file: "logs/file_activity.log"
 
+backup:
+  # Issue #77 — auto-backup for the SQLite DB.
+  # Snapshots use VACUUM INTO so they're safe under WAL (no exclusive
+  # lock). Daily snapshot job + pre-archive/retention/update hooks.
+  enabled: true
+  dir: "data/backups"
+  keep_last_n: 10                 # Daily-rotation budget
+  keep_weekly: 4                  # Plus the first snapshot of each of the last N ISO weeks
+  daily_snapshot_hour: 2          # 24h, 0-23 (cron "0 H * * *")
+  snapshot_on_update: true        # update.cmd takes a snapshot before reinstall
+  snapshot_on_apply: true         # ArchiveEngine + RetentionEngine snapshot before non-dry-run
+  # Phase 2 placeholder — DO NOT enable. Auto-restore on corruption is
+  # not implemented yet; the field exists so config parses cleanly when
+  # Phase 2 lands. See issue #77.
+  auto_restore_on_corruption: false
+
 database:
   path: "data/file_activity.db"    # SQLite veritabani dosyasi
   retention:

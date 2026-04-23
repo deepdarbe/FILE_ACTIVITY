@@ -276,9 +276,17 @@ Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 
 # Update launcher: ayni script'i tekrar cagirir (guncelleme)
 # Eski PowerShell'lerde TLS 1.2'yi onceden set etmek zorunlu (irm basarisiz olmasin)
+# Issue #77: update'ten ONCE SQLite snapshot al — guncelleme bozulursa
+# operator hizlica geri donebilir. Snapshot basarisiz olsa bile update
+# devam eder (snapshot olmadan da olabilir, ama update durmamali).
 $updateCmd = @"
 @echo off
 echo FILE ACTIVITY guncelleniyor (master branch)...
+echo  - Pre-update SQLite snapshot aliniyor...
+"%LOCALAPPDATA%\FileActivity\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update" 2>NUL
+if errorlevel 1 (
+    echo  [!] Snapshot basarisiz - update yine de devam ediyor
+)
 powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/setup-source.ps1 | iex"
 "@
 Set-Content "$InstallDir\update.cmd" $updateCmd

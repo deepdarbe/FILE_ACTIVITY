@@ -51,6 +51,14 @@ class ArchiveEngine:
         """
         is_dry_run = dry_run if dry_run is not None else self.dry_run
 
+        # Issue #77: pre-apply SQLite snapshot. Runs only on real
+        # (non-dry-run) operations and only if backup.snapshot_on_apply
+        # is true. Failure NEVER aborts the archive — we log + continue
+        # because losing a backup is much less bad than blocking the
+        # operator's archive batch on a transient backup error.
+        if not is_dry_run:
+            self._maybe_pre_apply_snapshot(reason="pre-archive")
+
         # Arsiv islemi kaydi olustur
         op_id = None
         if not is_dry_run:
@@ -288,6 +296,31 @@ class ArchiveEngine:
             self._cleanup_empty_parents(os.path.dirname(src_path), source_unc)
 
         return True
+
+    def _maybe_pre_apply_snapshot(self, reason: str) -> None:
+        """Issue #77: take a SQLite snapshot before a real archive run.
+
+        Honours ``config.backup.snapshot_on_apply`` (default true). All
+        failures are caught + logged — the archive operation must
+        proceed even if backup is unavailable.
+        """
+        backup_cfg = (self.config or {}).get("backup") or {}
+        if not backup_cfg.get("snapshot_on_apply", True):
+            return
+        if not backup_cfg.get("enabled", True):
+            return
+        try:
+            db_path = (
+                (self.config or {}).get("database", {}).get("path")
+                or "data/file_activity.db"
+            )
+            from src.storage.backup_manager import BackupManager
+            BackupManager(db_path, self.config).snapshot(reason=reason)
+        except Exception as e:
+            logger.error(
+                "pre-apply snapshot failed (%s) — continuing archive: %s",
+                reason, e, exc_info=True,
+            )
 
     def _sha256(self, path: str) -> str:
         """SHA-256 checksum hesapla."""

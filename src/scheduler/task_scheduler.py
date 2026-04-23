@@ -28,6 +28,10 @@ class TaskScheduler:
     def start(self):
         """Scheduler'ı başlat ve veritabanındaki görevleri yükle."""
         self._load_tasks()
+        # Issue #77: register the daily SQLite backup job from config.
+        # This is config-driven (not stored in scheduled_tasks) so it
+        # works on fresh installs without a manual setup step.
+        self._register_daily_backup_job()
         self.scheduler.start()
         logger.info("TaskScheduler başlatıldı")
 
@@ -92,6 +96,9 @@ class TaskScheduler:
             elif task_type == "audit_export":
                 # Issue #38: WORM export of hash-chained audit log.
                 result = self._run_audit_export(task)
+            elif task_type == "daily_backup":
+                # Issue #77: SQLite snapshot + prune.
+                result = self._run_daily_backup(task)
             else:
                 result = {"status": "error", "message": f"Bilinmeyen görev türü: {task_type}"}
 
@@ -311,6 +318,77 @@ class TaskScheduler:
         except Exception as e:
             logger.error("audit_export task failed: %s", e)
             return {"status": "error", "message": str(e)}
+
+    def _run_daily_backup(self, task=None):
+        """Issue #77: scheduled SQLite snapshot + prune.
+
+        Snapshot failures are caught + reported as ``status=error`` but
+        never raised — the scheduler will retry tomorrow.
+        """
+        try:
+            from src.storage.backup_manager import BackupManager
+        except Exception as e:
+            return {"status": "error", "message": f"backup_manager import failed: {e}"}
+
+        backup_cfg = (self.config or {}).get("backup") or {}
+        if not backup_cfg.get("enabled", True):
+            return {"status": "skipped", "message": "backup.enabled=false"}
+
+        db_path = (
+            (self.config or {}).get("database", {}).get("path")
+            or "data/file_activity.db"
+        )
+        try:
+            mgr = BackupManager(db_path, self.config)
+            meta = mgr.snapshot(reason="scheduled-daily")
+            deleted = 0
+            try:
+                deleted = mgr.prune()
+            except Exception as e:
+                # Prune failure shouldn't fail the whole job — the
+                # snapshot itself succeeded, which is what matters.
+                logger.error("daily_backup prune failed: %s", e, exc_info=True)
+            return {
+                "status": "completed",
+                "snapshot_id": meta.id,
+                "size_bytes": meta.size_bytes,
+                "sha256": meta.sha256,
+                "pruned": deleted,
+            }
+        except Exception as e:
+            logger.error("daily_backup snapshot failed: %s", e, exc_info=True)
+            return {"status": "error", "message": str(e)}
+
+    def _register_daily_backup_job(self):
+        """Register the config-driven daily backup job (issue #77)."""
+        backup_cfg = (self.config or {}).get("backup") or {}
+        if not backup_cfg.get("enabled", True):
+            logger.info("daily_backup not registered: backup.enabled=false")
+            return
+        try:
+            hour = int(backup_cfg.get("daily_snapshot_hour", 2))
+        except (TypeError, ValueError):
+            hour = 2
+        # Clamp to valid CronTrigger range; default to 2 if nonsense.
+        if hour < 0 or hour > 23:
+            logger.warning(
+                "daily_snapshot_hour=%r out of range — defaulting to 2", hour
+            )
+            hour = 2
+        try:
+            trigger = CronTrigger(minute="0", hour=str(hour))
+            self.scheduler.add_job(
+                self._run_daily_backup,
+                trigger=trigger,
+                id="daily_backup",
+                name="daily_backup:sqlite",
+                replace_existing=True,
+            )
+            logger.info(
+                "daily_backup job registered (cron: 0 %d * * *)", hour
+            )
+        except Exception as e:
+            logger.error("Failed to register daily_backup: %s", e)
 
     def reload_tasks(self):
         """Görevleri yeniden yükle."""

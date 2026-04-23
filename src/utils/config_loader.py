@@ -29,6 +29,19 @@ DEFAULT_CONFIG = {
         "verify_checksum": True, "dry_run": False, "cleanup_empty_dirs": True,
     },
     "dashboard": {"host": "0.0.0.0", "port": 8085},
+    # Issue #77: auto-backup defaults. Match config.yaml. The Phase 2
+    # auto_restore_on_corruption field is already here so older
+    # configs parse cleanly once Phase 2 lands.
+    "backup": {
+        "enabled": True,
+        "dir": "data/backups",
+        "keep_last_n": 10,
+        "keep_weekly": 4,
+        "daily_snapshot_hour": 2,
+        "snapshot_on_update": True,
+        "snapshot_on_apply": True,
+        "auto_restore_on_corruption": False,
+    },
 }
 
 
