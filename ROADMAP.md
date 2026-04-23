@@ -1,0 +1,322 @@
+# FILE ACTIVITY — Roadmap
+
+> **Project management memory** — single source of truth for where the project
+> is, where it's going, and how the work is organised. Mirrored by a pinned
+> GitHub issue that tracks the live backlog.
+
+**Last updated**: 2026-04-21 — research + gap analysis phase. Content will
+be refined as research agents return findings.
+
+---
+
+## Vision
+
+An **enterprise-grade Windows / Linux file share analysis, auditing, and
+archiving platform** that scales to multi-million-file shares with
+dashboards that never hang.
+
+**Core value propositions**:
+- **Visibility** — know what's on your shares, who owns it, how stale
+- **Compliance** — audit trail, retention policies, per-user reports
+- **Reclamation** — duplicate detection, stale archiving, oversized
+  file alerts
+- **Automation** — policy-driven archiving, scheduled notifications,
+  SMTP + Active Directory integration
+- **Performance** — scan millions of files without tying up the host,
+  serve dashboards in milliseconds
+
+---
+
+## Current state (as of v1.7.0-dev)
+
+### What works
+- **Scanner**: Python `os.walk` based, multi-threaded workers,
+  configurable exclusion patterns, long-path support (`\\?\`)
+- **Storage**: SQLite (OLTP) + DuckDB read-only ATTACH (OLAP) +
+  `scan_runs.summary_json` / `insights_json` cache for instant
+  Overview rendering
+- **Dashboard**: FastAPI + static HTML/Chart.js/D3. Sidebar with
+  GitHub update banner, WAL size warning, AD + SMTP status
+- **Scheduler**: APScheduler with scan / archive / `notify_users`
+  task types
+- **User activity**: LDAP lookup (AD email resolution),
+  per-user efficiency score, HTML email notifications with admin CC
+- **Deployment**: One-command PowerShell installer
+  (`setup-source.ps1`) that auto-installs Python 3.11 if missing,
+  auto-handles corporate TLS-inspection proxies, and writes an
+  `update.cmd` launcher
+
+### Known limitations
+- `os.walk` is slow on Windows vs native MFT/USN reads
+- No real-time change monitoring on network shares (polling only)
+- Heavy endpoints still run per-scan aggregates on cache miss
+- No horizontal scaling (single-host)
+- Minimal test coverage
+
+### Recent architectural wins
+- Pre-computed scan summaries (PR #24): Overview loads in <1s
+  regardless of scan size
+- Cached AI insights (PR #25)
+- Auto-cleanup of orphan `scanned_files` rows (PR #23, #26)
+- Non-blocking Overview with lazy heavy endpoints (PR #27)
+- WAL bloat prevention (PR #21)
+
+---
+
+## Performance benchmarks
+
+Goal: match or beat best-in-class file indexers on the Windows host
+scenario. On network shares we accept the SMB penalty but still want
+to be faster than `os.walk`.
+
+### Current (os.walk, baseline)
+
+| Scenario | Time | Notes |
+|---|---|---|
+| 2.5M files on SMB share | ~45 min | Customer-observed |
+| 2.5M files on local NTFS | TBD | Need measurement |
+| Dashboard Overview (cached) | <1s | ✅ post-PR #24 |
+| Dashboard Overview (uncached) | 1-5 min | First load after scan |
+
+### Target (post-roadmap)
+
+| Scenario | Time | Approach |
+|---|---|---|
+| 2.5M files on local NTFS | <10 s | MFT enumeration |
+| 2.5M files on SMB | TBD | SMB server-side if available |
+| Incremental scan | <5 s | USN journal |
+| Any dashboard page | <500ms | All endpoints cached |
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Dashboard (FastAPI + static HTML)                        │
+│  - Reads from summary_json / insights_json                │
+│  - Never aggregates files table on the request path       │
+├──────────────────────────────────────────────────────────┤
+│  Storage layer                                             │
+│  - SQLite (source of truth, OLTP writes)                  │
+│  - DuckDB (read-only ATTACH, columnar analytics)          │
+│  - scan_runs: summary_json, insights_json caches          │
+├──────────────────────────────────────────────────────────┤
+│  Scanner / watcher                                         │
+│  - os.walk (today)                                        │
+│  - MFT enumeration (planned)                              │
+│  - USN journal delta (planned)                            │
+├──────────────────────────────────────────────────────────┤
+│  Services                                                  │
+│  - APScheduler (cron tasks)                               │
+│  - LDAP lookup (AD email resolution, cached)              │
+│  - SMTP notifier (per-user reports, admin CC)             │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Roadmap
+
+### Phase 1 — Performance (current priority)
+
+The customer has 2.5M files and waits minutes on first cache fill.
+Scanning and aggregation must be an order of magnitude faster.
+
+1. **Fast file scanner** — MFT enumeration via Windows API
+   (`FSCTL_ENUM_USN_DATA`), fallback to `os.walk` on non-NTFS targets
+2. **Incremental scans** via USN journal
+3. **Extend scan_runs caches** — include top extensions, top owners,
+   age distribution, size distribution (eliminates `/api/reports/*`
+   aggregate queries on Overview path)
+4. **Indexed query audit** — review `src/storage/database.py` queries,
+   add composite indexes where missing
+
+### Phase 2 — Database interactivity
+
+> "Her türlü interaktif çalışma" — richer analytics, faster feedback.
+
+1. **DuckDB-backed ad-hoc query panel** — admin runs `SELECT … FROM
+   scanned_files` via dashboard (read-only, whitelist-guarded)
+2. **Saved views** — store named filters in DB, one-click apply on
+   file tables
+3. **Aggregation drill-through** — click a KPI card → drill into
+   the underlying rows with pagination
+4. **Real-time change feed** — watcher pushes changes to a UI panel
+   via SSE (not just polling the `/api/watcher/status` endpoint)
+
+### Phase 3 — Enterprise features
+
+Details to be refined after enterprise-use-case research completes.
+
+1. Anomaly detection (ransomware-style rapid deletes, unusual access
+   patterns)
+2. Orphaned-user cleanup (files owned by deleted AD accounts)
+3. Chargeback reports (storage per department)
+4. Approval workflows for archive operations
+5. SIEM export (syslog / CEF / Splunk HEC)
+
+### Phase 4 — Packaging + quality
+
+1. Automated EXE release via GitHub Actions (already have workflow
+   in PR #6, needs real build tested)
+2. pytest suite (scanner, archiver, db queries)
+3. Benchmark harness + CI guardrails (no perf regressions)
+4. Documentation site (`docs/`)
+
+---
+
+## Gap analysis
+
+### Competitive landscape — closest analogues
+
+| Project | Language | Scan approach | Why it matters |
+|---|---|---|---|
+| [diskover-community](https://github.com/diskoverdata/diskover-community) | Python | Parallel walk → Elasticsearch | **Closest direct competitor**. Elasticsearch tier for 100M+ files. |
+| [fclones](https://github.com/pkolaczk/fclones) | Rust | Rayon parallel | Best-in-class dedupe; size → prefix-hash → full-hash pipeline (10-100× faster than naive) |
+| [Czkawka](https://github.com/qarmin/czkawka) | Rust | `jwalk` parallel | Dup + empty + large + stale; UI separate from engine |
+| [rmlint](https://github.com/sahib/rmlint) | C | Multi-threaded | BTRFS reflink dedupe, lint mode |
+| [Velociraptor](https://github.com/Velocidex/velociraptor) | Go | MFT + USN direct | Enterprise audit with raw NTFS parser |
+| [osquery](https://github.com/osquery/osquery) | C++ | OS-native (USN/FSEvents/inotify) | SQL-over-filesystem virtual tables |
+| [FSearch](https://github.com/cboxdoerfer/fsearch) | C/GTK | In-memory trie + inotify | Linux Everything clone |
+
+### Everything (voidtools) — why it's fast
+
+- Reads NTFS **Master File Table** (`$MFT`) directly via `\\.\C:` raw
+  handle. Builds a name index in 1-3 s for 1M files.
+- Subscribes to the **USN Change Journal** for real-time deltas —
+  no polling.
+- In-memory sorted name array + filter bitmaps; queries are
+  substring scans over contiguous memory.
+- Memory footprint: ~100-500 MB for 10M files.
+
+**Hard limits**:
+- NTFS only (no ReFS, no SMB shares — **critical for us**)
+- Requires admin / SYSTEM for raw volume read
+- Name-only index; content search out of scope
+
+### Top customer pain points (from r/sysadmin, ServerFault, vendor research)
+
+1. **"Who is eating my storage?"** — #1 emergency ask at 2am. Needs
+   fast per-user/per-folder breakdown, not 8-hour rescan.
+2. **Orphaned SIDs after AD cleanup** — files owned by unresolvable
+   SIDs. Bulk re-ACL workflow expected.
+3. **Ransomware detection via rename/write velocity** — inline
+   detection, not next-morning reports. Kill SMB session + quarantine.
+4. **MAX_PATH / long-path errors** blocking backup and migration.
+5. **Stale data with dead owners** — need to email the **manager**,
+   not just the owner. Escalation timer.
+6. **Permission sprawl** — "everyone" shares, nested-group effective
+   permissions. Varonis's main wedge.
+7. **Duplicate sprawl across departments** — scoped dedupe reports.
+8. **Scan performance on 10 TB+ shares** — USN-based incrementals
+   are table stakes.
+9. **Open files blocking archive** — retry queues + session kill.
+10. **Executive-friendly reports** — auto-emailed PDF with charts,
+    CSVs are ignored.
+
+### What we're missing (prioritized)
+
+**Tier 1 — table stakes for enterprise**
+- USN journal / ReFS change feed → incremental scans instead of full
+  re-walk (unblocks 10 TB+ shares)
+- NTFS ACL / effective-permissions analysis (Varonis's moat)
+- Ransomware canary + rename-velocity detector with auto SMB kill
+- Tamper-evident audit log (hash-chained, WORM-storable)
+- PowerShell module (`Import-Module FileActivity` + cmdlets)
+- REST API → Syslog/CEF → Splunk/Elastic/Sentinel integration
+- Orphaned-SID report with bulk reassignment
+
+**Tier 2 — compliance unlocks budget**
+- GDPR Art. 17/30: PII search, per-subject export, retention engine
+  with attestation
+- HIPAA §164.312(b): tamper-evident access log, 6-year retention
+- SOX §404: change auditing on financial paths, segregation-of-duties
+  alerts
+- Legal hold: freeze a path from policy/archive with audit trail
+- Data classification tagging (Public / Internal / Confidential /
+  Restricted)
+
+**Tier 3 — growth features**
+- Chargeback / showback: GB-months per OU with configurable rate
+- Two-person approval on destructive ops
+- Quota + trend forecasting ("fills in 47 days at current growth")
+- Pre-archive stub/symlink so old paths redirect to "restore"
+- Elasticsearch backend option for > 100M files
+
+### Skip / deprioritise
+
+- AI insight narratives (admins distrust; keep minimal)
+- Per-user efficiency scores (HR-sensitive, rarely deployed in
+  practice — we may scale ours down)
+- Self-service "what did I delete" portal (Veeam/Commvault handle it)
+- Mobile app
+- Native Mac/Linux agent (SMB scan from Windows is sufficient)
+- Auto-generated org chart visualisations
+
+### Quick wins — achievable in 1-2 PRs each
+
+1. **Replace `os.walk` with `os.scandir` + thread pool** — 3-5× on
+   SMB, zero new dependencies. `scandir` returns `stat` info in the
+   `DirEntry` (one syscall not two).
+2. **`FindFirstFileExW` + `FIND_FIRST_EX_LARGE_FETCH`** on Windows via
+   pywin32/ctypes — 2-3× on large directories, single flag change.
+3. **fdupes / fclones hash pipeline**: size → 4 KB prefix hash → full
+   hash. Typically 10-100× fewer bytes hashed for same duplicate set.
+4. **USN journal incremental for local NTFS** — cuts rescans from
+   hours to seconds. Fallback to full walk on SMB.
+5. **Parquet staging + DuckDB `COPY`** for bulk ingest — 10-50×
+   faster than row-by-row SQLite inserts.
+6. **`fclones` as a subprocess** for dedupe — Apache-2.0, parallel,
+   JSON output. Ship rather than reimplement.
+7. **`watchdog` + `ReadDirectoryChangesW`** — swap full scans for
+   event-driven updates on hot shares.
+
+### Architecture borrows
+
+- **restic-style content-addressable archive**: dedupe blobs at chunk
+  level, not whole-file. Saves bandwidth + storage on archive.
+- **osquery virtual-table pattern**: expose our data via SQL over
+  stdin/out for admin ad-hoc queries.
+
+---
+
+## Tracked work
+
+All open work is tracked as GitHub issues labelled `roadmap`.
+See the [pinned master tracking issue](#) for the live ordered
+backlog. Each roadmap item corresponds to one or more issues, which
+are then worked as branches / PRs.
+
+### Labels in use
+
+| Label | Meaning |
+|---|---|
+| `roadmap` | Part of the strategic roadmap above |
+| `bug` | Customer-visible defect |
+| `enhancement` | New feature (non-critical) |
+| `performance` | Speed / memory improvement |
+| `database` | DB schema / query change |
+| `scanner` | File enumeration / watching |
+| `dashboard` | UI / frontend |
+| `deployment` | Installer / packaging |
+| `security` | Auth, authz, input validation |
+| `documentation` | Docs-only change |
+
+---
+
+## References
+
+Research links will be added by the research phase commits. For now:
+
+- [voidtools Everything](https://www.voidtools.com/)
+- [Microsoft — NTFS MFT](https://learn.microsoft.com/en-us/windows/win32/fileio/master-file-table)
+- [Microsoft — USN Change Journal](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/fsutil-usn)
+- [SQLite performance hints](https://www.sqlite.org/queryplanner.html)
+- [DuckDB over SQLite](https://duckdb.org/docs/extensions/sqlite_scanner.html)
+
+---
+
+*This document is mirrored by a pinned GitHub issue for operational
+visibility. Changes here should be reflected in that issue and
+vice-versa.*
