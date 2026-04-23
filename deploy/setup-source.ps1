@@ -285,6 +285,27 @@ Set-Content "$InstallDir\update.cmd" $updateCmd
 
 Write-Host "  [OK] fa.cmd, start_dashboard.cmd, update.cmd" -ForegroundColor Green
 
+# --- 5b. PowerShell module (Import-Module FileActivity) ---
+$psModuleSrc  = Join-Path $srcRoot 'powershell\FileActivity'
+$psModuleRoot = Join-Path $InstallDir 'powershell'
+$psModuleDest = Join-Path $psModuleRoot 'FileActivity'
+if (Test-Path $psModuleSrc) {
+    if (-not (Test-Path $psModuleRoot)) {
+        New-Item -Path $psModuleRoot -ItemType Directory -Force | Out-Null
+    }
+    if (Test-Path $psModuleDest) { Remove-Item $psModuleDest -Recurse -Force }
+    Copy-Item -Path $psModuleSrc -Destination $psModuleDest -Recurse -Force
+
+    # Append to PSModulePath (User scope) if not already present
+    $userPSModule = [Environment]::GetEnvironmentVariable('PSModulePath', 'User')
+    if (-not $userPSModule) { $userPSModule = '' }
+    if ($userPSModule -notlike "*$psModuleRoot*") {
+        $newPath = if ($userPSModule) { "$userPSModule;$psModuleRoot" } else { $psModuleRoot }
+        [Environment]::SetEnvironmentVariable('PSModulePath', $newPath, 'User')
+    }
+    Write-Host "  [OK] PowerShell module installed (Import-Module FileActivity)" -ForegroundColor Green
+}
+
 # --- 6. Firewall ---
 Write-Host "[6/6] Firewall kurali (port $DashPort)..." -ForegroundColor Yellow
 try {
