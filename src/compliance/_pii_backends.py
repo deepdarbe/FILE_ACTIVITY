@@ -158,6 +158,57 @@ class HyperscanBackend:
         # Hyperscan scratch is per-thread; we recreate per-scan to
         # stay safe under the dashboard's executor pool.
 
+    # Tokens that genuinely require Unicode-aware matching. ``HS_FLAG_UCP``
+    # changes the meaning of ``\w \d \s \b`` to span the full Unicode
+    # property tables; combined with the alternation / quantifiers in
+    # typical PII regexes Hyperscan rejects the result with "Pattern is
+    # too large" or "\b unsupported in UCP mode" (root cause of #74).
+    #
+    # The 5 default PII patterns (email, IBAN_TR, phone_TR, TCKN,
+    # credit_card) are ASCII-only by design — TR IBANs are literally
+    # ``TR`` + 24 ASCII digits, TCKN is 11 ASCII digits, etc. They must
+    # not opt into UCP.
+    #
+    # We therefore restrict UCP opt-in to patterns whose source contains
+    # something that *only* makes sense under Unicode mode:
+    #
+    #   * a non-ASCII literal byte (e.g. an operator pattern matching
+    #     ``ş`` or ``Ğ`` directly), or
+    #   * a Unicode property escape ``\p{...}`` / ``\P{...}``.
+    #
+    # ``\w`` etc. on their own do *not* trigger UCP — Python ``re`` is
+    # already Unicode-aware for those by default but Hyperscan's
+    # ASCII-flavoured ``\w`` is a close-enough match for the operator's
+    # regex intent and crucially keeps acceleration on. Operators who
+    # genuinely need ``\w`` to match ``ş`` should embed an explicit
+    # non-ASCII literal or ``\p{L}`` in their pattern (or run the stdlib
+    # backend).
+    _UCP_TRIGGER_RE = re.compile(
+        r"\\p\{"                  # \p{...} — Unicode property escape
+        r"|\\P\{"                 # \P{...}
+        r"|[^\x00-\x7f]"          # any non-ASCII literal in the source
+    )
+
+    @classmethod
+    def _wants_ucp(cls, regex: str) -> bool:
+        """Return True if ``regex`` references a Unicode-sensitive token.
+
+        Default PII patterns are ASCII-only so this is False for all of
+        them. Operator-supplied patterns that drop a literal non-ASCII
+        character or use ``\\p{...}`` opt into UCP and pay the
+        (occasionally fatal) compile-time cost knowingly.
+        """
+        return bool(cls._UCP_TRIGGER_RE.search(regex))
+
+    @classmethod
+    def _flags_for(cls, regex: str):
+        import hyperscan as hs  # type: ignore
+
+        flags = hs.HS_FLAG_CASELESS | hs.HS_FLAG_SOM_LEFTMOST | hs.HS_FLAG_UTF8
+        if cls._wants_ucp(regex):
+            flags |= hs.HS_FLAG_UCP
+        return flags
+
     @classmethod
     def compile(cls, patterns: dict[str, str]) -> "HyperscanBackend":
         import hyperscan as hs  # type: ignore
@@ -182,10 +233,7 @@ class HyperscanBackend:
 
         expressions = [r.encode("utf-8") for _, r, _ in compilable]
         ids = [i for _, _, i in compilable]
-        flags = [
-            hs.HS_FLAG_CASELESS | hs.HS_FLAG_SOM_LEFTMOST | hs.HS_FLAG_UTF8 | hs.HS_FLAG_UCP
-            for _ in compilable
-        ]
+        flags = [cls._flags_for(r) for _, r, _ in compilable]
         for name, _, idx in compilable:
             ids_to_names[idx] = name
 
@@ -200,27 +248,35 @@ class HyperscanBackend:
         except hs.error as e:  # pragma: no cover - depends on bad regex
             # Rare: hyperscan rejected the whole batch. Drop offenders
             # one at a time and retry; anything still failing falls
-            # back to per-pattern stdlib re.
+            # back to per-pattern stdlib re. We surface the per-pattern
+            # downgrade at WARNING so operators can spot a silently
+            # de-accelerated production install (issue #74).
             logger.warning("Hyperscan multi-compile failed (%s); "
                            "retrying per-pattern", e)
             ok_exprs: list[bytes] = []
             ok_ids: list[int] = []
             ok_flags: list[int] = []
             for name, regex, idx in compilable:
+                pattern_flags = cls._flags_for(regex)
                 try:
                     probe = hs.Database()
                     probe.compile(
                         expressions=[regex.encode("utf-8")],
                         ids=[idx],
                         elements=1,
-                        flags=[hs.HS_FLAG_CASELESS | hs.HS_FLAG_SOM_LEFTMOST | hs.HS_FLAG_UTF8 | hs.HS_FLAG_UCP],
+                        flags=[pattern_flags],
                     )
                     ok_exprs.append(regex.encode("utf-8"))
                     ok_ids.append(idx)
-                    ok_flags.append(hs.HS_FLAG_CASELESS | hs.HS_FLAG_SOM_LEFTMOST | hs.HS_FLAG_UTF8 | hs.HS_FLAG_UCP)
-                except hs.error:
-                    logger.warning("PII pattern %s incompatible with "
-                                    "Hyperscan, falling back to re", name)
+                    ok_flags.append(pattern_flags)
+                except hs.error as pe:
+                    logger.warning(
+                        "PII pattern %r could not compile under Hyperscan "
+                        "(%s); falling back to stdlib re for this pattern. "
+                        "Acceleration disabled for it — investigate the "
+                        "regex if this is unexpected.",
+                        name, pe,
+                    )
                     fallback[name] = re.compile(regex, re.IGNORECASE)
                     ids_to_names.pop(idx, None)
             if ok_exprs:
