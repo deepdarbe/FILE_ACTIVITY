@@ -2821,4 +2821,192 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             return {"sent": False, "error": forwarder.health().get("last_error")}
         return {"sent": True}
 
+    # ─────────────────────────────────────────────────────────────────
+    # GDPR PII detection + retention engine (#58)
+    # ─────────────────────────────────────────────────────────────────
+
+    def _get_pii_engine():
+        existing = getattr(app.state, "pii_engine", None)
+        if existing is not None:
+            return existing
+        from src.compliance.pii_engine import PiiEngine
+        engine = PiiEngine(db, config)
+        app.state.pii_engine = engine
+        return engine
+
+    def _get_retention_engine():
+        existing = getattr(app.state, "retention_engine", None)
+        if existing is not None:
+            return existing
+        from src.compliance.retention import RetentionEngine
+        # Lazy archive engine — only constructed if a policy actually
+        # needs it (action='archive' + non-dry-run apply).
+        archive_engine = None
+        try:
+            from src.archiver.archive_engine import ArchiveEngine
+            archive_engine = ArchiveEngine(db, config)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("ArchiveEngine init skipped for retention: %s", e)
+        engine = RetentionEngine(db, config, archive_engine=archive_engine)
+        app.state.retention_engine = engine
+        return engine
+
+    @app.post("/api/compliance/pii/scan/{source_id}")
+    async def pii_scan(source_id: int,
+                       max_files: Optional[int] = None,
+                       overwrite_existing: bool = False):
+        """Run PiiEngine.scan_source against the latest scan of source_id."""
+        engine = _get_pii_engine()
+        src = _get_source(db, source_id)
+        import asyncio
+
+        def _run():
+            return engine.scan_source(
+                src.id,
+                max_files=max_files,
+                overwrite_existing=overwrite_existing,
+            )
+
+        result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        result["source_id"] = src.id
+        return result
+
+    @app.get("/api/compliance/pii/findings")
+    async def pii_findings(pattern: Optional[str] = None,
+                           page: int = Query(1, ge=1),
+                           page_size: int = Query(50, ge=1, le=1000)):
+        """Browse persisted pii_findings rows. Optional ?pattern= filter."""
+        _get_pii_engine()  # ensure engine constructable / config sane
+        offset = (page - 1) * page_size
+        params: list = []
+        where = ""
+        if pattern:
+            where = "WHERE pattern_name = ?"
+            params.append(pattern)
+        with db.get_cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) AS cnt FROM pii_findings {where}",
+                params,
+            )
+            total = cur.fetchone()["cnt"]
+            cur.execute(
+                f"""SELECT id, scan_id, file_path, pattern_name,
+                           hit_count, sample_snippet, detected_at
+                    FROM pii_findings {where}
+                    ORDER BY detected_at DESC, id DESC
+                    LIMIT ? OFFSET ?""",
+                params + [page_size, offset],
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "findings": rows,
+        }
+
+    @app.get("/api/compliance/pii/subject")
+    async def pii_subject(term: str = Query(..., min_length=1),
+                          format: str = Query("json", pattern="^(json|csv)$")):
+        """Article 17/30 export — every file mentioning ``term``."""
+        engine = _get_pii_engine()
+        if format == "csv":
+            from fastapi.responses import StreamingResponse
+            import io
+            import csv as _csv
+            rows = engine.find_for_subject(term, limit=100_000)
+            buf = io.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow([
+                "file_path", "match_count", "last_modify_time",
+                "owner", "patterns", "sample_snippets",
+            ])
+            for r in rows:
+                patterns = ";".join(h["pattern_name"] for h in r["hits"])
+                snippets = ";".join(
+                    h.get("sample_snippet") or "" for h in r["hits"]
+                )
+                writer.writerow([
+                    r["file_path"], r["match_count"],
+                    r["last_modify_time"] or "",
+                    r["owner"] or "",
+                    patterns, snippets,
+                ])
+            buf.seek(0)
+            safe_term = "".join(c if c.isalnum() else "_" for c in term)[:40]
+            return StreamingResponse(
+                iter([buf.getvalue()]),
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition":
+                        f"attachment; filename=pii_subject_{safe_term}.csv"
+                },
+            )
+        results = engine.find_for_subject(term)
+        return {"term": term, "matches": len(results), "files": results}
+
+    @app.get("/api/compliance/retention/policies")
+    async def retention_policies_list():
+        engine = _get_retention_engine()
+        return {"policies": engine.list_policies()}
+
+    class _RetentionPolicyCreate(BaseModel):
+        name: str
+        pattern_match: Optional[str] = ""
+        retain_days: int
+        action: str
+
+        @field_validator("action")
+        @classmethod
+        def _validate_action(cls, v: str) -> str:
+            if v not in ("archive", "delete"):
+                raise ValueError("action must be 'archive' or 'delete'")
+            return v
+
+    @app.post("/api/compliance/retention/policies")
+    async def retention_policy_create(data: _RetentionPolicyCreate):
+        engine = _get_retention_engine()
+        try:
+            pid = engine.add_policy(
+                data.name,
+                data.pattern_match or "",
+                data.retain_days,
+                data.action,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            # Most likely a UNIQUE-name collision.
+            raise HTTPException(400, str(e))
+        return {"id": pid, "name": data.name}
+
+    @app.delete("/api/compliance/retention/policies/{name}")
+    async def retention_policy_remove(name: str):
+        engine = _get_retention_engine()
+        if not engine.remove_policy(name):
+            raise HTTPException(404, f"Policy not found: {name}")
+        return {"removed": True, "name": name}
+
+    @app.post("/api/compliance/retention/apply/{policy_name}")
+    async def retention_policy_apply(policy_name: str,
+                                     dry_run: bool = True):
+        engine = _get_retention_engine()
+        import asyncio
+
+        def _run():
+            return engine.apply(policy_name, dry_run=dry_run)
+
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(None, _run)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        except RuntimeError as e:
+            raise HTTPException(503, str(e))
+        return result
+
+    @app.get("/api/compliance/retention/attestation")
+    async def retention_attestation(since_days: int = Query(30, ge=1, le=3650)):
+        engine = _get_retention_engine()
+        return engine.attestation_report(since_days=since_days)
+
     return app
