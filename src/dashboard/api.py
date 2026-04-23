@@ -1902,6 +1902,33 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         except Exception:
             pass
 
+        # Issue #64: surface which PII regex backend is in effect
+        # (hyperscan when available + opted-in, else stdlib re).
+        try:
+            from src.compliance._pii_backends import (
+                hyperscan_available, hyperscan_version,
+            )
+            pii_cfg = (
+                ((config or {}).get("compliance", {}) or {}).get("pii", {}) or {}
+            )
+            pii_engine_pref = pii_cfg.get("engine", "auto")
+            hs_ok = hyperscan_available()
+            if pii_engine_pref == "re":
+                effective = "re"
+            elif pii_engine_pref == "hyperscan":
+                effective = "hyperscan" if hs_ok else "re"
+            else:  # auto
+                effective = "hyperscan" if hs_ok else "re"
+            pii_backend_info = {
+                "backend": effective,
+                "configured": pii_engine_pref,
+                "hyperscan_available": hs_ok,
+                "version": hyperscan_version() if effective == "hyperscan" else None,
+            }
+        except Exception:
+            pii_backend_info = {"backend": "re", "configured": "auto",
+                                 "hyperscan_available": False, "version": None}
+
         return {
             "status": "ok",
             "time": datetime.now().isoformat(),
@@ -1910,6 +1937,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "analytics": analytics.health(),
             "email": email_notifier.health(),
             "wal_warning": wal_warning,
+            "pii_backend": pii_backend_info,
         }
 
     @app.get("/api/system/analytics")
@@ -2944,6 +2972,32 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             )
         results = engine.find_for_subject(term)
         return {"term": term, "matches": len(results), "files": results}
+
+    @app.get("/api/compliance/pii/backend")
+    async def pii_backend_status():
+        """Capability probe (issue #64) — which regex backend the
+        PII engine is actually using and the optional package version.
+
+        Returns ``{"backend": "hyperscan"|"re",
+                   "version": <pkg version or null>,
+                   "hyperscan_available": bool,
+                   "configured": <raw engine config value>}``.
+        Mirrors the ``OrphanSidAnalyzer.is_supported`` pattern of
+        surfacing optional-acceleration availability over the API.
+        """
+        from src.compliance._pii_backends import (
+            hyperscan_available, hyperscan_version,
+        )
+        engine = _get_pii_engine()
+        configured = (
+            ((config or {}).get("compliance", {}) or {}).get("pii", {}) or {}
+        ).get("engine", "auto")
+        return {
+            "backend": engine.engine_name,
+            "version": hyperscan_version() if engine.engine_name == "hyperscan" else None,
+            "hyperscan_available": hyperscan_available(),
+            "configured": configured,
+        }
 
     @app.get("/api/compliance/retention/policies")
     async def retention_policies_list():
