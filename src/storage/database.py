@@ -500,6 +500,24 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_username ON file_audit_events(username)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_file_path ON file_audit_events(file_path)")
 
+        # Tamper-evident audit log chain (issue #38).
+        # Hash-chained mirror of file_audit_events; each row references the
+        # previous row's hash so any retroactive UPDATE/DELETE on
+        # file_audit_events breaks the chain at re-verification time.
+        # Genesis row uses prev_hash = 64*"0".
+        # No FK to file_audit_events: we want chain rows to survive even
+        # if event ids are reordered or rebased (e.g. WORM export then prune).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS audit_log_chain (
+                seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id   INTEGER NOT NULL,
+                prev_hash  TEXT NOT NULL,
+                row_hash   TEXT NOT NULL,
+                signed_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_chain_event ON audit_log_chain(event_id)")
+
         # Arsiv islem kayitlari
         cur.execute("""
             CREATE TABLE IF NOT EXISTS archive_operations (
@@ -1549,6 +1567,7 @@ class Database:
 
     def insert_audit_event(self, source_id, event_time, event_type, username,
                            file_path, file_name, details=None, detected_by='watcher'):
+        """file_audit_events satiri ekle, lastrowid dondur (chain icin lazim)."""
         with self.get_cursor() as cur:
             cur.execute("""
                 INSERT INTO file_audit_events
@@ -1556,6 +1575,7 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (source_id, event_time, event_type, username, file_path, file_name,
                   json.dumps(details) if details else None, detected_by))
+            return cur.lastrowid
 
     def get_audit_events(self, source_id=None, event_type=None, username=None,
                          days=7, page=1, page_size=100):
@@ -1779,6 +1799,277 @@ class Database:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (source_id, now, event_type, username, file_path, file_name,
                   details, detected_by))
+            return cur.lastrowid
+
+    # ──────────────────────────────────────────────
+    # Tamper-evident audit log chain (issue #38)
+    # ──────────────────────────────────────────────
+
+    _GENESIS_HASH = "0" * 64
+
+    @staticmethod
+    def _canonical_event_json(event_row: dict) -> str:
+        """Stable JSON for hashing (sorted keys, no whitespace, all fields).
+
+        ``default=str`` keeps datetime/Decimal/etc. deterministic without
+        forcing callers to coerce ahead of time. Result is the canonical
+        bytes fed into the SHA-256 chain.
+        """
+        import json as _json
+        return _json.dumps(event_row, sort_keys=True, separators=(",", ":"), default=str)
+
+    @staticmethod
+    def _row_hash(seq: int, event_id: int, prev_hash: str, canonical: str) -> str:
+        import hashlib as _hashlib
+        payload = f"{seq}|{event_id}|{prev_hash}|{canonical}"
+        return _hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _audit_chain_enabled(self) -> bool:
+        """Read audit.chain_enabled from outer config (default False).
+
+        ``self.config`` here is the ``database:`` sub-dict, so we walk up
+        only if the parent injected the full config under ``_full_config``.
+        Otherwise look for a sibling 'audit' key — Database is normally
+        constructed with the database sub-dict, so the audit flag must be
+        passed via the database dict's "audit" key for this to be True.
+        Callers that want to opt-in pass it explicitly via the new
+        ``audit_chain_enabled`` constructor flow OR via config injection.
+        """
+        # Prefer explicit flag set by the application bootstrap.
+        if hasattr(self, "_audit_chain_enabled_flag"):
+            return bool(self._audit_chain_enabled_flag)
+        # Fallback: nested under self.config["audit"] (when caller passes
+        # the full app config rather than just the database sub-dict).
+        audit_cfg = (self.config or {}).get("audit") or {}
+        return bool(audit_cfg.get("chain_enabled", False))
+
+    def set_audit_chain_enabled(self, enabled: bool) -> None:
+        """Toggle hash-chain wrapping on insert at runtime."""
+        self._audit_chain_enabled_flag = bool(enabled)
+
+    def _append_chain_row(self, event_id: int) -> Optional[dict]:
+        """Hash the just-inserted event row and append a chain entry.
+
+        Returns the inserted chain row dict, or None on failure (logged).
+        Chain integrity uses the *current* DB representation of the event
+        row, which is exactly what verification re-reads later — so any
+        post-insert UPDATE will break the chain.
+        """
+        try:
+            with self.get_cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM file_audit_events WHERE id = ?", (event_id,)
+                )
+                event_row = cur.fetchone()
+                if event_row is None:
+                    logger.warning("Chain skip: event_id %s not found", event_id)
+                    return None
+
+                cur.execute(
+                    "SELECT row_hash FROM audit_log_chain "
+                    "ORDER BY seq DESC LIMIT 1"
+                )
+                last = cur.fetchone()
+                prev_hash = last["row_hash"] if last else self._GENESIS_HASH
+
+                # Predict next seq (AUTOINCREMENT). We need it as part of
+                # the hash payload, so reserve via sqlite_sequence read +1
+                # — race-safe because this whole function runs under the
+                # cursor's transaction (single writer for SQLite).
+                cur.execute(
+                    "SELECT COALESCE(MAX(seq), 0) AS s FROM audit_log_chain"
+                )
+                next_seq = (cur.fetchone()["s"] or 0) + 1
+
+                canonical = self._canonical_event_json(event_row)
+                row_hash = self._row_hash(next_seq, event_id, prev_hash, canonical)
+
+                cur.execute(
+                    "INSERT INTO audit_log_chain (seq, event_id, prev_hash, row_hash) "
+                    "VALUES (?, ?, ?, ?)",
+                    (next_seq, event_id, prev_hash, row_hash),
+                )
+                return {
+                    "seq": next_seq,
+                    "event_id": event_id,
+                    "prev_hash": prev_hash,
+                    "row_hash": row_hash,
+                }
+        except Exception as e:
+            logger.warning("audit_log_chain append failed for event %s: %s",
+                           event_id, e)
+            return None
+
+    def insert_audit_event_chained(self, event_data: dict) -> Optional[int]:
+        """Insert an audit event and (if chain enabled) append a chain row.
+
+        ``event_data`` mirrors ``insert_audit_event`` kwargs:
+            source_id, event_time, event_type, username, file_path,
+            file_name, details, detected_by
+
+        When ``audit.chain_enabled`` is False this is identical to
+        ``insert_audit_event`` — same lastrowid, no chain row. Default off.
+        """
+        event_id = self.insert_audit_event(
+            source_id=event_data.get("source_id"),
+            event_time=event_data.get("event_time")
+            or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            event_type=event_data["event_type"],
+            username=event_data.get("username"),
+            file_path=event_data.get("file_path"),
+            file_name=event_data.get("file_name")
+            or (os.path.basename(event_data["file_path"])
+                if event_data.get("file_path") else None),
+            details=event_data.get("details"),
+            detected_by=event_data.get("detected_by", "watcher"),
+        )
+        if self._audit_chain_enabled() and event_id is not None:
+            self._append_chain_row(event_id)
+        return event_id
+
+    def verify_audit_chain(self, start_seq: int = 1,
+                           end_seq: Optional[int] = None) -> dict:
+        """Walk the chain and recompute hashes — returns first break, if any.
+
+        Returns:
+            {
+                verified: bool,
+                total: <rows scanned>,
+                broken_at: <seq of first bad row> | None,
+                broken_reason: <human string> | None,
+            }
+        """
+        with self.get_cursor() as cur:
+            if end_seq is not None:
+                cur.execute(
+                    "SELECT seq, event_id, prev_hash, row_hash "
+                    "FROM audit_log_chain WHERE seq >= ? AND seq <= ? "
+                    "ORDER BY seq ASC",
+                    (start_seq, end_seq),
+                )
+            else:
+                cur.execute(
+                    "SELECT seq, event_id, prev_hash, row_hash "
+                    "FROM audit_log_chain WHERE seq >= ? "
+                    "ORDER BY seq ASC",
+                    (start_seq,),
+                )
+            chain_rows = list(cur.fetchall())
+
+            total = len(chain_rows)
+            if total == 0:
+                return {"verified": True, "total": 0,
+                        "broken_at": None, "broken_reason": None}
+
+            # If we are not starting from seq=1 we must seed prev_hash from
+            # the row just before start_seq. For start_seq=1 the genesis
+            # zero-hash applies.
+            if start_seq <= 1:
+                expected_prev = self._GENESIS_HASH
+            else:
+                cur.execute(
+                    "SELECT row_hash FROM audit_log_chain "
+                    "WHERE seq = ?", (start_seq - 1,)
+                )
+                prev_row = cur.fetchone()
+                expected_prev = prev_row["row_hash"] if prev_row else self._GENESIS_HASH
+
+            for chain in chain_rows:
+                seq = chain["seq"]
+                event_id = chain["event_id"]
+                stored_prev = chain["prev_hash"]
+                stored_hash = chain["row_hash"]
+
+                if stored_prev != expected_prev:
+                    return {
+                        "verified": False, "total": total,
+                        "broken_at": seq,
+                        "broken_reason": (
+                            f"prev_hash mismatch at seq {seq}: "
+                            f"expected {expected_prev[:12]}.., "
+                            f"got {stored_prev[:12]}.."
+                        ),
+                    }
+
+                cur.execute(
+                    "SELECT * FROM file_audit_events WHERE id = ?", (event_id,)
+                )
+                ev = cur.fetchone()
+                if ev is None:
+                    return {
+                        "verified": False, "total": total,
+                        "broken_at": seq,
+                        "broken_reason": f"event_id {event_id} missing from file_audit_events",
+                    }
+                canonical = self._canonical_event_json(ev)
+                recomputed = self._row_hash(seq, event_id, stored_prev, canonical)
+                if recomputed != stored_hash:
+                    return {
+                        "verified": False, "total": total,
+                        "broken_at": seq,
+                        "broken_reason": (
+                            f"row_hash mismatch at seq {seq} "
+                            f"(event {event_id}): event row tampered"
+                        ),
+                    }
+                expected_prev = stored_hash
+
+        return {"verified": True, "total": total,
+                "broken_at": None, "broken_reason": None}
+
+    def get_audit_chain_page(self, page: int = 1, page_size: int = 100) -> dict:
+        """Paginated chain rows joined with events (newest seq first)."""
+        page = max(1, int(page))
+        page_size = max(1, min(1000, int(page_size)))
+        offset = (page - 1) * page_size
+        with self.get_cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM audit_log_chain")
+            total = cur.fetchone()["cnt"]
+            cur.execute(
+                """
+                SELECT c.seq, c.event_id, c.prev_hash, c.row_hash, c.signed_at,
+                       e.event_time, e.event_type, e.username,
+                       e.file_path, e.file_name, e.source_id, e.detected_by
+                FROM audit_log_chain c
+                LEFT JOIN file_audit_events e ON e.id = c.event_id
+                ORDER BY c.seq DESC
+                LIMIT ? OFFSET ?
+                """,
+                (page_size, offset),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": max(1, -(-total // page_size)),
+            "rows": rows,
+        }
+
+    def get_audit_chain_for_export(self, start_date: Optional[str] = None,
+                                    end_date: Optional[str] = None) -> list:
+        """Chain rows + joined event for WORM export, filtered by event_time."""
+        sql = (
+            "SELECT c.seq, c.event_id, c.prev_hash, c.row_hash, c.signed_at, "
+            "       e.event_time, e.event_type, e.username, e.file_path, "
+            "       e.file_name, e.source_id, e.detected_by, e.details "
+            "FROM audit_log_chain c "
+            "LEFT JOIN file_audit_events e ON e.id = c.event_id "
+        )
+        conds = []
+        params: list = []
+        if start_date:
+            conds.append("e.event_time >= ?")
+            params.append(start_date)
+        if end_date:
+            conds.append("e.event_time <= ?")
+            params.append(end_date)
+        if conds:
+            sql += "WHERE " + " AND ".join(conds) + " "
+        sql += "ORDER BY c.seq ASC"
+        with self.get_cursor() as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
 
     # ──────────────────────────────────────────────
     # Duplike Analiz

@@ -134,6 +134,7 @@ dashboard:
   host: "0.0.0.0"
   port: 8085
 
+<<<<<<< HEAD
 security:
   # Fidye yazilimi tespit motoru (#37). Watcher event akisini dinler,
   # asagidaki dort kuralla anomali yakalar ve opsiyonel olarak SMB
@@ -161,3 +162,23 @@ security:
       - "_ZZZZ_canary_DO_NOT_DELETE.txt"
     auto_kill_session: false           # opt-in: SMB oturumunu Close-SmbSession ile sonlandir
     notification_email: ""             # bos degilse bu adrese kritik uyari maili gider
+=======
+audit:
+  # Tamper-evident hash-chained audit log (issue #38).
+  # When chain_enabled=true, every audit event written via the
+  # chained variant also appends a row to audit_log_chain whose
+  # row_hash = SHA-256(seq | event_id | prev_hash | canonical(event)).
+  # Verification (GET /api/audit/verify) re-hashes the chain and
+  # detects any retroactive tampering of file_audit_events rows.
+  # Default: false (opt-in, no behaviour change).
+  chain_enabled: false
+  # WORM-storable JSONL exports — point this at a path you can later
+  # promote to write-once storage (S3 Object Lock / Azure Immutable /
+  # ZFS snapshot). Each export = one .jsonl file + optional .sig.
+  worm_export_dir: "data/audit_export"
+  # 7 years for HIPAA-style §164.312(b) audit-control retention.
+  worm_retention_days: 2555
+  # Optional Ed25519 PEM (or raw 32-byte) private key for detached
+  # signatures over the export's SHA-256. Empty = no signing.
+  signing_key_path: ""
+>>>>>>> 64a1ba5 (Tamper-evident audit log chain + WORM export (closes #38))

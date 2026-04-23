@@ -146,18 +146,27 @@ class FileWatcher:
 
     def _record_audit(self, event_type: str, fpath: str, owner: str = None):
         """Record file audit event in database AND fan out to the
-        ransomware detector if one is wired in."""
+        ransomware detector if one is wired in.
+
+        When ``audit.chain_enabled`` is True (issue #38), the chained
+        variant also appends a tamper-evident hash-chain row. With the
+        flag off this is identical to the original direct insert.
+        """
         now = datetime.now()
+        event = {
+            "source_id": self.source_id,
+            "event_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "event_type": event_type,
+            "username": owner,
+            "file_path": fpath,
+            "file_name": os.path.basename(fpath),
+            "detected_by": "watcher",
+        }
         try:
-            self.db.insert_audit_event(
-                source_id=self.source_id,
-                event_time=now.strftime("%Y-%m-%d %H:%M:%S"),
-                event_type=event_type,
-                username=owner,
-                file_path=fpath,
-                file_name=os.path.basename(fpath),
-                detected_by='watcher'
-            )
+            if hasattr(self.db, "insert_audit_event_chained"):
+                self.db.insert_audit_event_chained(event)
+            else:
+                self.db.insert_audit_event(**event)
         except Exception as e:
             logger.debug("Audit event error %s: %s", fpath[:60], e)
 

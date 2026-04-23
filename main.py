@@ -51,6 +51,10 @@ def cli(ctx, config):
     db_conf["_config_path"] = config
 
     app.db = Database(db_conf)
+    # Issue #38: opt-in tamper-evident audit chain. Default off → no behaviour change.
+    audit_cfg = app.config.get("audit", {}) or {}
+    if audit_cfg.get("chain_enabled", False):
+        app.db.set_audit_chain_enabled(True)
 
     # Check which command is being invoked
     invoked = ctx.invoked_subcommand

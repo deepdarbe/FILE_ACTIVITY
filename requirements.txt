@@ -40,3 +40,8 @@ pyarrow>=14.0
 # username -> email/display_name for activity detail + notifications.
 # Missing package -> ADLookup.available=False and feature silently disabled.
 ldap3>=2.9.1
+
+# Optional: cryptography>=41.0 for WORM signing (issue #38)
+# When installed AND audit.signing_key_path points at an Ed25519 private
+# key, AuditExporter writes a detached <file>.sig signature next to each
+# JSONL export. Missing package -> signing silently skipped.

@@ -44,6 +44,10 @@ class FileActivityService:
         setup_logging(self.config)
 
         self.db = Database(self.config.get("database", {}))
+        # Issue #38: opt-in tamper-evident audit chain (default off).
+        audit_cfg = self.config.get("audit", {}) or {}
+        if audit_cfg.get("chain_enabled", False):
+            self.db.set_audit_chain_enabled(True)
         self.db.connect()
 
         self.running = True
