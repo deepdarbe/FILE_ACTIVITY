@@ -212,6 +212,48 @@ Cmdlets:
 Override the dashboard URL with `Set-FileActivityBaseUrl 'http://other-host:8085'`
 or by setting `$env:FILEACTIVITY_BASE_URL` before importing the module.
 
+## MCP Server
+
+A Model Context Protocol server in `src/mcp_server/` exposes the same
+operations to MCP-aware agents (Claude Code, Claude Desktop, ...). It is
+a thin REST wrapper — every tool call is one HTTP request to a running
+dashboard — so all validation, audit logging and authorisation stay in
+the FastAPI layer.
+
+```bash
+# Install the optional MCP extras (mcp + httpx):
+pip install -r requirements-mcp.txt
+
+# Register with Claude Code:
+claude mcp add file-activity -- python -m src.mcp_server
+```
+
+15 tools across `scan_*`, `report_*`, `archive_*`, `hold_*`, `audit_*`,
+`pii_*`. Every tool that mutates state requires `confirm: true`; without
+it the server returns a "would call X with Y" preview.
+
+| Tool                  | Endpoint                                |
+|-----------------------|-----------------------------------------|
+| `scan_list_sources`   | `GET /api/sources`                      |
+| `scan_run`            | `POST /api/scan/{id}` *(write)*         |
+| `scan_status`         | `GET /api/scan/progress/{id}`           |
+| `report_summary`      | `GET /api/overview/{id}`                |
+| `report_duplicates`   | `GET /api/reports/duplicates/{id}`     |
+| `report_orphan_sids`  | `GET /api/security/orphan-sids/{id}`    |
+| `pii_list_findings`   | `GET /api/compliance/pii/findings`      |
+| `pii_subject_export`  | `GET /api/compliance/pii/subject`       |
+| `archive_dry_run`     | `POST /api/archive/dry-run`             |
+| `archive_run`         | `POST /api/archive/run` *(write)*       |
+| `hold_list_active`    | `GET /api/compliance/legal-holds/active`|
+| `hold_add`            | `POST /api/compliance/legal-holds` *(write)* |
+| `hold_release`        | `POST /api/compliance/legal-holds/{id}/release` *(write)* |
+| `audit_query`         | `GET /api/audit/events`                 |
+| `audit_verify_chain`  | `GET /api/audit/verify`                 |
+
+Configure with `FILEACTIVITY_BASE_URL` and (for production deployments
+behind an auth gateway) `FILEACTIVITY_API_KEY`. See `docs/mcp_server.md`
+for the full reference.
+
 ## Technology Stack
 
 | Layer | Technology |

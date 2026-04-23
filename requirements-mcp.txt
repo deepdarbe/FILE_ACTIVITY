@@ -1,0 +1,15 @@
+# file-activity-mcp — Model Context Protocol server (issue #65).
+#
+# Kept separate from requirements.txt so dashboard / scanner deployments
+# stay slim. Install only on hosts that need to expose FILE_ACTIVITY to
+# Claude Code or another MCP client:
+#
+#   pip install -r requirements.txt -r requirements-mcp.txt
+
+# Anthropic's official Python SDK for the Model Context Protocol.
+mcp>=1.0.0
+
+# Async HTTP client used by every MCP tool to call the local FastAPI
+# dashboard. Already an indirect dep via httpx, but pin it here so the
+# MCP server doesn't silently lose it if the dashboard stack changes.
+httpx>=0.27.0

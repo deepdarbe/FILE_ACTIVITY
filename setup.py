@@ -21,6 +21,17 @@ setup(
     entry_points={
         "console_scripts": [
             "file-activity=main:cli",
+            # Issue #65 — MCP server. Requires the optional `mcp` and
+            # `httpx` extras (see requirements-mcp.txt). Installed
+            # unconditionally because the package is small and missing
+            # deps fail loudly with a clear ImportError at first use.
+            "file-activity-mcp=src.mcp_server.server:main",
+        ],
+    },
+    extras_require={
+        "mcp": [
+            "mcp>=1.0.0",
+            "httpx>=0.27.0",
         ],
     },
 )
