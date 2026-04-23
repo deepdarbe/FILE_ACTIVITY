@@ -41,6 +41,26 @@ class Database:
         self.connected = False
         self._local = threading.local()
         self._lock = threading.Lock()
+        # Optional callback fired when verify_audit_chain returns
+        # verified=False. Wired by the dashboard / service container to
+        # forward integrity-break events to syslog/SIEM (issue #50).
+        self._audit_break_callback = None
+
+    def set_audit_break_callback(self, callback) -> None:
+        """Register a callback invoked on every audit chain verification
+        failure. Signature: ``callback(broken_seq: int, reason: str)``.
+        Exceptions in the callback are swallowed.
+        """
+        self._audit_break_callback = callback
+
+    def _notify_audit_break(self, broken_seq, reason: str) -> None:
+        cb = self._audit_break_callback
+        if cb is None:
+            return
+        try:
+            cb(broken_seq, reason or "")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Audit-break callback failed: %s", e)
 
     def _get_conn(self):
         """Thread-local baglanti al veya olustur."""
@@ -2003,14 +2023,16 @@ class Database:
                 stored_hash = chain["row_hash"]
 
                 if stored_prev != expected_prev:
+                    reason = (
+                        f"prev_hash mismatch at seq {seq}: "
+                        f"expected {expected_prev[:12]}.., "
+                        f"got {stored_prev[:12]}.."
+                    )
+                    self._notify_audit_break(seq, reason)
                     return {
                         "verified": False, "total": total,
                         "broken_at": seq,
-                        "broken_reason": (
-                            f"prev_hash mismatch at seq {seq}: "
-                            f"expected {expected_prev[:12]}.., "
-                            f"got {stored_prev[:12]}.."
-                        ),
+                        "broken_reason": reason,
                     }
 
                 cur.execute(
@@ -2018,21 +2040,25 @@ class Database:
                 )
                 ev = cur.fetchone()
                 if ev is None:
+                    reason = f"event_id {event_id} missing from file_audit_events"
+                    self._notify_audit_break(seq, reason)
                     return {
                         "verified": False, "total": total,
                         "broken_at": seq,
-                        "broken_reason": f"event_id {event_id} missing from file_audit_events",
+                        "broken_reason": reason,
                     }
                 canonical = self._canonical_event_json(ev)
                 recomputed = self._row_hash(seq, event_id, stored_prev, canonical)
                 if recomputed != stored_hash:
+                    reason = (
+                        f"row_hash mismatch at seq {seq} "
+                        f"(event {event_id}): event row tampered"
+                    )
+                    self._notify_audit_break(seq, reason)
                     return {
                         "verified": False, "total": total,
                         "broken_at": seq,
-                        "broken_reason": (
-                            f"row_hash mismatch at seq {seq} "
-                            f"(event {event_id}): event row tampered"
-                        ),
+                        "broken_reason": reason,
                     }
                 expected_prev = stored_hash
 

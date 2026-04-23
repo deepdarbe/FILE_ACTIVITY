@@ -130,6 +130,11 @@ class RansomwareDetector:
         # a real SMTP stack.
         self.email_notifier = None
 
+        # External emitter (issue #50). Optional callback invoked whenever a
+        # rule fires — the dashboard wires a SyslogForwarder.emit_ransomware_alert
+        # here. Always called best-effort; never raised.
+        self._external_emitter = None
+
         # Rolling event buffers: (source_id, username) -> deque[(timestamp, path)]
         self._renames: dict = defaultdict(deque)
         self._deletes: dict = defaultdict(deque)
@@ -145,6 +150,15 @@ class RansomwareDetector:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def set_external_emitter(self, callback) -> None:
+        """Register an external alert sink (e.g. SyslogForwarder).
+
+        The callback receives the alert dict and returns a truthy value on
+        success. Exceptions are swallowed so a broken sink can never mask
+        the alert itself.
+        """
+        self._external_emitter = callback
 
     def consume_event(self, event: dict) -> Optional[dict]:
         """Inspect a single file event. Returns the alert dict if a rule fired.
@@ -423,6 +437,14 @@ class RansomwareDetector:
             self._maybe_send_email(alert)
         except Exception as e:
             logger.warning("Ransomware alert email failed: %s", e)
+
+        # External emitter (#50): forward to syslog/SIEM if wired. Failures
+        # here must never mask the in-process alert.
+        if self._external_emitter is not None:
+            try:
+                self._external_emitter(alert)
+            except Exception as e:
+                logger.warning("Ransomware alert external emitter failed: %s", e)
 
         return alert
 

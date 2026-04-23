@@ -161,6 +161,29 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         logger.warning("RansomwareDetector init failed: %s", e)
         app.state.ransomware = None
 
+    # Syslog/CEF forwarder (#50) — bridges security events to a downstream
+    # SIEM (Splunk / Elastic / Sentinel / QRadar). Always constructed; it
+    # is a no-op when disabled in config.
+    try:
+        from src.integrations.syslog_forwarder import SyslogForwarder
+        syslog = SyslogForwarder(config)
+        app.state.syslog = syslog
+        # Wire detector → syslog if both are available.
+        if app.state.ransomware is not None and syslog.available:
+            app.state.ransomware.set_external_emitter(
+                syslog.emit_ransomware_alert
+            )
+        # Wire audit-chain integrity break → syslog.
+        if syslog.available:
+            try:
+                db.set_audit_break_callback(syslog.emit_audit_break)
+            except AttributeError:
+                # Older Database without the hook — just skip.
+                pass
+    except Exception as e:  # pragma: no cover - defensive only
+        logger.warning("SyslogForwarder init failed: %s", e)
+        app.state.syslog = None
+
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -2569,12 +2592,6 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
 
     # ─────────────────────────────────────────────────────────────────
     # NTFS ACL / effective-permissions analyzer (#49)
-    #
-    # Lazy-construct the analyzer so a missing/disabled `security`
-    # config block doesn't break the rest of the dashboard. Endpoints
-    # all degrade gracefully when running on Linux: the live
-    # `get_effective_acl` returns 501, but the DB-backed queries still
-    # work against any snapshot rows present.
     # ─────────────────────────────────────────────────────────────────
 
     def _get_acl_analyzer():
@@ -2604,7 +2621,6 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     @app.get("/api/security/acl/trustee/{sid}/paths")
     async def acl_paths_for_trustee(sid: str,
                                     limit: int = Query(100, ge=1, le=10000)):
-        """Paths granting access to a SID, from the latest snapshot."""
         analyzer = _get_acl_analyzer()
         return {
             "trustee_sid": sid,
@@ -2615,7 +2631,6 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     @app.get("/api/security/acl/sprawl")
     async def acl_sprawl(scan_id: Optional[int] = None,
                          severity_threshold: Optional[int] = None):
-        """Top over-permissioned trustees (groups + users) for a scan."""
         analyzer = _get_acl_analyzer()
         thr = severity_threshold if severity_threshold is not None else analyzer.sprawl_threshold_mask
         return {
@@ -2628,36 +2643,21 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     @app.post("/api/security/acl/scan/{source_id}")
     async def acl_snapshot(source_id: int,
                            max_files: Optional[int] = None):
-        """Snapshot DACLs for the latest completed scan of `source_id`.
-
-        v1: synchronous in a worker thread, returns once done. Heavy on
-        large shares — consider gating with `max_files` while testing.
-        """
         analyzer = _get_acl_analyzer()
         if not analyzer.is_supported():
             raise HTTPException(501, "ACL snapshot requires Windows + pywin32")
-
         src = _get_source(db, source_id)
-
-        # Pick the most recent scan_run. Prefer completed; fall back to
-        # whatever exists so an operator can re-run after a partial scan.
         with db.get_cursor() as cur:
             cur.execute(
                 """SELECT id FROM scan_runs WHERE source_id=?
-                   ORDER BY
-                     CASE WHEN status='completed' THEN 0 ELSE 1 END,
-                     started_at DESC
-                   LIMIT 1""",
+                   ORDER BY CASE WHEN status='completed' THEN 0 ELSE 1 END,
+                            started_at DESC LIMIT 1""",
                 (src.id,),
             )
             row = cur.fetchone()
         if not row:
             raise HTTPException(409, f"No scan_runs found for source {source_id}")
         scan_id = row["id"]
-
-        # Run the walk in a worker thread so the asyncio loop stays
-        # responsive. We block on it to keep the v1 contract simple
-        # (returns once snapshot is durable).
         import asyncio
 
         def _do_snapshot():
@@ -2667,5 +2667,34 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         result["source_id"] = src.id
         result["scan_id"] = scan_id
         return result
+
+    # ─────────────────────────────────────────────────────────────────
+    # Syslog/CEF integration (#50)
+    # ─────────────────────────────────────────────────────────────────
+
+    @app.get("/api/integrations/syslog/status")
+    async def syslog_status():
+        forwarder = getattr(app.state, "syslog", None)
+        if forwarder is None:
+            return {"available": False, "configured": False,
+                    "reason": "forwarder_not_initialized"}
+        return forwarder.health()
+
+    @app.post("/api/integrations/syslog/test")
+    async def syslog_test():
+        forwarder = getattr(app.state, "syslog", None)
+        if forwarder is None:
+            return {"sent": False, "error": "forwarder_not_initialized"}
+        if not forwarder.available:
+            return {"sent": False, "error": "forwarder_disabled_or_unconfigured"}
+        ok = forwarder.emit(
+            "info",
+            "test_event",
+            {"msg": "FILE ACTIVITY syslog test event",
+             "source": "dashboard", "version": APP_VERSION},
+        )
+        if not ok:
+            return {"sent": False, "error": forwarder.health().get("last_error")}
+        return {"sent": True}
 
     return app
