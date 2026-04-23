@@ -336,6 +336,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     async def report_frequency(source_id: int, days: Optional[str] = None):
         from src.analyzer.report_generator import ReportGenerator
         src = _get_source(db, source_id)
+        # Once v2 summary_json'daki age_buckets'a bak — scanned_files'i
+        # hic tarama. Custom days verildiyse klasik hesaplamaya dus.
+        if not days:
+            scan_id = db.get_latest_scan_id(src.id, include_running=True)
+            if scan_id:
+                summary = db.get_scan_summary(scan_id)
+                if summary and isinstance(summary, dict) and "age_buckets" in summary:
+                    from datetime import datetime
+                    return {
+                        "source": {"id": source_id, "name": src.name},
+                        "scan_id": scan_id,
+                        "age_buckets": summary.get("age_buckets"),
+                        "frequency": {
+                            "age_buckets": summary.get("age_buckets"),
+                            "total_files": summary.get("total_files"),
+                            "total_size": summary.get("total_size"),
+                        },
+                        "from_summary": True,
+                        "generated_at": datetime.now().isoformat(),
+                    }
         gen = ReportGenerator(db, config)
         custom = [int(d) for d in days.split(",")] if days else None
         return gen.generate_frequency_report(src.id, custom)
