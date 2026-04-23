@@ -504,6 +504,40 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ao_status ON archive_operations(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ao_started ON archive_operations(started_at)")
 
+        # Content-hash duplicate detection (issue #35).
+        # Tiered pipeline persistuje: size -> prefix hash -> full SHA-256.
+        # duplicate_hash_groups = gercek icerik kopyalarinin ozeti,
+        # duplicate_hash_members = o grubun dosya listesi.
+        # Mevcut `duplicate_groups` (file_name+file_size) hizli pre-filter
+        # olarak korunur, bu tablo icerik-tabanli kesin eslesme saglar.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS duplicate_hash_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_count INTEGER NOT NULL,
+                waste_size INTEGER NOT NULL,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(scan_id, content_hash, file_size)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS duplicate_hash_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL REFERENCES duplicate_hash_groups(id) ON DELETE CASCADE,
+                file_path TEXT NOT NULL,
+                file_id INTEGER
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dhg_scan_waste "
+            "ON duplicate_hash_groups(scan_id, waste_size DESC)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dhm_group ON duplicate_hash_members(group_id)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(
