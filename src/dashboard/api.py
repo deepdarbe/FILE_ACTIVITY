@@ -2567,4 +2567,105 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "notification_email": det.notification_email or None,
         }
 
+    # ─────────────────────────────────────────────────────────────────
+    # NTFS ACL / effective-permissions analyzer (#49)
+    #
+    # Lazy-construct the analyzer so a missing/disabled `security`
+    # config block doesn't break the rest of the dashboard. Endpoints
+    # all degrade gracefully when running on Linux: the live
+    # `get_effective_acl` returns 501, but the DB-backed queries still
+    # work against any snapshot rows present.
+    # ─────────────────────────────────────────────────────────────────
+
+    def _get_acl_analyzer():
+        existing = getattr(app.state, "acl_analyzer", None)
+        if existing is not None:
+            return existing
+        from src.security.acl_analyzer import AclAnalyzer
+        analyzer = AclAnalyzer(db, config, ad_lookup=ad_lookup)
+        app.state.acl_analyzer = analyzer
+        return analyzer
+
+    @app.get("/api/security/acl")
+    async def get_effective_acl(path: str = Query(..., min_length=1)):
+        """Live effective DACL read for one path. Windows-only."""
+        analyzer = _get_acl_analyzer()
+        if not analyzer.is_supported():
+            raise HTTPException(501, "ACL live read requires Windows + pywin32")
+        try:
+            return analyzer.get_effective_acl(path)
+        except FileNotFoundError as e:
+            raise HTTPException(404, f"Path not found: {path}") from e
+        except PermissionError as e:
+            raise HTTPException(403, f"Access denied reading ACL: {e}") from e
+        except Exception as e:
+            raise HTTPException(500, f"ACL read failed: {e}") from e
+
+    @app.get("/api/security/acl/trustee/{sid}/paths")
+    async def acl_paths_for_trustee(sid: str,
+                                    limit: int = Query(100, ge=1, le=10000)):
+        """Paths granting access to a SID, from the latest snapshot."""
+        analyzer = _get_acl_analyzer()
+        return {
+            "trustee_sid": sid,
+            "limit": limit,
+            "paths": analyzer.find_paths_for_trustee(sid, limit=limit),
+        }
+
+    @app.get("/api/security/acl/sprawl")
+    async def acl_sprawl(scan_id: Optional[int] = None,
+                         severity_threshold: Optional[int] = None):
+        """Top over-permissioned trustees (groups + users) for a scan."""
+        analyzer = _get_acl_analyzer()
+        thr = severity_threshold if severity_threshold is not None else analyzer.sprawl_threshold_mask
+        return {
+            "scan_id": scan_id,
+            "severity_threshold": int(thr),
+            "trustees": analyzer.detect_sprawl(scan_id=scan_id,
+                                                severity_threshold=int(thr)),
+        }
+
+    @app.post("/api/security/acl/scan/{source_id}")
+    async def acl_snapshot(source_id: int,
+                           max_files: Optional[int] = None):
+        """Snapshot DACLs for the latest completed scan of `source_id`.
+
+        v1: synchronous in a worker thread, returns once done. Heavy on
+        large shares — consider gating with `max_files` while testing.
+        """
+        analyzer = _get_acl_analyzer()
+        if not analyzer.is_supported():
+            raise HTTPException(501, "ACL snapshot requires Windows + pywin32")
+
+        src = _get_source(db, source_id)
+
+        # Pick the most recent scan_run. Prefer completed; fall back to
+        # whatever exists so an operator can re-run after a partial scan.
+        with db.get_cursor() as cur:
+            cur.execute(
+                """SELECT id FROM scan_runs WHERE source_id=?
+                   ORDER BY
+                     CASE WHEN status='completed' THEN 0 ELSE 1 END,
+                     started_at DESC
+                   LIMIT 1""",
+                (src.id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(409, f"No scan_runs found for source {source_id}")
+        scan_id = row["id"]
+
+        # Run the walk in a worker thread so the asyncio loop stays
+        # responsive. We block on it to keep the v1 contract simple
+        # (returns once snapshot is durable).
+        import asyncio
+
+        def _do_snapshot():
+            return analyzer.snapshot_source(src.id, scan_id, max_files=max_files)
+
+        result = await asyncio.get_event_loop().run_in_executor(None, _do_snapshot)
+        result["source_id"] = src.id
+        result["scan_id"] = scan_id
+        return result
+
     return app

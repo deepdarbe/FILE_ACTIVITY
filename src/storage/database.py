@@ -598,6 +598,28 @@ class Database:
             "ON ransomware_alerts(triggered_at DESC)"
         )
 
+        # NTFS ACL snapshots (#49). Per-file DACL rows captured during a
+        # scan; one row per ACE so the dashboard can answer "where does
+        # this trustee have access?" and "which trustees are
+        # over-permissioned?" without re-walking the filesystem.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS file_acl_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER REFERENCES scan_runs(id) ON DELETE CASCADE,
+                file_path TEXT NOT NULL,
+                trustee_sid TEXT NOT NULL,
+                trustee_name TEXT,
+                permissions_mask INTEGER,
+                permission_name TEXT,
+                is_inherited INTEGER DEFAULT 0,
+                ace_type TEXT,
+                recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_acl_path ON file_acl_snapshots(file_path)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_acl_trustee ON file_acl_snapshots(trustee_sid)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_acl_scan ON file_acl_snapshots(scan_id)")
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(
