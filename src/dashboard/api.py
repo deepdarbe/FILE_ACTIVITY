@@ -101,7 +101,14 @@ def _read_version() -> str:
     Sürüm tek bir dosyada yasar (repo kok dizininde `VERSION`). Dashboard
     ve FastAPI title'i bu tek kaynaktan beslenir. Dosya yoksa 'unknown'
     doner — hardcoded bir yedek yok ki yanlis bir deger yayilmasin.
+
+    Eger `.git/HEAD` bulunursa commit SHA'nin ilk 7 karakteri ekte
+    gorunur (ornek: `1.8.0-dev+a1b2c3d`). Boylece VERSION dosyasi
+    ayni kalsa bile kullanici gercek bir update olup olmadigini
+    gorsel olarak ayirt edebilir. Setup-source.ps1 ZIP ile kurulum
+    yaptiginda .git yoktur, o durumda sadece VERSION stringi doner.
     """
+    base = "unknown"
     for candidate in (
         os.path.join(os.path.dirname(__file__), "..", "..", "VERSION"),
         os.path.join(os.getcwd(), "VERSION"),
@@ -110,10 +117,48 @@ def _read_version() -> str:
             with open(candidate, "r", encoding="utf-8") as f:
                 v = f.read().strip()
                 if v:
-                    return v
+                    base = v
+                    break
         except (OSError, IOError):
             continue
-    return "unknown"
+    # Commit SHA eklemesi — .git varsa + ZIP'le gelen kurulumda olmayacak,
+    # bu yuzden hata sessizce yutulur. Zip kurulumlarinda setup-source.ps1
+    # indirme sirasinda "COMMIT_SHA" dosyasi yazabilir — ayni dizinde
+    # bunun da varligini kontrol edelim.
+    for candidate in (
+        os.path.join(os.path.dirname(__file__), "..", "..", "COMMIT_SHA"),
+        os.path.join(os.getcwd(), "COMMIT_SHA"),
+    ):
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                sha = f.read().strip()[:7]
+                if sha and sha.isalnum():
+                    return f"{base}+{sha}"
+        except (OSError, IOError):
+            continue
+    try:
+        head_candidates = (
+            os.path.join(os.path.dirname(__file__), "..", "..", ".git", "HEAD"),
+            os.path.join(os.getcwd(), ".git", "HEAD"),
+        )
+        for git_head in head_candidates:
+            if not os.path.exists(git_head):
+                continue
+            with open(git_head, "r", encoding="utf-8") as f:
+                head = f.read().strip()
+            git_dir = os.path.dirname(git_head)
+            if head.startswith("ref: "):
+                ref_path = os.path.join(git_dir, head[5:])
+                if os.path.exists(ref_path):
+                    with open(ref_path, "r", encoding="utf-8") as f:
+                        sha = f.read().strip()[:7]
+                        if sha:
+                            return f"{base}+{sha}"
+            elif len(head) >= 7:
+                return f"{base}+{head[:7]}"
+    except (OSError, IOError):
+        pass
+    return base
 
 
 APP_VERSION = _read_version()

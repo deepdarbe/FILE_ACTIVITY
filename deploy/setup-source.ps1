@@ -172,6 +172,22 @@ Start-Sleep -Seconds 1
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 $srcRoot = (Get-ChildItem $extractPath -Directory | Select-Object -First 1).FullName
 
+# COMMIT_SHA yaz — GitHub API'den master head SHA al ve srcRoot'a dusur.
+# Bu sayede VERSION ayni kalsa bile dashboard'da gercek commit gorunur
+# (ornek: 1.8.0-dev+a1b2c3d). API unavailable ise sessizce atla.
+try {
+    $apiUrl = "https://api.github.com/repos/$RepoOwner/$RepoName/commits/$Branch"
+    $headSha = (Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -Headers @{
+        "User-Agent" = "file-activity-installer"
+    }).sha
+    if ($headSha) {
+        Set-Content -Path "$srcRoot\COMMIT_SHA" -Value $headSha.Substring(0, 7) -NoNewline
+        Write-Host "  [OK] Commit: $($headSha.Substring(0, 7))" -ForegroundColor DarkGray
+    }
+} catch {
+    # Kurumsal ag GitHub API'sine izin vermeyebilir — sorun degil
+}
+
 # Korumali dizinler (guncelleme senaryosunda data kaybolmasin)
 $preserveDirs = @("data", "logs", "reports", ".venv")
 $existingConfig = Test-Path "$InstallDir\config\config.yaml"
