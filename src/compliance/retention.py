@@ -41,6 +41,9 @@ class RetentionEngine:
     def __init__(self, db, config: dict, archive_engine=None):
         self.db = db
         self.archive_engine = archive_engine
+        # Issue #77: keep the full config so we can drive the backup
+        # snapshot hook from ``apply()``.
+        self._full_config = config or {}
         cfg = ((config or {}).get("compliance", {}) or {}).get("retention", {}) or {}
         self.enabled = bool(cfg.get("enabled", False))
         # Default destination if a policy doesn't carry its own (rare).
@@ -236,6 +239,11 @@ class RetentionEngine:
                 "elapsed_seconds": round(elapsed, 3),
             }
 
+        # Issue #77: pre-apply SQLite snapshot (real run only). Failure
+        # logs ERROR but never aborts the retention sweep — we never
+        # want backup-system trouble to block GDPR-driven purges.
+        self._maybe_pre_apply_snapshot(reason=f"pre-retention:{policy_name}")
+
         # Real run.
         if action == "archive":
             if self.archive_engine is None:
@@ -295,6 +303,35 @@ class RetentionEngine:
             "dry_run": False,
             "elapsed_seconds": round(elapsed, 3),
         }
+
+    # ──────────────────────────────────────────────
+    # Issue #77: pre-apply SQLite backup hook
+    # ──────────────────────────────────────────────
+
+    def _maybe_pre_apply_snapshot(self, reason: str) -> None:
+        """Take a SQLite snapshot before mutating retention runs.
+
+        Honours ``config.backup.snapshot_on_apply`` (default True). All
+        failures are caught + logged so retention proceeds on best
+        effort.
+        """
+        backup_cfg = (self._full_config or {}).get("backup") or {}
+        if not backup_cfg.get("snapshot_on_apply", True):
+            return
+        if not backup_cfg.get("enabled", True):
+            return
+        try:
+            db_path = (
+                (self._full_config or {}).get("database", {}).get("path")
+                or "data/file_activity.db"
+            )
+            from src.storage.backup_manager import BackupManager
+            BackupManager(db_path, self._full_config).snapshot(reason=reason)
+        except Exception as e:
+            logger.error(
+                "pre-retention snapshot failed (%s) — continuing: %s",
+                reason, e, exc_info=True,
+            )
 
     # ──────────────────────────────────────────────
     # Attestation
