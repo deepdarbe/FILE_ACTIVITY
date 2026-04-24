@@ -2682,19 +2682,62 @@ function exportNamingReport() {
 }
 
 function openFolder(path) {
-    // Backend'e dizin acma istegi gonder
-    api('/system/open-folder', {
+    // Issue #82 (Bug 1): Dashboard genellikle bir dosya sunucusunda calisir;
+    // kullanici kendi PC'sinden tarayici ile acar. Backend artik istemcinin
+    // uzak olup olmadigini tespit edip "remote_client" modunu dondurur.
+    // Frontend her iki durumda da once yolu panoya kopyalar (best-effort),
+    // boylece kullanici kendi Explorer'ina yapistirabilsin.
+
+    // Panoya kopyalama yardimci fonksiyonu — API yoksa veya izin reddedilirse
+    // kullaniciya prompt ile secilebilir metin gosterir.
+    function copyPathFallback(p) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(p).catch(() => {
+                    window.prompt('Yolu kopyalamak icin Ctrl+C yapin:', p);
+                });
+                return;
+            }
+        } catch (_) { /* noop, prompt fallback below */ }
+        // Clipboard API yok (http baglam vb.) — manuel kopya icin prompt goster.
+        window.prompt('Yolu kopyalamak icin Ctrl+C yapin:', p);
+    }
+
+    // 1) Her zaman once panoya kopyalamayi dene (await etmeden).
+    copyPathFallback(path);
+
+    // 2) Endpoint'i cagir. api() helper 4xx/5xx'te throw eder — burada manuel
+    // fetch kullaniyoruz ki "remote_client" (200 + success:false) durumunu
+    // hatasiz isleyebilelim.
+    fetch(API + '/system/open-folder', {
         method: 'POST',
+        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ path: path })
-    }).then(() => {
-        notify('Dizin aciliyor: ' + path, 'info');
-    }).catch(() => {
-        // Fallback: yolu kopyala
-        navigator.clipboard?.writeText(path).then(() => {
+    }).then(async (r) => {
+        if (!r.ok) {
+            let detail = '';
+            try { const e = await r.json(); detail = e.detail || ''; } catch (_) {}
+            notify('Dizin acilamadi (' + r.status + (detail ? ': ' + detail : '') + '). Yol panoya kopyalandi: ' + path, 'error');
+            return;
+        }
+        const data = await r.json().catch(() => ({}));
+        if (data && data.success === true && data.mode === 'native') {
+            notify('Explorer acildi: ' + path, 'success');
+        } else if (data && data.success === false && data.mode === 'remote_client') {
+            // Uzak istemci: daha gorunur ve uzun sureli bildirim.
+            const el = document.createElement('div');
+            el.className = 'notification warning';
+            el.innerHTML = `<span>⚠️</span> Yol panoya kopyalandi. Kendi Explorer'inda yapistirin: ${path}`;
+            el.onclick = () => el.remove();
+            document.getElementById('notifications').appendChild(el);
+            setTimeout(() => el.remove(), 12000);
+        } else {
+            // Beklenmeyen sekil — yine de yol kullaniciya gosterilsin.
             notify('Yol panoya kopyalandi: ' + path, 'info');
-        }).catch(() => {
-            notify('Dizin yolu: ' + path, 'info');
-        });
+        }
+    }).catch(() => {
+        // Ag hatasi / fetch basarisiz — pano fallback'i zaten tetiklenmisti.
+        notify('Sunucuya ulasilamadi. Yol panoya kopyalandi: ' + path, 'error');
     });
 }
 

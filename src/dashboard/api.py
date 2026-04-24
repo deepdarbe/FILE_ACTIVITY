@@ -27,6 +27,69 @@ _export_lock = threading.Lock()
 logger = logging.getLogger("file_activity.dashboard")
 
 
+# --- Issue #82 (Bug 1): /api/system/open-folder dual-behaviour helper ---
+#
+# The dashboard is typically served from a Windows file server while users
+# browse it from their own workstations. Calling `subprocess.Popen(["explorer",
+# ...])` server-side opens a window on the *server*, which is invisible to the
+# remote user and makes the "Konuma Git" buttons look broken.
+#
+# This helper implements two modes:
+#   * Local client (127.0.0.1 / ::1 / localhost): spawn Explorer natively and
+#     return {"success": True, "mode": "native"}.
+#   * Remote client: do NOT touch subprocess. Return HTTP 200 with
+#     {"success": False, "mode": "remote_client", ...} so the frontend can
+#     copy the path to the user's clipboard and surface a friendly hint.
+#
+# Path resolution (`os.path.realpath(os.path.normpath(...))`) and the
+# `shell=False` argv-list Popen form are preserved for security. Missing paths
+# still produce HTTP 404 via HTTPException.
+
+_LOCAL_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def open_folder_impl(body: dict, client_host: str, popen=None):
+    """Run the open-folder decision logic.
+
+    Pure-ish helper shared by the HTTP endpoint and the unit tests. Returns
+    the JSON-serialisable response dict on success, or raises HTTPException
+    for invalid input / missing paths. ``popen`` lets tests inject a stub in
+    place of ``subprocess.Popen``.
+    """
+    if popen is None:
+        import subprocess
+        popen = subprocess.Popen
+
+    folder = body.get("path", "") if isinstance(body, dict) else ""
+    if not folder or not isinstance(folder, str):
+        raise HTTPException(400, "path gerekli")
+
+    # Guvenlik: normalize + gercek yol cozumleme (symlink/junction eskape koruma)
+    folder = os.path.realpath(os.path.normpath(folder))
+    if not (os.path.isdir(folder) or os.path.isfile(folder)):
+        raise HTTPException(404, f"Dizin bulunamadi: {folder}")
+
+    is_local = client_host in _LOCAL_CLIENT_HOSTS
+    if not is_local:
+        return {
+            "success": False,
+            "mode": "remote_client",
+            "path": folder,
+            "hint": (
+                "Explorer cannot be opened on the server for a remote "
+                "client. Use the copied path on your own machine."
+            ),
+        }
+
+    # Yerel istemci: dosya/dizine gore Explorer'i acar.
+    # shell=False ile argv listesi kullanilarak komut enjeksiyonu onlenir.
+    if os.path.isdir(folder):
+        popen(["explorer", folder], shell=False)
+    else:  # os.path.isfile(folder)
+        popen(["explorer", "/select,", folder], shell=False)
+    return {"success": True, "mode": "native", "path": folder}
+
+
 # --- Pydantic Models ---
 
 class SourceCreate(BaseModel):
@@ -1864,23 +1927,10 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
 
     @app.post("/api/system/open-folder")
     async def open_folder(request: Request):
-        """Dizini Windows Explorer'da ac."""
-        import subprocess
+        """Dizini Windows Explorer'da ac (yalnizca yerel istemci icin)."""
         body = await request.json()
-        folder = body.get("path", "")
-        if not folder or not isinstance(folder, str):
-            raise HTTPException(400, "path gerekli")
-        # Guvenlik: normalize + gercek yol cozumleme (symlink/junction eskape koruma)
-        folder = os.path.realpath(os.path.normpath(folder))
-        if os.path.isdir(folder):
-            # shell=False ile argv listesi kullanilarak komut enjeksiyonu onlenir
-            subprocess.Popen(["explorer", folder], shell=False)
-            return {"success": True, "path": folder}
-        elif os.path.isfile(folder):
-            subprocess.Popen(["explorer", "/select,", folder], shell=False)
-            return {"success": True, "path": folder}
-        else:
-            raise HTTPException(404, f"Dizin bulunamadi: {folder}")
+        client_host = (request.client.host if request.client else "")
+        return open_folder_impl(body, client_host)
 
     @app.get("/api/system/health")
     async def health():
