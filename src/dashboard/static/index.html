@@ -294,6 +294,12 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('insights')"><span class="icon">🧠</span> <span>AI Insights</span></div>
     </div>
     <div class="nav-section">
+        <div class="nav-label">Guvenlik</div>
+        <div class="nav-item" onclick="showPage('orphan-sids')"><span class="icon">👤</span> <span>Yetim SID'ler</span></div>
+        <div class="nav-item" onclick="showPage('ransomware')"><span class="icon">🛡️</span> <span>Ransomware Uyarilari</span></div>
+        <div class="nav-item" onclick="showPage('acl')"><span class="icon">🔐</span> <span>ACL Analizi</span></div>
+    </div>
+    <div class="nav-section">
         <div class="nav-label">Islemler</div>
         <div class="nav-item" onclick="showPage('archive')"><span class="icon">🗃️</span> <span>Arsivleme</span></div>
         <div class="nav-item" onclick="showPage('archive-history')"><span class="icon">📜</span> <span>Arsiv Gecmisi</span></div>
@@ -805,6 +811,107 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     </div>
 </div>
 
+<!-- ============ GUVENLIK > YETIM SID'LER (issue #81) ============ -->
+<div class="page" id="page-orphan-sids">
+    <div class="page-header">
+        <div>
+            <h2>Yetim SID'ler</h2>
+            <div class="desc">Guvenlik &rsaquo; AD'de cozulemeyen dosya sahipleri (silinmis kullanicilar / servis hesaplari)</div>
+        </div>
+        <div class="actions">
+            <select id="orphan-sids-source" onchange="loadOrphanSids()" style="width:200px">
+                <option value="">Kaynak secin...</option>
+            </select>
+            <button class="btn btn-outline" id="orphan-sids-xlsx-btn" onclick="exportOrphanSidsXlsx(event)" style="display:none">Excel Export</button>
+            <button class="btn btn-outline" id="orphan-sids-csv-btn" onclick="exportOrphanSidsCsv(event)" style="display:none">CSV Export</button>
+            <button class="btn btn-primary" id="orphan-sids-reassign-btn" onclick="openOrphanReassignModal()" style="display:none">Yeniden Atama...</button>
+        </div>
+    </div>
+    <div id="orphan-sids-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);color:var(--warning);font-size:13px"></div>
+    <div class="cards" id="orphan-sids-summary"></div>
+    <div class="panel" style="margin-top:20px">
+        <h3 class="panel-title">Yetim SID Listesi</h3>
+        <div id="orphan-sids-container"></div>
+    </div>
+</div>
+
+<!-- ============ GUVENLIK > RANSOMWARE UYARILARI (issue #81) ============ -->
+<div class="page" id="page-ransomware">
+    <div class="page-header">
+        <div>
+            <h2>Ransomware Uyarilari</h2>
+            <div class="desc">Guvenlik &rsaquo; Tetiklenen kurallar, zaman cizelgesi ve onaylama</div>
+        </div>
+        <div class="actions">
+            <select id="ransomware-window" onchange="loadRansomwareAlerts()" style="width:170px">
+                <option value="60">Son 1 saat</option>
+                <option value="360">Son 6 saat</option>
+                <option value="1440" selected>Son 24 saat</option>
+                <option value="10080">Son 7 gun</option>
+            </select>
+            <button class="btn btn-outline" onclick="exportRansomwareXlsx(event)">Excel Export</button>
+            <button class="btn btn-warning" onclick="acknowledgeAllRansomware(event)">Tumunu Acknowledge</button>
+        </div>
+    </div>
+    <div id="ransomware-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);color:var(--warning);font-size:13px"></div>
+    <div class="cards" id="ransomware-summary"></div>
+    <div class="panel" style="margin-top:20px">
+        <h3 class="panel-title">Uyari Akisi</h3>
+        <div id="ransomware-container"></div>
+    </div>
+</div>
+
+<!-- ============ GUVENLIK > ACL ANALIZI (issue #81) ============ -->
+<div class="page" id="page-acl">
+    <div class="page-header">
+        <div>
+            <h2>ACL Analizi</h2>
+            <div class="desc">Guvenlik &rsaquo; Trustee bazli erisim aramasi + sprawl tespiti</div>
+        </div>
+        <div class="actions">
+            <input id="acl-trustee-search" placeholder="Trustee SID ara (S-1-5-...)" style="width:240px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)" />
+            <button class="btn btn-outline" onclick="searchAclTrustee()">Ara</button>
+            <select id="acl-source" onchange="loadAclAnalyzer()" style="width:200px">
+                <option value="">Tum kaynaklar</option>
+            </select>
+            <button class="btn btn-outline" id="acl-xlsx-btn" onclick="exportAclXlsx(event)">Excel Export</button>
+        </div>
+    </div>
+    <div id="acl-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);color:var(--warning);font-size:13px"></div>
+    <div id="acl-mode-indicator" style="font-size:12px;color:var(--text-muted);margin-bottom:8px"></div>
+    <div class="panel">
+        <h3 class="panel-title" id="acl-panel-title">Sprawl Tespiti (en cok yetkilendirilmis trustee'lar)</h3>
+        <div id="acl-container"></div>
+    </div>
+</div>
+
+<!-- Orphan SID reassign modal -->
+<div class="modal-overlay" id="modal-orphan-reassign">
+<div class="modal">
+    <h3>Yetim SID'i Yeniden Ata</h3>
+    <div style="margin:12px 0;font-size:12px;color:var(--text-muted);line-height:1.6">
+        Secilen yetim SID'in dosyalarini baska bir sahibe devreder.
+        <strong style="color:var(--warning)">dry_run varsayilan olarak true</strong> — yalnizca onizleme uretir.
+        Canli devir icin Windows + pywin32 gerekir; ek olarak config'de
+        <code>require_dual_approval_for_reassign: true</code> ise ikinci onaylayicimiz olmadan calisamaz.
+    </div>
+    <label style="display:block;margin:8px 0;font-size:12px;color:var(--text-secondary)">Yetim SID</label>
+    <input id="orphan-reassign-sid" placeholder="DOMAIN\\user veya S-1-5-21-..." style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);border-radius:4px" />
+    <label style="display:block;margin:8px 0;font-size:12px;color:var(--text-secondary)">Yeni sahip</label>
+    <input id="orphan-reassign-new-owner" placeholder="DOMAIN\\manager" style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-primary);border-radius:4px" />
+    <label style="display:block;margin:12px 0 4px 0;font-size:12px;color:var(--text-secondary)">
+        <input id="orphan-reassign-dryrun" type="checkbox" checked /> Dry-run (yalnizca onizleme)
+    </label>
+    <label style="display:block;margin:4px 0 12px 0;font-size:12px;color:var(--text-secondary)">
+        <input id="orphan-reassign-confirm" type="checkbox" /> Bu islemi gerceklestirmek istedigime eminim
+    </label>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="closeModal('modal-orphan-reassign')">Iptal</button>
+        <button class="btn btn-primary" onclick="submitOrphanReassign()">Calistir</button>
+    </div>
+</div>
+</div>
+
 </div><!-- /main -->
 
 <!-- ============ MODALS ============ -->
@@ -985,7 +1092,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer };
     if (loaders[name]) loaders[name]();
 }
 
@@ -1011,10 +1118,10 @@ async function loadSources() {
 }
 
 function populateAllSourceSelects() {
-    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source'].forEach(id => populateSourceSelect(id));
+    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source'].forEach(id => populateSourceSelect(id));
     // Auto-select first source if only one
     if (sources.length === 1) {
-        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source'].forEach(id => {
+        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source'].forEach(id => {
             const sel = document.getElementById(id);
             if (sel && !sel.value) sel.value = sources[0].id;
         });
@@ -3771,6 +3878,320 @@ async function sqlqRun() {
         status.textContent = 'Hata';
     }
 }
+
+// ═══════════════════════════════════════════════════
+// GUVENLIK > YETIM SID'LER / RANSOMWARE / ACL (issue #81)
+// Reusable, lightweight entity-list renderer used by all three security
+// pages. Mirrors the contract of the planned components/entity-list.js
+// from PR #98 — vanilla JS, no dependencies. Each call replaces the
+// container's contents.
+// ═══════════════════════════════════════════════════
+
+let _securityFlagsCache = null;
+async function getSecurityFlags() {
+    if (_securityFlagsCache) return _securityFlagsCache;
+    try {
+        _securityFlagsCache = await api('/security/feature-flags', { silent: true });
+    } catch (e) {
+        _securityFlagsCache = { ransomware: { enabled: false }, orphan_sid: { enabled: false }, acl: { enabled: true } };
+    }
+    return _securityFlagsCache;
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function renderEntityList(containerId, items, columns, opts = {}) {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    if (!items || !items.length) {
+        c.innerHTML = `<div style="padding:32px;text-align:center;color:var(--text-muted)">${opts.emptyHtml || 'Kayit bulunamadi'}</div>`;
+        return;
+    }
+    let html = '<div class="table-wrap"><table style="width:100%;border-collapse:collapse">';
+    html += '<thead><tr>' + columns.map(col =>
+        `<th style="text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">${escapeHtml(col.label)}</th>`
+    ).join('') + '</tr></thead><tbody>';
+    for (const item of items) {
+        html += '<tr>' + columns.map(col => {
+            const raw = typeof col.field === 'function' ? col.field(item) : item[col.field];
+            const cell = col.render ? col.render(item, raw) : escapeHtml(raw == null ? '' : raw);
+            return `<td style="padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">${cell}</td>`;
+        }).join('') + '</tr>';
+    }
+    html += '</tbody></table></div>';
+    c.innerHTML = html;
+}
+
+// ─── ORPHAN SIDS ───────────────────────────────────────
+
+async function loadOrphanSids() {
+    const flags = await getSecurityFlags();
+    const banner = document.getElementById('orphan-sids-banner');
+    if (!flags.orphan_sid.enabled) {
+        banner.style.display = 'block';
+        banner.textContent = 'Bu ozellik kapali — config.yaml > security.orphan_sid.enabled: true ile aciliyor.';
+    } else {
+        banner.style.display = 'none';
+    }
+
+    const sourceId = document.getElementById('orphan-sids-source')?.value;
+    const summary = document.getElementById('orphan-sids-summary');
+    const xlsxBtn = document.getElementById('orphan-sids-xlsx-btn');
+    const csvBtn = document.getElementById('orphan-sids-csv-btn');
+    const reBtn = document.getElementById('orphan-sids-reassign-btn');
+    if (!sourceId) {
+        summary.innerHTML = '';
+        renderEntityList('orphan-sids-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
+        if (xlsxBtn) xlsxBtn.style.display = 'none';
+        if (csvBtn) csvBtn.style.display = 'none';
+        if (reBtn) reBtn.style.display = 'none';
+        return;
+    }
+    if (xlsxBtn) xlsxBtn.style.display = '';
+    if (csvBtn) csvBtn.style.display = '';
+    if (reBtn) reBtn.style.display = '';
+
+    try {
+        const data = await api(`/security/orphan-sids/${sourceId}`);
+        summary.innerHTML = `
+            <div class="card accent"><div class="card-label">Toplam Dosya</div><div class="card-value">${formatNum(data.total_files || 0)}</div></div>
+            <div class="card warning"><div class="card-label">Yetim Dosya</div><div class="card-value">${formatNum(data.total_orphan_files || 0)}</div></div>
+            <div class="card danger"><div class="card-label">Yetim SID</div><div class="card-value">${formatNum((data.orphan_sids || []).length)}</div></div>
+            <div class="card success"><div class="card-label">Sure</div><div class="card-value">${data.elapsed_seconds || 0}s</div></div>
+        `;
+        const items = data.orphan_sids || [];
+        renderEntityList('orphan-sids-container', items, [
+            { field: 'sid', label: 'SID / Sahip' },
+            { field: 'sid', label: 'Etiket', render: (i, v) => `<span style="color:var(--text-muted)">${escapeHtml(v.includes('\\\\') ? v.split('\\\\').pop() : v)}</span>` },
+            { field: 'file_count', label: 'Dosya Sayisi', render: (i, v) => formatNum(v) },
+            { field: 'total_size', label: 'Toplam Boyut', render: (i, v) => formatSize(v || 0) },
+            { field: 'sample_paths', label: 'Ornekler', render: (i, v) => `<span style="color:var(--text-muted);font-size:11px">${escapeHtml((v || []).slice(0,2).join(' | '))}</span>` },
+            {
+                field: 'sid', label: 'Islem',
+                render: (item) => `<button class="btn btn-sm btn-outline" onclick="prefillOrphanReassign(${JSON.stringify(item.sid).replace(/"/g, '&quot;')})">Yeniden Ata</button>`,
+            },
+        ], { emptyHtml: '<span style="color:var(--success)">Yetim SID bulunamadi — tum sahipler AD\'de cozulebiliyor</span>' });
+    } catch (e) {
+        notify('Yetim SID raporu alinamadi: ' + (e.message || e), 'error');
+    }
+}
+
+async function exportOrphanSidsXlsx(ev) {
+    const sourceId = document.getElementById('orphan-sids-source')?.value;
+    if (!sourceId) { notify('Once kaynak secin', 'warning'); return; }
+    await withButtonLoading(ev.target, async (signal) => {
+        await fetchAndDownload(`${API}/security/orphan-sids/${sourceId}/export.xlsx`, signal, `orphan_sids_${sourceId}.xlsx`);
+    });
+}
+
+async function exportOrphanSidsCsv(ev) {
+    const sourceId = document.getElementById('orphan-sids-source')?.value;
+    if (!sourceId) { notify('Once kaynak secin', 'warning'); return; }
+    await withButtonLoading(ev.target, async (signal) => {
+        await fetchAndDownload(`${API}/security/orphan-sids/${sourceId}/export.csv`, signal, `orphan_sids_${sourceId}.csv`);
+    });
+}
+
+function openOrphanReassignModal() {
+    document.getElementById('orphan-reassign-sid').value = '';
+    document.getElementById('orphan-reassign-new-owner').value = '';
+    document.getElementById('orphan-reassign-dryrun').checked = true;
+    document.getElementById('orphan-reassign-confirm').checked = false;
+    document.getElementById('modal-orphan-reassign').classList.add('active');
+}
+
+function prefillOrphanReassign(sid) {
+    openOrphanReassignModal();
+    document.getElementById('orphan-reassign-sid').value = sid;
+}
+
+async function submitOrphanReassign() {
+    const sourceId = document.getElementById('orphan-sids-source')?.value;
+    if (!sourceId) { notify('Once kaynak secin', 'warning'); return; }
+    const sid = document.getElementById('orphan-reassign-sid').value.trim();
+    const newOwner = document.getElementById('orphan-reassign-new-owner').value.trim();
+    const dryRun = document.getElementById('orphan-reassign-dryrun').checked;
+    const confirmFlag = document.getElementById('orphan-reassign-confirm').checked;
+    if (!sid || !newOwner) { notify('SID ve yeni sahip zorunlu', 'warning'); return; }
+    if (!confirmFlag) { notify('Onay kutusunu isaretleyin', 'warning'); return; }
+    const flags = await getSecurityFlags();
+    if (!dryRun && flags.orphan_sid.require_dual_approval_for_reassign) {
+        notify('Ikinci onay gerekli — canli devir icin ikinci onaylayici eklenmeli (issue #83)', 'warning');
+        return;
+    }
+    try {
+        const r = await api('/security/orphan-sids/reassign', {
+            method: 'POST',
+            body: JSON.stringify({ source_id: parseInt(sourceId), sid, new_owner: newOwner, dry_run: dryRun }),
+        });
+        const count = dryRun ? (r.scanned || 0) : (r.changed || 0);
+        notify(`Yeniden atama ${dryRun ? '(dry-run) ' : ''}tamamlandi: ${count} dosya`, 'success');
+        closeModal('modal-orphan-reassign');
+        loadOrphanSids();
+    } catch (e) {
+        notify('Yeniden atama hatasi: ' + (e.message || e), 'error');
+    }
+}
+
+// ─── RANSOMWARE ALERTS ────────────────────────────────
+
+async function loadRansomwareAlerts() {
+    const flags = await getSecurityFlags();
+    const banner = document.getElementById('ransomware-banner');
+    if (!flags.ransomware.enabled) {
+        banner.style.display = 'block';
+        banner.textContent = 'Bu ozellik kapali — config.yaml > security.ransomware.enabled: true ile aciliyor.';
+    } else {
+        banner.style.display = 'none';
+    }
+    const win = parseInt(document.getElementById('ransomware-window').value || '1440', 10);
+    const summary = document.getElementById('ransomware-summary');
+    try {
+        const alerts = await api(`/security/ransomware/alerts?since_minutes=${win}`);
+        const total = alerts.length;
+        const ackd = alerts.filter(a => a.acknowledged_at).length;
+        const critical = alerts.filter(a => (a.severity || '').toLowerCase() === 'critical').length;
+        summary.innerHTML = `
+            <div class="card ${total ? 'danger' : 'success'}"><div class="card-label">Toplam Uyari</div><div class="card-value">${formatNum(total)}</div><div class="card-sub">${win} dk pencere</div></div>
+            <div class="card warning"><div class="card-label">Kritik</div><div class="card-value">${formatNum(critical)}</div></div>
+            <div class="card success"><div class="card-label">Onaylanan</div><div class="card-value">${formatNum(ackd)}</div></div>
+            <div class="card accent"><div class="card-label">Bekleyen</div><div class="card-value">${formatNum(total - ackd)}</div></div>
+        `;
+        const sevColors = { critical: 'var(--danger)', high: 'var(--danger)', warning: 'var(--warning)', info: 'var(--info)' };
+        renderEntityList('ransomware-container', alerts, [
+            { field: 'triggered_at', label: 'Zaman', render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v || '')}</span>` },
+            { field: 'rule_name', label: 'Kural' },
+            {
+                field: 'severity', label: 'Ciddiyet',
+                render: (i, v) => {
+                    const c = sevColors[(v || '').toLowerCase()] || 'var(--text-muted)';
+                    return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${c}22;color:${c}">${escapeHtml((v||'').toUpperCase())}</span>`;
+                }
+            },
+            { field: (a) => (a.sample_paths && a.sample_paths[0]) || '', label: 'Dosya', render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px;color:var(--text-muted)">${escapeHtml(v)}</span>` },
+            { field: 'username', label: 'Kullanici' },
+            {
+                field: 'acknowledged_at', label: 'Durum',
+                render: (i, v) => v ? `<span style="color:var(--success)">Onaylandi (${escapeHtml(i.acknowledged_by||'?')})</span>` : `<button class="btn btn-sm btn-warning" onclick="acknowledgeRansomwareAlert(${i.id})">Acknowledge</button>`
+            },
+        ], { emptyHtml: '<div style="font-size:36px;color:var(--success)">&#10004;</div><div style="margin-top:8px;color:var(--success);font-weight:600">Su an aktif uyari yok</div>' });
+    } catch (e) {
+        notify('Uyarilar alinamadi: ' + (e.message || e), 'error');
+    }
+}
+
+async function acknowledgeRansomwareAlert(id) {
+    try {
+        await api(`/security/ransomware/alerts/${id}/acknowledge`, { method: 'POST' });
+        notify('Uyari onaylandi', 'success');
+        loadRansomwareAlerts();
+    } catch (e) {
+        notify('Onay hatasi: ' + (e.message || e), 'error');
+    }
+}
+
+async function acknowledgeAllRansomware(ev) {
+    if (!confirm('Bu pencerede ki tum uyarilari onaylamak istiyor musunuz?')) return;
+    const win = parseInt(document.getElementById('ransomware-window').value || '1440', 10);
+    await withButtonLoading(ev.target, async () => {
+        const r = await api(`/security/ransomware/alerts/acknowledge-all?since_minutes=${win}`, { method: 'POST' });
+        notify(`${r.rows_updated || 0} uyari onaylandi`, 'success');
+        loadRansomwareAlerts();
+    });
+}
+
+async function exportRansomwareXlsx(ev) {
+    const win = parseInt(document.getElementById('ransomware-window').value || '1440', 10);
+    await withButtonLoading(ev.target, async (signal) => {
+        await fetchAndDownload(`${API}/security/ransomware/alerts/export.xlsx?since_minutes=${win}`, signal, 'ransomware_alerts.xlsx');
+    });
+}
+
+// ─── ACL ANALYZER ─────────────────────────────────────
+
+let _aclMode = 'sprawl'; // 'sprawl' | 'trustee'
+let _aclTrustee = null;
+
+async function loadAclAnalyzer() {
+    _aclMode = 'sprawl';
+    _aclTrustee = null;
+    document.getElementById('acl-mode-indicator').textContent = '';
+    document.getElementById('acl-panel-title').textContent = 'Sprawl Tespiti (en cok yetkilendirilmis trustee\'lar)';
+    const sourceId = document.getElementById('acl-source')?.value || '';
+
+    let url = '/security/acl/sprawl';
+    if (sourceId) {
+        // sprawl endpoint accepts scan_id, not source_id — derive most recent.
+        try {
+            const sources = await api('/sources', { silent: true });
+            const s = (sources || []).find(x => String(x.id) === String(sourceId));
+            if (s && s.last_scanned_at) {
+                // No public scan_id by-source endpoint; rely on sprawl with no scan_id
+                // and surface ALL trustees. This matches the analyzer default.
+            }
+        } catch {}
+    }
+    try {
+        const data = await api(url);
+        const trustees = data.trustees || [];
+        renderEntityList('acl-container', trustees, [
+            { field: 'trustee_sid', label: 'Trustee SID', render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v)}</span>` },
+            { field: 'trustee_name', label: 'Etiket', render: (i, v) => escapeHtml(v || '(cozulemedi)') },
+            { field: 'file_count', label: 'Dosya Sayisi', render: (i, v) => formatNum(v) },
+            { field: 'sample_permission_name', label: 'Ornek Izin', render: (i, v) => escapeHtml(v || '') },
+            {
+                field: 'trustee_sid', label: 'Islem',
+                render: (item) => `<button class="btn btn-sm btn-outline" onclick="loadAclTrusteePaths(${JSON.stringify(item.trustee_sid).replace(/"/g, '&quot;')})">Yollari Gor</button>`
+            },
+        ], { emptyHtml: 'Sprawl tespiti icin once bir ACL snapshot calistirilmis olmali (POST /api/security/acl/scan/{source_id})' });
+    } catch (e) {
+        notify('ACL sprawl alinamadi: ' + (e.message || e), 'error');
+    }
+}
+
+async function searchAclTrustee() {
+    const sid = (document.getElementById('acl-trustee-search').value || '').trim();
+    if (!sid) { notify('Trustee SID girin', 'warning'); return; }
+    await loadAclTrusteePaths(sid);
+}
+
+async function loadAclTrusteePaths(sid) {
+    _aclMode = 'trustee';
+    _aclTrustee = sid;
+    document.getElementById('acl-mode-indicator').innerHTML = `<span style="color:var(--accent)">Trustee modu:</span> ${escapeHtml(sid)} <a href="#" onclick="event.preventDefault(); loadAclAnalyzer()" style="color:var(--accent-light);margin-left:8px">[sprawl gorunume don]</a>`;
+    document.getElementById('acl-panel-title').textContent = 'Trustee Erisim Yollari';
+    try {
+        const data = await api(`/security/acl/trustee/${encodeURIComponent(sid)}/paths?limit=100`);
+        const paths = data.paths || [];
+        renderEntityList('acl-container', paths, [
+            { field: 'file_path', label: 'Dosya Yolu', render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v)}</span>` },
+            { field: 'permission_name', label: 'Izin' },
+            { field: 'ace_type', label: 'ACE Turu', render: (i, v) => {
+                const c = v === 'DENY' ? 'var(--danger)' : 'var(--success)';
+                return `<span style="color:${c}">${escapeHtml(v || '')}</span>`;
+            } },
+            { field: 'permissions_mask', label: 'Mask' },
+            { field: 'is_inherited', label: 'Devralinmis', render: (i, v) => v ? 'Evet' : 'Hayir' },
+        ], { emptyHtml: 'Bu trustee icin kayit bulunamadi' });
+    } catch (e) {
+        notify('Trustee yollari alinamadi: ' + (e.message || e), 'error');
+    }
+}
+
+async function exportAclXlsx(ev) {
+    await withButtonLoading(ev.target, async (signal) => {
+        if (_aclMode === 'trustee' && _aclTrustee) {
+            await fetchAndDownload(`${API}/security/acl/trustee/${encodeURIComponent(_aclTrustee)}/paths/export.xlsx?limit=10000`, signal, 'acl_trustee_paths.xlsx');
+        } else {
+            await fetchAndDownload(`${API}/security/acl/sprawl/export.xlsx`, signal, 'acl_sprawl.xlsx');
+        }
+    });
+}
+
 </script>
 
 <!-- Drill-down Modal -->

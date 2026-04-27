@@ -3068,6 +3068,223 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         )
 
     # ─────────────────────────────────────────────────────────────────
+    # Security dashboard pages (#81): XLSX exports + ack-all
+    #
+    # The three security pages (Orphan SIDs, Ransomware Alerts, ACL
+    # Analyzer) each get an `*/export.xlsx` endpoint and the ransomware
+    # page gets a `/acknowledge-all` bulk action. We deliberately keep
+    # the workbook construction inline rather than routing through the
+    # background `_export_worker` queue: these tables are bounded
+    # (top-N orphan SIDs, recent alerts, top trustees), so a synchronous
+    # StreamingResponse is the simpler answer and matches `mit-naming`.
+    # ─────────────────────────────────────────────────────────────────
+
+    def _xlsx_response(rows, headers, filename: str, sheet_title: str):
+        """Build a one-sheet XLSX from ``rows`` and return a
+        ``StreamingResponse``. ``rows`` is a list of lists/tuples; the
+        first column header maps to the first item in each row, etc.
+        Raises HTTPException(500) if openpyxl is unavailable.
+        """
+        from fastapi.responses import StreamingResponse
+        from io import BytesIO
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment
+        except ImportError:
+            raise HTTPException(500, "openpyxl kurulu degil. pip install openpyxl")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = sheet_title[:31] or "Sheet1"
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        header_fill = PatternFill(start_color="2B5797", end_color="2B5797",
+                                   fill_type="solid")
+        for i, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=i, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+        for r_idx, r in enumerate(rows, start=2):
+            for c_idx, val in enumerate(r, start=1):
+                ws.cell(row=r_idx, column=c_idx, value=val)
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    @app.get("/api/security/feature-flags")
+    async def security_feature_flags():
+        """Read-only view of the three security feature flags so the
+        dashboard can render a "kapali" banner when a page is disabled
+        in config.yaml. Cheap; no DB access.
+        """
+        sec = (config or {}).get("security", {}) or {}
+        ransom = sec.get("ransomware", {}) or {}
+        orphan = sec.get("orphan_sid", {}) or {}
+        return {
+            "ransomware": {
+                "enabled": bool(ransom.get("enabled", False)),
+            },
+            "orphan_sid": {
+                "enabled": bool(orphan.get("enabled", False)),
+                "require_dual_approval_for_reassign": bool(
+                    orphan.get("require_dual_approval_for_reassign", False)
+                ),
+            },
+            # ACL analyzer has no enabled flag in config.yaml today; it
+            # is always available (read-side is DB-only).
+            "acl": {"enabled": True},
+        }
+
+    @app.get("/api/security/orphan-sids/{source_id}/export.xlsx")
+    async def orphan_sid_export_xlsx(source_id: int):
+        """XLSX of orphan-SID summary rows (one row per orphan SID)."""
+        analyzer = _get_orphan_analyzer()
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, f"No scan_runs found for source {source_id}")
+        report = analyzer.detect_orphans(scan_id)
+        rows = []
+        for r in report.get("orphan_sids", []):
+            rows.append([
+                r.get("sid", ""),
+                r.get("file_count", 0),
+                r.get("total_size", 0),
+                ", ".join(r.get("sample_paths", [])[:3]),
+            ])
+        filename = f"orphan_sids_source{source_id}_scan{scan_id}.xlsx"
+        return _xlsx_response(
+            rows,
+            headers=["SID / Owner", "File Count", "Total Size (bytes)",
+                     "Sample Paths"],
+            filename=filename,
+            sheet_title="Orphan SIDs",
+        )
+
+    @app.get("/api/security/ransomware/alerts/export.xlsx")
+    async def ransomware_alerts_export_xlsx(
+        since_minutes: int = Query(1440, ge=1, le=10080),
+    ):
+        """XLSX of ransomware alerts in the last N minutes."""
+        det = _get_detector()
+        alerts = det.get_active_alerts(since_minutes=since_minutes) or []
+        rows = []
+        for a in alerts:
+            rows.append([
+                a.get("triggered_at", ""),
+                a.get("rule_name", ""),
+                a.get("severity", ""),
+                a.get("source_id", ""),
+                a.get("username", ""),
+                a.get("file_count", 0),
+                ", ".join((a.get("sample_paths") or [])[:3]),
+                a.get("acknowledged_at") or "",
+                a.get("acknowledged_by") or "",
+            ])
+        filename = (
+            f"ransomware_alerts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        return _xlsx_response(
+            rows,
+            headers=["Triggered At", "Rule", "Severity", "Source ID",
+                     "Username", "File Count", "Sample Paths",
+                     "Acknowledged At", "Acknowledged By"],
+            filename=filename,
+            sheet_title="Ransomware Alerts",
+        )
+
+    @app.post("/api/security/ransomware/alerts/acknowledge-all")
+    async def acknowledge_all_ransomware_alerts(
+        by_user: str = "admin",
+        since_minutes: int = Query(1440, ge=1, le=10080),
+    ):
+        """Bulk acknowledge every unacknowledged alert in the window.
+
+        Mirrors the per-row acknowledge endpoint but applies to all
+        rows that match ``triggered_at > now - since_minutes`` AND have
+        ``acknowledged_at IS NULL``. Returns the count of rows touched.
+        """
+        with db.get_cursor() as cur:
+            cur.execute(
+                """UPDATE ransomware_alerts
+                   SET acknowledged_at = datetime('now','localtime'),
+                       acknowledged_by = ?
+                   WHERE acknowledged_at IS NULL
+                     AND triggered_at > datetime('now', ? || ' minutes')""",
+                (by_user, f"-{int(since_minutes)}"),
+            )
+            rowcount = cur.rowcount or 0
+        return {
+            "acknowledged": True,
+            "rows_updated": int(rowcount),
+            "by": by_user,
+            "since_minutes": int(since_minutes),
+        }
+
+    @app.get("/api/security/acl/sprawl/export.xlsx")
+    async def acl_sprawl_export_xlsx(
+        scan_id: Optional[int] = None,
+        severity_threshold: Optional[int] = None,
+    ):
+        """XLSX of the ACL-sprawl trustee report."""
+        analyzer = _get_acl_analyzer()
+        thr = (severity_threshold if severity_threshold is not None
+               else analyzer.sprawl_threshold_mask)
+        trustees = analyzer.detect_sprawl(
+            scan_id=scan_id, severity_threshold=int(thr),
+        )
+        rows = []
+        for t in trustees:
+            rows.append([
+                t.get("trustee_sid", ""),
+                t.get("trustee_name", "") or "",
+                t.get("file_count", 0),
+                t.get("max_mask", 0),
+                t.get("sample_permission_name", "") or "",
+            ])
+        filename = (
+            f"acl_sprawl_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        return _xlsx_response(
+            rows,
+            headers=["Trustee SID", "Trustee Name", "File Count",
+                     "Max Permission Mask", "Sample Permission"],
+            filename=filename,
+            sheet_title="ACL Sprawl",
+        )
+
+    @app.get("/api/security/acl/trustee/{sid}/paths/export.xlsx")
+    async def acl_trustee_paths_export_xlsx(
+        sid: str, limit: int = Query(1000, ge=1, le=10000),
+    ):
+        """XLSX of every path a given trustee has access to."""
+        analyzer = _get_acl_analyzer()
+        paths = analyzer.find_paths_for_trustee(sid, limit=limit)
+        rows = []
+        for p in paths:
+            rows.append([
+                p.get("file_path", ""),
+                p.get("permission_name", "") or "",
+                p.get("ace_type", "") or "",
+                p.get("permissions_mask", 0),
+                int(p.get("is_inherited") or 0),
+            ])
+        # filename can't include backslashes from a SID, so sanitize
+        safe_sid = sid.replace("\\", "_").replace("/", "_")
+        filename = f"acl_trustee_{safe_sid}_paths.xlsx"
+        return _xlsx_response(
+            rows,
+            headers=["File Path", "Permission", "ACE Type", "Mask",
+                     "Inherited"],
+            filename=filename,
+            sheet_title="Trustee Paths",
+        )
+
+    # ─────────────────────────────────────────────────────────────────
     # Syslog/CEF integration (#50)
     # ─────────────────────────────────────────────────────────────────
 
