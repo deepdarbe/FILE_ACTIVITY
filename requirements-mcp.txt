@@ -7,7 +7,7 @@
 #   pip install -r requirements.txt -r requirements-mcp.txt
 
 # Anthropic's official Python SDK for the Model Context Protocol.
-mcp>=1.0.0
+mcp>=1.27.0
 
 # Async HTTP client used by every MCP tool to call the local FastAPI
 # dashboard. Already an indirect dep via httpx, but pin it here so the
