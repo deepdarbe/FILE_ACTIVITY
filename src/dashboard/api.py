@@ -4535,4 +4535,122 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             raise HTTPException(400, str(e))
         return {"ok": True, "result": result}
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Chargeback / cost-center reports (issue #111).
+    #
+    # CRUD: cost centers + owner patterns (manual mapping; AD auto-discovery
+    # deferred per #111 Phase 1). Compute: per-scan aggregation. Export: XLSX
+    # workbook with FORMULAS so auditors can edit the rate cell on the
+    # Settings sheet and have totals recompute automatically.
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _chargeback_report():
+        from src.reports.chargeback import ChargebackReport
+        return ChargebackReport(db, config)
+
+    @app.get("/api/chargeback/centers")
+    async def chargeback_list_centers():
+        return {"centers": _chargeback_report().list_centers()}
+
+    @app.post("/api/chargeback/centers")
+    async def chargeback_add_center(body: dict):
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON body bekleniyor")
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "name gerekli")
+        try:
+            cid = _chargeback_report().add_center(
+                name=name,
+                description=body.get("description") or "",
+                cost_per_gb_month=body.get("cost_per_gb_month") or 0,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            # UNIQUE name violation surfaces as IntegrityError on SQLite.
+            raise HTTPException(409, f"Eklenemedi: {e}")
+        return {"id": cid, "ok": True}
+
+    @app.put("/api/chargeback/centers/{center_id}")
+    async def chargeback_update_center(center_id: int, body: dict):
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON body bekleniyor")
+        # Strip unknown keys to make the endpoint idempotent and safe.
+        allowed = {"name", "description", "cost_per_gb_month"}
+        fields = {k: v for k, v in body.items() if k in allowed}
+        try:
+            ok = _chargeback_report().update_center(center_id, **fields)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not ok:
+            # No matching row OR no fields to update: treat as 404 only when
+            # the center genuinely does not exist (idempotent vs no-op).
+            existing = _chargeback_report().get_center(center_id)
+            if not existing:
+                raise HTTPException(404, "cost_center bulunamadi")
+        return {"ok": True}
+
+    @app.delete("/api/chargeback/centers/{center_id}")
+    async def chargeback_remove_center(center_id: int):
+        # Idempotent: deleting an already-deleted center returns ok=True
+        # with deleted=False so callers can call this on stale UI state.
+        deleted = _chargeback_report().remove_center(center_id)
+        return {"ok": True, "deleted": deleted}
+
+    @app.post("/api/chargeback/centers/{center_id}/owners")
+    async def chargeback_add_owner(center_id: int, body: dict):
+        if not isinstance(body, dict):
+            raise HTTPException(400, "JSON body bekleniyor")
+        pat = (body.get("owner_pattern") or "").strip()
+        if not pat:
+            raise HTTPException(400, "owner_pattern gerekli")
+        try:
+            added = _chargeback_report().add_owner(center_id, pat)
+        except ValueError as e:
+            raise HTTPException(404 if "bulunamadi" in str(e) else 400, str(e))
+        return {"ok": True, "added": added, "owner_pattern": pat}
+
+    @app.delete("/api/chargeback/centers/{center_id}/owners/{owner_pattern:path}")
+    async def chargeback_remove_owner(center_id: int, owner_pattern: str):
+        # ``:path`` lets the pattern contain backslashes / slashes from the
+        # owner field (e.g. ``CONTOSO\jdoe``) without double-encoding.
+        deleted = _chargeback_report().remove_owner(center_id, owner_pattern)
+        return {"ok": True, "deleted": deleted}
+
+    @app.get("/api/chargeback/{source_id}")
+    async def chargeback_compute(source_id: int):
+        """Compute the chargeback report for the latest scan of a source."""
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, "Tamamlanmis scan yok")
+        result = _chargeback_report().compute(scan_id)
+        return result.to_dict()
+
+    @app.get("/api/chargeback/{source_id}/export.xlsx")
+    async def chargeback_export_xlsx(source_id: int):
+        from fastapi.responses import StreamingResponse
+        import io as _io
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, "Tamamlanmis scan yok")
+        try:
+            blob = _chargeback_report().export_xlsx(scan_id)
+        except RuntimeError as e:
+            raise HTTPException(500, str(e))
+        filename = (
+            f"Chargeback_source{source_id}_scan{scan_id}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        return StreamingResponse(
+            _io.BytesIO(blob),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+            },
+        )
+
     return app

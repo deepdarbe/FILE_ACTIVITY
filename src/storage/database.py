@@ -721,10 +721,7 @@ class Database:
         )
 
         # Gain reports (issue #83 Phase 1) — before/after/delta metric
-        # snapshots captured around any write operation. The first user is
-        # the duplicate quarantine flow; later phases will plug in archive,
-        # retention purge, etc. Each row carries pretty-printed JSON so
-        # operators can diff the exact numbers in the UI without recomputing.
+        # snapshots captured around any write operation.
         cur.execute("""
             CREATE TABLE IF NOT EXISTS gain_reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -742,12 +739,7 @@ class Database:
             "ON gain_reports(operation, started_at DESC)"
         )
 
-        # Quarantine log (issue #83 Phase 1) — forensic record of every
-        # file moved into the quarantine root. Hard delete is intentionally
-        # NOT in this phase; Phase 2 will add an auto-cleanup job that
-        # references gain_report_id to record the "before" snapshot of
-        # the purge. NEVER DELETE rows from this table — the quarantine
-        # operation must remain auditable even after a forensics export.
+        # Quarantine log (issue #83 Phase 1).
         cur.execute("""
             CREATE TABLE IF NOT EXISTS quarantine_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -774,14 +766,7 @@ class Database:
             "ON quarantine_log(original_path)"
         )
 
-        # Two-person approval framework (issue #112). Generic queue for
-        # high-impact admin operations (snapshot restore, archive_bulk,
-        # purge_bulk, retention_apply). Phase 1 wires snapshot_restore as
-        # the pilot; other ops follow in subsequent PRs. payload_json
-        # holds the operation-specific arguments. Self-approval is
-        # refused server-side via approve(): the row records both the
-        # requested_by and approved_by users so the executor can verify
-        # they differ.
+        # Two-person approval framework (issue #112).
         cur.execute("""
             CREATE TABLE IF NOT EXISTS pending_approvals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -808,6 +793,28 @@ class Database:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_pa_type "
             "ON pending_approvals(operation_type)"
+        )
+
+        # Chargeback / cost-center mapping (issue #111).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cost_centers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                description TEXT,
+                cost_per_gb_month REAL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cost_center_owners (
+                cost_center_id INTEGER REFERENCES cost_centers(id) ON DELETE CASCADE,
+                owner_pattern TEXT NOT NULL,
+                PRIMARY KEY (cost_center_id, owner_pattern)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cco_pattern "
+            "ON cost_center_owners(owner_pattern)"
         )
 
         # FTS5 full-text search (arsivlenmis dosyalar icin)
