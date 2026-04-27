@@ -316,6 +316,15 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('retention')"><span class="icon">🗓️</span> <span>Saklama Politikalari</span></div>
         <div class="nav-item" onclick="showPage('legal-holds')"><span class="icon">⚖️</span> <span>Legal Hold</span></div>
     </div>
+    <div class="nav-section">
+        <div class="nav-label">Entegrasyonlar</div>
+        <div class="nav-item" onclick="showPage('syslog')"><span class="icon">📡</span> <span>Syslog / SIEM</span></div>
+        <div class="nav-item" onclick="showPage('mcp')"><span class="icon">🤖</span> <span>MCP Server</span></div>
+    </div>
+    <div class="nav-section">
+        <div class="nav-label">Sistem</div>
+        <div class="nav-item" onclick="showPage('backups')"><span class="icon">💾</span> <span>Yedekler</span></div>
+    </div>
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
     </div>
@@ -979,6 +988,116 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 </div>
 </div>
 
+<!-- ============ SYSLOG / SIEM ============ -->
+<div class="page" id="page-syslog">
+    <div class="page-header">
+        <div><h2>Syslog / SIEM Entegrasyonu</h2><div class="desc">RFC 5424 / CEF formatinda guvenlik olaylarini downstream SIEM'e iletir</div></div>
+        <div class="actions">
+            <button class="btn btn-outline" onclick="showSyslogConfig()">Konfigurasyon</button>
+            <button class="btn btn-primary" id="syslog-test-btn" onclick="sendSyslogTest(this)">Test Event Gonder</button>
+        </div>
+    </div>
+    <div id="syslog-flag-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px">
+        <strong>Syslog kapali.</strong> Aktif etmek icin <code>config.yaml</code> dosyasinda <code>integrations.syslog.enabled: true</code> ayarlayin ve servisi yeniden baslatin.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:24px">
+        <div class="card" style="border-top:3px solid var(--accent)">
+            <div class="card-label">Durum</div>
+            <div class="card-value" id="syslog-status-val" style="font-size:22px">-</div>
+            <div class="card-sub" id="syslog-status-sub">Yukleniyor...</div>
+        </div>
+        <div class="card" style="border-top:3px solid var(--info)">
+            <div class="card-label">Kuyruk Derinligi</div>
+            <div class="card-value" id="syslog-queue-val" style="font-size:22px">-</div>
+            <div class="card-sub" id="syslog-queue-sub">- / -</div>
+        </div>
+        <div class="card" style="border-top:3px solid var(--danger)">
+            <div class="card-label">Son Hata</div>
+            <div class="card-value" id="syslog-error-val" style="font-size:14px;line-height:1.4;overflow:hidden;text-overflow:ellipsis">-</div>
+            <div class="card-sub" id="syslog-error-sub">Son emit: -</div>
+        </div>
+    </div>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px">
+        <h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;font-weight:600">Forwarder Detaylari</h4>
+        <table style="width:100%;border-collapse:collapse" id="syslog-detail-table">
+            <tbody>
+                <tr><td style="padding:8px;color:var(--text-muted);width:200px">Aktif</td><td id="sl-enabled" style="padding:8px">-</td></tr>
+                <tr><td style="padding:8px;color:var(--text-muted)">Hedef Host</td><td id="sl-host" style="padding:8px">-</td></tr>
+                <tr><td style="padding:8px;color:var(--text-muted)">Port</td><td id="sl-port" style="padding:8px">-</td></tr>
+                <tr><td style="padding:8px;color:var(--text-muted)">Transport</td><td id="sl-transport" style="padding:8px">-</td></tr>
+                <tr><td style="padding:8px;color:var(--text-muted)">Format</td><td id="sl-format" style="padding:8px">-</td></tr>
+                <tr><td style="padding:8px;color:var(--text-muted)">Gonderilen Toplam</td><td id="sl-sent" style="padding:8px">-</td></tr>
+                <tr><td style="padding:8px;color:var(--text-muted)">Dusen Toplam</td><td id="sl-dropped" style="padding:8px">-</td></tr>
+                <tr><td style="padding:8px;color:var(--text-muted)">Son Emit</td><td id="sl-last-emit" style="padding:8px">-</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ MCP SERVER ============ -->
+<div class="page" id="page-mcp">
+    <div class="page-header">
+        <div><h2>MCP Server</h2><div class="desc">AI ajanlari icin Model Context Protocol araclari (salt-okunur kesif)</div></div>
+        <div class="actions">
+            <span id="mcp-tools-count-badge" style="padding:6px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text-muted)">- arac</span>
+        </div>
+    </div>
+    <div id="mcp-flag-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px">
+        <strong>MCP server modulu yuklenemedi.</strong> Tam liste icin <code>pip install -r requirements-mcp.txt</code> ile bagimliliklari yukleyin.
+    </div>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+        <h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;font-weight:600">Kurulum Komutu</h4>
+        <div style="display:flex;gap:8px;align-items:center">
+            <code id="mcp-install-cmd" style="flex:1;padding:12px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;color:var(--accent);font-family:monospace;font-size:13px;overflow-x:auto;white-space:nowrap">-</code>
+            <button class="btn btn-outline" onclick="copyMcpInstallCmd()" title="Panoya kopyala">📋 Kopyala</button>
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:var(--text-muted)">
+            Transport modlari: <span id="mcp-transports">-</span>
+        </div>
+    </div>
+    <div class="table-wrap" style="overflow:auto">
+        <table id="mcp-tools-table" style="width:100%;border-collapse:collapse">
+            <thead><tr>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Arac Adi</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Aciklama</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border);width:90px">Tur</th>
+            </tr></thead>
+            <tbody id="mcp-tools-tbody"><tr><td colspan="3" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ BACKUPS ============ -->
+<div class="page" id="page-backups">
+    <div class="page-header">
+        <div><h2>Veritabani Yedekleri</h2><div class="desc">SQLite snapshot'lari (VACUUM INTO + SHA-256 dogrulamali)</div></div>
+        <div class="actions">
+            <button class="btn btn-outline" onclick="exportBackupsXlsx(event)">XLSX Export</button>
+            <button class="btn btn-primary" id="backups-snapshot-btn" onclick="openSnapshotModal()">Manuel Snapshot Al</button>
+        </div>
+    </div>
+    <div id="backups-flag-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px">
+        <strong>Otomatik yedekleme kapali.</strong> Aktif etmek icin <code>config.yaml</code> dosyasinda <code>backup.enabled: true</code> ayarlayin.
+    </div>
+    <div id="backups-meta" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;font-size:12px;color:var(--text-muted);display:none">
+        Dizin: <code id="backups-dir" style="color:var(--accent)">-</code> &nbsp;|&nbsp;
+        Saklama: son <span id="backups-keep-last">-</span> / haftalik <span id="backups-keep-weekly">-</span>
+    </div>
+    <div class="table-wrap" style="overflow:auto">
+        <table id="backups-table" style="width:100%;border-collapse:collapse">
+            <thead><tr>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">ID</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Olusturma Tarihi</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Sebep</th>
+                <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border)">Boyut</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">SHA-256</th>
+                <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border);width:120px">Islem</th>
+            </tr></thead>
+            <tbody id="backups-tbody"><tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
 </div><!-- /main -->
 
 <!-- ============ MODALS ============ -->
@@ -1046,6 +1165,70 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="modal-actions">
         <button class="btn btn-outline" onclick="closeModal('modal-schedule')">Iptal</button>
         <button class="btn btn-primary" onclick="addSchedule()">Gorev Olustur</button>
+    </div>
+</div>
+</div>
+
+<!-- Snapshot Reason Modal -->
+<div class="modal-overlay" id="modal-snapshot">
+<div class="modal">
+    <h3>💾 Manuel Snapshot Al</h3>
+    <div class="form-group">
+        <label>Sebep (manifest'e yazilir)</label>
+        <input id="snap-reason" placeholder="Ornek: pre-upgrade-backup" value="manual">
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Snapshot, VACUUM INTO ile guvenli sekilde alinir; mevcut DB'ye kilit konmaz.</div>
+    </div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-snapshot')">Iptal</button>
+        <button class="btn btn-primary" id="snap-create-btn" onclick="createSnapshot(this)">Snapshot Olustur</button>
+    </div>
+</div>
+</div>
+
+<!-- Restore Confirm Modal (typed-confirmation) -->
+<div class="modal-overlay" id="modal-restore">
+<div class="modal">
+    <h3 style="color:var(--danger)">⚠️ Geri Yukleme — DIKKAT</h3>
+    <div style="background:rgba(220,38,38,0.1);border:1px solid var(--danger);border-radius:8px;padding:14px;margin-bottom:14px;font-size:13px;line-height:1.5;color:var(--text-primary)">
+        Bu islem mevcut veritabanini secilen snapshot ile <strong>tamamen degistirir</strong>. Onceee dashboard servisi durdurulmali; aksi takdirde sunucu istek reddeder. Devam etmeden onceee:
+        <ul style="margin:8px 0 0 18px;padding:0">
+            <li>Tum acik dashboard sekmelerini kapatin.</li>
+            <li>Servisi durdurun (<code>net stop file_activity</code>).</li>
+            <li>Bu islem GERI ALINAMAZ.</li>
+        </ul>
+    </div>
+    <div class="form-group">
+        <label>Hedef Snapshot</label>
+        <input id="restore-target-id" readonly style="background:var(--bg-secondary);color:var(--accent)">
+    </div>
+    <div class="form-group">
+        <label>Onaylamak icin <code style="color:var(--danger)">RESTORE</code> yazin</label>
+        <input id="restore-confirm-text" placeholder="RESTORE" oninput="onRestoreConfirmInput(this)" autocomplete="off">
+    </div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-restore')">Iptal</button>
+        <button class="btn btn-primary" id="restore-go-btn" disabled onclick="executeRestore(this)" style="background:var(--danger);border-color:var(--danger)">Geri Yukle</button>
+    </div>
+</div>
+</div>
+
+<!-- Syslog Config Modal -->
+<div class="modal-overlay" id="modal-syslog-config">
+<div class="modal">
+    <h3>📡 Syslog Konfigurasyonu</h3>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">Salt-okunur — degisiklikler icin <code>config.yaml</code> dosyasini duzenleyin.</div>
+    <pre id="syslog-config-yaml" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:14px;margin:0;font-family:monospace;font-size:12px;line-height:1.5;color:var(--text-primary);max-height:400px;overflow:auto;white-space:pre">integrations:
+  syslog:
+    enabled: false           # true yapinca forwarder calisir
+    host: "siem.firma.local" # Hedef SIEM hostu
+    port: 514                # 514 (UDP), 6514 (TLS), 1468 (Splunk TCP)
+    transport: "udp"         # udp | tcp | tcp_tls
+    format: "rfc5424"        # rfc5424 | cef
+    facility: "local0"
+    queue_max: 10000
+    tls_ca_path: ""          # Sadece transport=tcp_tls icin</pre>
+    <div class="modal-actions">
+        <button class="btn btn-primary" onclick="closeModal('modal-syslog-config')">Kapat</button>
     </div>
 </div>
 </div>
@@ -1159,7 +1342,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups };
     if (loaders[name]) loaders[name]();
 }
 
@@ -3736,6 +3919,232 @@ async function loadLegalHolds() {
     } catch (e) {
         console.error('loadLegalHolds error:', e);
     }
+}
+
+// ═══════════════════════════════════════════════════
+// SYSLOG / SIEM (Issue #81 — Integrations page)
+// ═══════════════════════════════════════════════════
+function _esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function loadSyslog() {
+    const banner = document.getElementById('syslog-flag-banner');
+    try {
+        const r = await fetch('/api/integrations/syslog/status');
+        const d = r.ok ? await r.json() : {};
+        const enabled = !!d.available;
+        const configured = !!d.configured;
+        if (banner) banner.style.display = (enabled || configured) ? 'none' : 'block';
+        const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val == null || val === '' ? '-' : val; };
+        setText('syslog-status-val', enabled ? 'Aktif' : (configured ? 'Yapilandirildi' : 'Kapali'));
+        setText('syslog-status-sub', enabled ? `${d.transport || '-'} -> ${d.host || '-'}:${d.port || '-'}` : 'Yapilandirma yapilmamis');
+        const qd = (d.queue_depth != null) ? d.queue_depth : '-';
+        const qm = (d.queue_max != null) ? d.queue_max : '-';
+        setText('syslog-queue-val', String(qd));
+        setText('syslog-queue-sub', `${qd} / ${qm}`);
+        setText('syslog-error-val', d.last_error || 'Yok');
+        setText('syslog-error-sub', `Son emit: ${d.last_emit_at || '-'}`);
+        setText('sl-enabled', enabled ? 'Evet' : 'Hayir');
+        setText('sl-host', d.host);
+        setText('sl-port', d.port);
+        setText('sl-transport', d.transport);
+        setText('sl-format', d.format);
+        setText('sl-sent', formatNum(d.sent_count || 0));
+        setText('sl-dropped', formatNum(d.dropped_count || 0));
+        setText('sl-last-emit', d.last_emit_at || '-');
+    } catch (e) {
+        console.error('loadSyslog error:', e);
+        if (banner) { banner.style.display = 'block'; banner.innerHTML = '<strong>Syslog durumu okunamadi.</strong> ' + _esc(e.message); }
+    }
+}
+
+async function sendSyslogTest(btn) {
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch('/api/integrations/syslog/test', { method: 'POST', signal });
+        const d = await r.json().catch(() => ({}));
+        if (d.sent) {
+            notify('Test event gonderildi', 'success');
+            setTimeout(loadSyslog, 600);  // refresh queue/last_emit
+        } else {
+            notify('Test event gonderilemedi: ' + (d.error || 'bilinmeyen hata'), 'error');
+        }
+    });
+}
+
+function showSyslogConfig() { openModal('modal-syslog-config'); }
+
+// ═══════════════════════════════════════════════════
+// MCP SERVER (Issue #81 — Integrations page)
+// ═══════════════════════════════════════════════════
+async function loadMcp() {
+    const banner = document.getElementById('mcp-flag-banner');
+    const tbody = document.getElementById('mcp-tools-tbody');
+    try {
+        const r = await fetch('/api/system/mcp/info');
+        const d = r.ok ? await r.json() : { tools: [], configured: false };
+        if (banner) banner.style.display = d.configured ? 'none' : 'block';
+        const cmdEl = document.getElementById('mcp-install-cmd');
+        if (cmdEl) cmdEl.textContent = d.install_command || '-';
+        const trEl = document.getElementById('mcp-transports');
+        if (trEl) trEl.textContent = (d.transports || ['stdio']).join(', ');
+        const badge = document.getElementById('mcp-tools-count-badge');
+        if (badge) badge.textContent = `${d.tools_count || 0} arac`;
+        const tools = d.tools || [];
+        if (!tools.length) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:20px;text-align:center;color:var(--text-muted)">Arac listesi alinamadi.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = tools.map(t => `
+            <tr>
+                <td style="padding:10px;border-bottom:1px solid var(--border)"><code style="color:var(--accent)">${_esc(t.name)}</code></td>
+                <td style="padding:10px;border-bottom:1px solid var(--border);color:var(--text-secondary);font-size:13px">${_esc(t.description || '')}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">${t.is_write
+                    ? '<span style="display:inline-block;padding:2px 8px;background:var(--danger);color:#fff;border-radius:4px;font-size:11px">write</span>'
+                    : '<span style="display:inline-block;padding:2px 8px;background:var(--bg-secondary);color:var(--text-muted);border-radius:4px;font-size:11px">read</span>'}</td>
+            </tr>`).join('');
+    } catch (e) {
+        console.error('loadMcp error:', e);
+        if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="padding:20px;text-align:center;color:var(--danger)">Hata: ${_esc(e.message)}</td></tr>`;
+    }
+}
+
+function copyMcpInstallCmd() {
+    const cmd = document.getElementById('mcp-install-cmd')?.textContent || '';
+    if (!cmd || cmd === '-') { notify('Kopyalanacak komut yok', 'warning'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).then(
+            () => notify('Komut panoya kopyalandi', 'success'),
+            () => notify('Pano erisimi reddedildi', 'error')
+        );
+    } else {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = cmd;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); notify('Komut panoya kopyalandi', 'success'); }
+        catch { notify('Kopyalama desteklenmiyor', 'error'); }
+        ta.remove();
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// SYSTEM BACKUPS (Issue #81 — System page)
+// ═══════════════════════════════════════════════════
+let _backupsCache = [];
+
+async function loadBackups() {
+    const banner = document.getElementById('backups-flag-banner');
+    const tbody = document.getElementById('backups-tbody');
+    const meta = document.getElementById('backups-meta');
+    try {
+        const r = await fetch('/api/system/backups');
+        const d = r.ok ? await r.json() : { rows: [], enabled: false };
+        if (banner) banner.style.display = d.enabled ? 'none' : 'block';
+        if (meta) {
+            meta.style.display = 'block';
+            const dirEl = document.getElementById('backups-dir');
+            if (dirEl) dirEl.textContent = d.backup_dir || '-';
+            const klEl = document.getElementById('backups-keep-last');
+            if (klEl) klEl.textContent = d.keep_last_n != null ? d.keep_last_n : '-';
+            const kwEl = document.getElementById('backups-keep-weekly');
+            if (kwEl) kwEl.textContent = d.keep_weekly != null ? d.keep_weekly : '-';
+        }
+        const rows = (d.rows || []).slice().sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+        _backupsCache = rows;
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Henuz snapshot yok</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(s => {
+            const sha = (s.sha256 || '').slice(0, 12);
+            return `
+            <tr>
+                <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${_esc(s.id)}</code></td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">${_esc(s.created_at || '-')}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)">${_esc(s.reason || '-')}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border);text-align:right">${formatSize(s.size_bytes || 0)}</td>
+                <td style="padding:10px;border-bottom:1px solid var(--border)"><code style="color:var(--text-muted);font-size:11px" title="${_esc(s.sha256 || '')}">${_esc(sha)}…</code></td>
+                <td style="padding:10px;border-bottom:1px solid var(--border);text-align:right">
+                    <button class="btn btn-outline" style="font-size:11px;padding:4px 10px;border-color:var(--danger);color:var(--danger)" onclick="openRestoreModal('${_esc(s.id)}')">Restore</button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadBackups error:', e);
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--danger)">Hata: ${_esc(e.message)}</td></tr>`;
+    }
+}
+
+function openSnapshotModal() {
+    const reason = document.getElementById('snap-reason');
+    if (reason) reason.value = 'manual';
+    openModal('modal-snapshot');
+}
+
+async function createSnapshot(btn) {
+    const reason = (document.getElementById('snap-reason')?.value || 'manual').trim() || 'manual';
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch('/api/system/backups/snapshot', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason, confirm: true }),
+            signal,
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) {
+            notify('Snapshot olusturulamadi: ' + (d.detail || d.error || `HTTP ${r.status}`), 'error');
+            return;
+        }
+        notify(`Snapshot olusturuldu: ${d.id} (${formatSize(d.size_bytes || 0)})`, 'success');
+        closeModal('modal-snapshot');
+        loadBackups();
+    });
+}
+
+function openRestoreModal(snapId) {
+    const tgt = document.getElementById('restore-target-id');
+    const txt = document.getElementById('restore-confirm-text');
+    const goBtn = document.getElementById('restore-go-btn');
+    if (tgt) tgt.value = snapId;
+    if (txt) txt.value = '';
+    if (goBtn) goBtn.disabled = true;
+    openModal('modal-restore');
+}
+
+function onRestoreConfirmInput(input) {
+    const goBtn = document.getElementById('restore-go-btn');
+    if (goBtn) goBtn.disabled = (input.value !== 'RESTORE');
+}
+
+async function executeRestore(btn) {
+    const id = document.getElementById('restore-target-id')?.value || '';
+    const txt = document.getElementById('restore-confirm-text')?.value || '';
+    if (!id) { notify('Snapshot id bos', 'warning'); return; }
+    if (txt !== 'RESTORE') { notify('Onay metni hatali', 'warning'); return; }
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch(`/api/system/backups/restore/${encodeURIComponent(id)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: true }),
+            signal,
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            notify('Restore basarisiz: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            return;
+        }
+        notify(`Snapshot geri yuklendi: ${d.restored || id}`, 'success');
+        closeModal('modal-restore');
+        loadBackups();
+    }, 120000);
+}
+
+async function exportBackupsXlsx(ev) {
+    const btn = ev && ev.currentTarget ? ev.currentTarget : null;
+    if (!btn) return;
+    await withButtonLoading(btn, async (signal) => {
+        await fetchAndDownload('/api/system/backups/export', signal, 'backups.xlsx');
+    });
 }
 
 // ═══════════════════════════════════════════════════
