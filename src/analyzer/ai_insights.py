@@ -425,74 +425,91 @@ class InsightsEngine:
         return max(0, min(100, score))
 
 
-def get_insight_files(db: Database, scan_id: int, insight_type: str) -> list:
-    """Insight tipine gore dosya listesi dondur."""
-    queries = {
-        "stale_1year": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            AND last_access_time < datetime('now', '-365 days')
-            ORDER BY file_size DESC
-        """,
-        "stale_3year": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            AND last_access_time < datetime('now', '-1095 days')
-            ORDER BY file_size DESC
-        """,
-        "large_files": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            AND file_size > 104857600
-            ORDER BY file_size DESC
-        """,
-        "temp_files": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            AND (extension IN ('tmp','temp','bak','old','cache','log')
-                 OR file_name LIKE '~$%' OR file_name LIKE '%.tmp')
-            ORDER BY file_size DESC
-        """,
-        "duplicates": """
-            SELECT sf.id, sf.file_path, sf.file_name, sf.file_size, sf.owner,
-                   sf.last_access_time, sf.last_modify_time
-            FROM scanned_files sf
-            INNER JOIN (
-                SELECT file_name, file_size
-                FROM scanned_files WHERE scan_id=? AND file_size > 1048576
-                GROUP BY file_name, file_size HAVING COUNT(*) > 1
-            ) dup ON sf.file_name = dup.file_name AND sf.file_size = dup.file_size
-            WHERE sf.scan_id=?
-            ORDER BY sf.file_size DESC
-        """,
-        "empty_files": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            AND file_size = 0
-            ORDER BY file_name ASC
-        """,
-        "very_large": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            AND file_size > 1073741824
-            ORDER BY file_size DESC
-        """,
-        "stale_180": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            AND last_access_time < datetime('now', '-180 days')
-            ORDER BY file_size DESC
-        """,
-        "all_files": """
-            SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
-            FROM scanned_files WHERE scan_id=?
-            ORDER BY file_size DESC
-        """,
-    }
+# SQL queries keyed by insight_type. Defined at module level so the set of
+# valid keys (`VALID_INSIGHT_TYPES`) can be discovered without calling the
+# function — useful for the API layer's input validation and for tests.
+_INSIGHT_QUERIES: dict[str, str] = {
+    "stale_1year": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        AND last_access_time < datetime('now', '-365 days')
+        ORDER BY file_size DESC
+    """,
+    "stale_3year": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        AND last_access_time < datetime('now', '-1095 days')
+        ORDER BY file_size DESC
+    """,
+    "large_files": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        AND file_size > 104857600
+        ORDER BY file_size DESC
+    """,
+    "temp_files": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        AND (extension IN ('tmp','temp','bak','old','cache','log')
+             OR file_name LIKE '~$%' OR file_name LIKE '%.tmp')
+        ORDER BY file_size DESC
+    """,
+    "duplicates": """
+        SELECT sf.id, sf.file_path, sf.file_name, sf.file_size, sf.owner,
+               sf.last_access_time, sf.last_modify_time
+        FROM scanned_files sf
+        INNER JOIN (
+            SELECT file_name, file_size
+            FROM scanned_files WHERE scan_id=? AND file_size > 1048576
+            GROUP BY file_name, file_size HAVING COUNT(*) > 1
+        ) dup ON sf.file_name = dup.file_name AND sf.file_size = dup.file_size
+        WHERE sf.scan_id=?
+        ORDER BY sf.file_size DESC
+    """,
+    "empty_files": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        AND file_size = 0
+        ORDER BY file_name ASC
+    """,
+    "very_large": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        AND file_size > 1073741824
+        ORDER BY file_size DESC
+    """,
+    "stale_180": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        AND last_access_time < datetime('now', '-180 days')
+        ORDER BY file_size DESC
+    """,
+    "all_files": """
+        SELECT id, file_path, file_name, file_size, owner, last_access_time, last_modify_time
+        FROM scanned_files WHERE scan_id=?
+        ORDER BY file_size DESC
+    """,
+}
 
-    query = queries.get(insight_type)
-    if not query:
-        return []
+# Public, immutable view of the supported insight types. The API layer and
+# tests can introspect this without depending on the implementation detail
+# of `_INSIGHT_QUERIES` being a dict.
+VALID_INSIGHT_TYPES: frozenset[str] = frozenset(_INSIGHT_QUERIES.keys())
+
+
+def get_insight_files(db: Database, scan_id: int, insight_type: str) -> list:
+    """Insight tipine gore dosya listesi dondur.
+
+    Bilinmeyen `insight_type` icin sessizce bos liste donmek yerine
+    `ValueError` yukseltir; cagiran katman (API) bunu HTTP 400'e cevirir
+    boylece kullanici "buton bozuk" sanmaz (issue #82, Bug 2).
+    """
+    query = _INSIGHT_QUERIES.get(insight_type)
+    if query is None:
+        raise ValueError(
+            f"Unknown insight_type: {insight_type!r}. "
+            f"Valid: {sorted(VALID_INSIGHT_TYPES)}"
+        )
 
     with db.get_cursor() as cur:
         if insight_type == "duplicates":
