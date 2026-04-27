@@ -191,6 +191,18 @@ reports:
     - html
     - json
 
+forecast:
+  # Kapasite / kota tahmini (issue #113). scan_runs.total_size_bytes
+  # geçmişi üzerinde stdlib-only doğrusal regresyon çalıştırır; sonuç
+  # /api/forecast/{source_id} ile JSON ve XLSX olarak sunulur. Salt
+  # okunur olduğu için varsayılan olarak açıktır; alarm e-postası
+  # smtp.enabled=false iken otomatik no-op çalışır.
+  enabled: true
+  default_horizon_days: 180
+  capacity_threshold_pct: 85       # diskin %X dolduğunda alarm verilir
+  alarm_email: ""                  # bos = alarm postasi yok; doldurulursa daily digest
+  alarm_lead_days: 30              # alarm tarihi bu kadar gun icinde ise digest'e ekle
+
 dashboard:
   host: "0.0.0.0"
   port: 8085

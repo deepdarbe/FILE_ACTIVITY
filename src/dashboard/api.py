@@ -2663,6 +2663,25 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             pii_backend_info = {"backend": "re", "configured": "auto",
                                  "hyperscan_available": False, "version": None}
 
+        # Issue #113: surface total disk capacity so the forecast page can
+        # compute the default 85% threshold without a second roundtrip.
+        # shutil.disk_usage() works on the volume hosting the SQLite DB —
+        # which is the same volume holding ``data/`` (scans, snapshots,
+        # quarantine), i.e. the resource we care about for capacity alarms.
+        disk_info = None
+        try:
+            import shutil as _shutil
+            target = os.path.dirname(os.path.abspath(db.db_path)) or "."
+            usage = _shutil.disk_usage(target)
+            disk_info = {
+                "path": target,
+                "total_bytes": int(usage.total),
+                "used_bytes": int(usage.used),
+                "free_bytes": int(usage.free),
+            }
+        except Exception as e:  # pragma: no cover - non-critical
+            logger.debug("disk_usage probe failed: %s", e)
+
         return {
             "status": "ok",
             "time": datetime.now().isoformat(),
@@ -2672,6 +2691,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "email": email_notifier.health(),
             "wal_warning": wal_warning,
             "pii_backend": pii_backend_info,
+            "disk": disk_info,
         }
 
     @app.get("/api/system/analytics")
@@ -4789,6 +4809,253 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             raise HTTPException(500, str(e))
         filename = (
             f"Chargeback_source{source_id}_scan{scan_id}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        return StreamingResponse(
+            _io.BytesIO(blob),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+            },
+        )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Forecast / capacity planning (issue #113).
+    #
+    # GET /api/forecast/{source_id}?horizon_days=180&model=linear
+    #   Linear-regression projection over scan_runs history. Returns the
+    #   ForecastResult dataclass shape.
+    #
+    # GET /api/forecast/{source_id}/export.xlsx
+    #   Workbook with Summary / History / Settings sheets. Settings.B2 holds
+    #   the editable threshold (% of disk).
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _scan_history_for(source_id: int) -> list:
+        """Pull (started_at, total_size) pairs from scan_runs for one source.
+
+        Excludes still-running scans because their total_size is interim.
+        Sorted ascending so forecast_growth() can use the first row as t0.
+        """
+        with db.get_cursor() as cur:
+            cur.execute(
+                """
+                SELECT started_at, total_size, total_files
+                FROM scan_runs
+                WHERE source_id = ?
+                  AND status = 'completed'
+                  AND total_size IS NOT NULL
+                  AND total_size > 0
+                ORDER BY started_at ASC
+                """,
+                (int(source_id),),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def _forecast_config() -> dict:
+        cfg = (config or {}).get("forecast") or {}
+        return {
+            "enabled": bool(cfg.get("enabled", True)),
+            "default_horizon_days": int(cfg.get("default_horizon_days", 180)),
+            "capacity_threshold_pct": float(cfg.get("capacity_threshold_pct", 85)),
+            "alarm_email": (cfg.get("alarm_email") or "").strip(),
+            "alarm_lead_days": int(cfg.get("alarm_lead_days", 30)),
+        }
+
+    def _disk_total_bytes() -> int:
+        """Best-effort: total bytes on the volume holding the SQLite DB.
+
+        Same logic as /api/system/health — kept inline so the forecast
+        endpoints don't have to round-trip through the health probe.
+        """
+        try:
+            import shutil as _shutil
+            target = os.path.dirname(os.path.abspath(db.db_path)) or "."
+            return int(_shutil.disk_usage(target).total)
+        except Exception:
+            return 0
+
+    @app.get("/api/forecast/{source_id}")
+    async def forecast_endpoint(
+        source_id: int,
+        horizon_days: int = Query(180, ge=1, le=3650),
+        model: str = Query("linear"),
+        threshold_bytes: Optional[int] = Query(None, ge=0),
+    ):
+        """Capacity forecast for one source (issue #113).
+
+        Currently only ``model=linear`` is supported; future iterations may
+        add seasonal / ARIMA — keeping the query parameter so the URL doesn't
+        break when that arrives.
+        """
+        from src.reports.forecast import forecast_growth
+
+        fc_cfg = _forecast_config()
+        if not fc_cfg["enabled"]:
+            raise HTTPException(404, "forecast.enabled=false")
+
+        if model != "linear":
+            raise HTTPException(
+                400, f"unsupported model {model!r} (only 'linear' for now)"
+            )
+
+        # Verify the source exists so callers get a real 404 (not an empty
+        # forecast with samples_used=0).
+        with db.get_cursor() as cur:
+            cur.execute("SELECT 1 FROM sources WHERE id = ?", (source_id,))
+            if not cur.fetchone():
+                raise HTTPException(404, "source bulunamadi")
+
+        rows = _scan_history_for(source_id)
+
+        # Threshold resolution: explicit query param wins; otherwise fall
+        # back to (capacity_threshold_pct% × disk_total_bytes).
+        thr = threshold_bytes
+        disk_total = _disk_total_bytes()
+        if thr is None and disk_total > 0:
+            thr = int(disk_total * fc_cfg["capacity_threshold_pct"] / 100.0)
+
+        result = forecast_growth(
+            rows,
+            horizon_days=horizon_days,
+            capacity_threshold_bytes=thr,
+            source_id=source_id,
+        )
+        body = result.to_dict()
+        # Surface the threshold + disk total so the frontend can recompute
+        # alarm dates client-side without a second call.
+        body["threshold_bytes"] = int(thr) if thr is not None else None
+        body["disk_total_bytes"] = int(disk_total) if disk_total else None
+        body["capacity_threshold_pct"] = fc_cfg["capacity_threshold_pct"]
+        body["model"] = "linear"
+        return body
+
+    @app.get("/api/forecast/{source_id}/export.xlsx")
+    async def forecast_export_xlsx(
+        source_id: int,
+        horizon_days: int = Query(180, ge=1, le=3650),
+        threshold_bytes: Optional[int] = Query(None, ge=0),
+    ):
+        """XLSX workbook: Summary + History + Settings (editable threshold)."""
+        from fastapi.responses import StreamingResponse
+        import io as _io
+        from src.reports.forecast import forecast_growth
+
+        fc_cfg = _forecast_config()
+        if not fc_cfg["enabled"]:
+            raise HTTPException(404, "forecast.enabled=false")
+
+        with db.get_cursor() as cur:
+            cur.execute(
+                "SELECT id, name FROM sources WHERE id = ?", (source_id,)
+            )
+            src_row = cur.fetchone()
+            if not src_row:
+                raise HTTPException(404, "source bulunamadi")
+        source_name = src_row["name"]
+
+        rows = _scan_history_for(source_id)
+        disk_total = _disk_total_bytes()
+        thr = threshold_bytes
+        if thr is None and disk_total > 0:
+            thr = int(disk_total * fc_cfg["capacity_threshold_pct"] / 100.0)
+
+        result = forecast_growth(
+            rows,
+            horizon_days=horizon_days,
+            capacity_threshold_bytes=thr,
+            source_id=source_id,
+        )
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill
+        except ImportError as e:
+            raise HTTPException(
+                500, f"openpyxl not available: {e}"
+            )
+
+        wb = Workbook()
+
+        # ---- Summary sheet (active by default) ------------------------
+        ws_sum = wb.active
+        ws_sum.title = "Summary"
+        ws_sum["A1"] = "Field"
+        ws_sum["B1"] = "Value"
+        for c in (ws_sum["A1"], ws_sum["B1"]):
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="DDDDDD")
+        rows_sum = [
+            ("Source ID", source_id),
+            ("Source name", source_name),
+            ("Horizon (days)", result.horizon_days),
+            ("Samples used", result.samples_used),
+            ("R²", round(result.r_squared, 6)),
+            ("Slope (bytes/day)", round(result.slope_bytes_per_day, 2)),
+            ("Predicted bytes", int(result.predicted_bytes)),
+            ("Predicted GiB",
+             round(result.predicted_bytes / (1024 ** 3), 4)),
+            ("CI low (bytes)", int(result.ci_low_bytes)),
+            ("CI high (bytes)", int(result.ci_high_bytes)),
+            ("Threshold (bytes)", int(thr) if thr is not None else ""),
+            ("Disk total (bytes)", int(disk_total) if disk_total else ""),
+            ("Capacity alarm at", result.capacity_alarm_at or ""),
+            ("Generated at (UTC)", datetime.utcnow().isoformat() + "Z"),
+        ]
+        for i, (k, v) in enumerate(rows_sum, start=2):
+            ws_sum.cell(row=i, column=1, value=k)
+            ws_sum.cell(row=i, column=2, value=v)
+        ws_sum.column_dimensions["A"].width = 28
+        ws_sum.column_dimensions["B"].width = 32
+
+        # ---- History sheet (raw scan_runs data) -----------------------
+        ws_hist = wb.create_sheet("History")
+        ws_hist.append(["started_at", "total_size_bytes", "total_files"])
+        for cell in ws_hist[1]:
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill("solid", fgColor="DDDDDD")
+        for r in rows:
+            ws_hist.append([
+                r.get("started_at") or "",
+                int(r.get("total_size") or 0),
+                int(r.get("total_files") or 0),
+            ])
+        ws_hist.column_dimensions["A"].width = 24
+        ws_hist.column_dimensions["B"].width = 22
+        ws_hist.column_dimensions["C"].width = 16
+
+        # ---- Settings sheet (editable threshold cell) -----------------
+        ws_set = wb.create_sheet("Settings")
+        ws_set["A1"] = "Setting"
+        ws_set["B1"] = "Value"
+        for c in (ws_set["A1"], ws_set["B1"]):
+            c.font = Font(bold=True)
+            c.fill = PatternFill("solid", fgColor="DDDDDD")
+        # B2 is the editable threshold percentage. B3 holds the disk total
+        # so auditors can compute (B2/100)*B3 manually if they need to.
+        ws_set["A2"] = "Threshold (% of disk)"
+        ws_set["B2"] = fc_cfg["capacity_threshold_pct"]
+        ws_set["A3"] = "Disk total bytes"
+        ws_set["B3"] = int(disk_total) if disk_total else ""
+        ws_set["A4"] = "Threshold bytes (=B2/100*B3)"
+        ws_set["B4"] = "=B2/100*B3" if disk_total else int(thr or 0)
+        ws_set["A5"] = "Note"
+        ws_set["B5"] = (
+            "Edit B2 to change the threshold; B4 recomputes automatically. "
+            "Re-run the forecast endpoint to refresh the alarm date."
+        )
+        ws_set.column_dimensions["A"].width = 32
+        ws_set.column_dimensions["B"].width = 32
+
+        buf = _io.BytesIO()
+        wb.save(buf)
+        blob = buf.getvalue()
+
+        filename = (
+            f"Forecast_source{source_id}_h{horizon_days}d_"
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
         return StreamingResponse(

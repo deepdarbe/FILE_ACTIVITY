@@ -430,6 +430,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="nav-section">
         <div class="nav-label">Raporlar</div>
         <div class="nav-item" onclick="showPage('chargeback')"><span class="icon">💵</span> <span>Chargeback / Cost Center</span></div>
+        <div class="nav-item" onclick="showPage('forecast')"><span class="icon">🔮</span> <span>Kapasite Tahmini</span></div>
     </div>
     <div class="nav-section">
         <div class="nav-label">Entegrasyonlar</div>
@@ -1107,6 +1108,54 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <button class="btn btn-primary" id="cb-form-submit-btn" onclick="submitChargebackCenterForm(this)">Olustur</button>
     </div>
 </div>
+</div>
+
+<!-- ============ RAPORLAR > KAPASITE TAHMINI (issue #113) ============ -->
+<div class="page" id="page-forecast">
+    <div class="page-header">
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Raporlar &raquo; Kapasite Tahmini</div>
+            <h2>Kapasite / Kota Tahmini</h2>
+            <div class="desc">scan_runs gecmisinde dogrusal regresyon ile depolama buyume projeksiyonu — %95 guven aralig + esik asim alarmi (issue #113)</div>
+        </div>
+        <div class="actions">
+            <select id="fc-source" onchange="loadForecast()" style="width:200px">
+                <option value="">Kaynak secin...</option>
+            </select>
+            <select id="fc-horizon" onchange="loadForecast()" style="width:140px">
+                <option value="30">30 gun</option>
+                <option value="90">90 gun</option>
+                <option value="180" selected>180 gun</option>
+                <option value="365">1 yil</option>
+            </select>
+            <input id="fc-threshold-pct" type="number" min="1" max="100" step="1" value="85"
+                   onchange="recomputeForecastAlarm()" title="Disk doluluk esigi (%)"
+                   style="width:90px;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
+            <button class="btn btn-outline" id="fc-xlsx-btn" onclick="exportForecastXlsx(event)" style="display:none">XLSX Indir</button>
+        </div>
+    </div>
+
+    <!-- KPI banner -->
+    <div class="cards" id="fc-kpi-cards"></div>
+
+    <!-- Visual mode -->
+    <div id="fc-visual-host" style="margin-top:20px">
+        <div class="panel">
+            <h3 class="panel-title">Tarihsel + Projeksiyon (95% Konfidans Konisi)</h3>
+            <div style="position:relative;height:380px">
+                <canvas id="fc-line-chart"></canvas>
+            </div>
+            <div id="fc-meta" style="margin-top:10px;font-size:11px;color:var(--text-muted)"></div>
+        </div>
+    </div>
+
+    <!-- Profesyonel mode -->
+    <div id="fc-grid-host" class="view-grid-host" style="display:none">
+        <div class="panel" style="margin-top:20px">
+            <h3 class="panel-title">Aylik Projeksiyon Donum Noktalari</h3>
+            <div id="fc-entity-container"></div>
+        </div>
+    </div>
 </div>
 
 <!-- Modal: Owner pattern ekle -->
@@ -1998,7 +2047,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -2026,10 +2075,10 @@ async function loadSources() {
 }
 
 function populateAllSourceSelects() {
-    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source'].forEach(id => populateSourceSelect(id));
+    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source','fc-source'].forEach(id => populateSourceSelect(id));
     // Auto-select first source if only one
     if (sources.length === 1) {
-        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source'].forEach(id => {
+        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source','fc-source'].forEach(id => {
             const sel = document.getElementById(id);
             if (sel && !sel.value) sel.value = sources[0].id;
         });
@@ -7064,6 +7113,363 @@ async function exportChargebackXlsx(ev) {
             `${API}/chargeback/${sid}/export.xlsx`,
             signal,
             `chargeback_source${sid}.xlsx`
+        );
+    });
+}
+
+// ═══════════════════════════════════════════════════
+// CAPACITY FORECAST (issue #113)
+// ═══════════════════════════════════════════════════
+let _fcLastResult = null;        // last forecast response — for client-side recompute
+
+function _attachForecastViewToggle() {
+    const page = document.getElementById('page-forecast');
+    if (!page || typeof attachViewToggle !== 'function') return;
+    attachViewToggle(page, {
+        pageKey: 'forecast',
+        renderVisual: _renderForecastVisual,
+        renderGrid: _renderForecastGrid,
+        defaultMode: 'visual',
+    });
+}
+
+function _renderForecastVisual() {
+    const v = document.getElementById('fc-visual-host');
+    const g = document.getElementById('fc-grid-host');
+    if (v) v.style.display = '';
+    if (g) g.style.display = 'none';
+    if (_fcLastResult) _renderForecastChart(_fcLastResult);
+}
+
+function _renderForecastGrid() {
+    const v = document.getElementById('fc-visual-host');
+    const g = document.getElementById('fc-grid-host');
+    if (v) v.style.display = 'none';
+    if (g) g.style.display = '';
+    if (_fcLastResult) _renderForecastEntityList(_fcLastResult);
+}
+
+async function loadForecast() {
+    _attachForecastViewToggle();
+    const sid = document.getElementById('fc-source').value;
+    const horizon = parseInt(document.getElementById('fc-horizon').value || '180', 10);
+    const xb = document.getElementById('fc-xlsx-btn');
+    if (!sid) {
+        document.getElementById('fc-kpi-cards').innerHTML = '';
+        document.getElementById('fc-meta').innerHTML =
+            '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>';
+        if (xb) xb.style.display = 'none';
+        return;
+    }
+
+    let data;
+    try {
+        data = await api(`/forecast/${sid}?horizon_days=${horizon}&model=linear`);
+    } catch (e) {
+        document.getElementById('fc-kpi-cards').innerHTML =
+            '<div style="padding:20px;color:var(--text-muted)">Tahmin alinamadi.</div>';
+        return;
+    }
+    _fcLastResult = data;
+    if (xb) xb.style.display = '';
+
+    // Pull threshold pct from server response if present, otherwise UI default.
+    const pctInput = document.getElementById('fc-threshold-pct');
+    if (data.capacity_threshold_pct && pctInput && !pctInput.dataset.userEdited) {
+        pctInput.value = data.capacity_threshold_pct;
+    }
+
+    _renderForecastKPIs(data);
+    _renderForecastChart(data);
+    _renderForecastEntityList(data);
+}
+
+function _renderForecastKPIs(data) {
+    const samples = data.samples_used || 0;
+    const r2 = (data.r_squared || 0).toFixed(3);
+    const slope = data.slope_bytes_per_day || 0;
+    const slopePerDay = formatSize(Math.abs(slope));
+    const slopeSign = slope < 0 ? '-' : '+';
+    const horizon = data.horizon_days || 0;
+    const predicted = formatSize(data.predicted_bytes || 0);
+
+    let alarmHtml;
+    let alarmColor = 'var(--success)';
+    if (samples < 3) {
+        alarmHtml = '<div class="card-value" style="font-size:18px">Yetersiz veri</div>'
+            + '<div class="card-sub">3+ tarama gecmisi gerekli</div>';
+        alarmColor = 'var(--warning)';
+    } else if (data.capacity_alarm_at) {
+        const today = new Date();
+        const alarm = new Date(data.capacity_alarm_at + 'T00:00:00');
+        const days = Math.round((alarm - today) / 86400000);
+        if (days <= 0) {
+            alarmHtml = `<div class="card-value" style="font-size:20px;color:var(--danger)">ALARM</div>`
+                + `<div class="card-sub">Esik bugun veya gecmis: <code>${data.capacity_alarm_at}</code></div>`;
+            alarmColor = 'var(--danger)';
+        } else {
+            alarmHtml = `<div class="card-value" style="font-size:20px;color:var(--warning)">${days} gun</div>`
+                + `<div class="card-sub">Bu hizla %${data.capacity_threshold_pct || '?'} doluluga <code>${data.capacity_alarm_at}</code> ulasilir</div>`;
+            alarmColor = 'var(--warning)';
+        }
+    } else {
+        alarmHtml = '<div class="card-value" style="font-size:20px">Capacity alarm yok</div>'
+            + '<div class="card-sub">Ufka kadar esige ulasilmiyor</div>';
+    }
+
+    document.getElementById('fc-kpi-cards').innerHTML = `
+        <div class="card" style="border-top:3px solid var(--accent)">
+            <div class="card-label">Ornek Sayisi</div>
+            <div class="card-value">${samples}</div>
+            <div class="card-sub">tamamlanmis scan_runs</div>
+        </div>
+        <div class="card" style="border-top:3px solid var(--info)">
+            <div class="card-label">${horizon} Gunluk Tahmin</div>
+            <div class="card-value" style="font-size:22px">${predicted}</div>
+            <div class="card-sub">95% CI: ${formatSize(data.ci_low_bytes||0)} – ${formatSize(data.ci_high_bytes||0)}</div>
+        </div>
+        <div class="card" style="border-top:3px solid var(--success)">
+            <div class="card-label">Buyume Hizi</div>
+            <div class="card-value" style="font-size:22px">${slopeSign}${slopePerDay}/gun</div>
+            <div class="card-sub">R² = ${r2}</div>
+        </div>
+        <div class="card" style="border-top:3px solid ${alarmColor}">
+            <div class="card-label">Kapasite Alarmi</div>
+            ${alarmHtml}
+        </div>
+    `;
+
+    const meta = document.getElementById('fc-meta');
+    if (meta) {
+        const thr = data.threshold_bytes
+            ? `${formatSize(data.threshold_bytes)} (%${data.capacity_threshold_pct || '?'} disk)`
+            : '(belirsiz)';
+        meta.innerHTML =
+            `Esik: ${thr} · Disk toplami: ${data.disk_total_bytes ? formatSize(data.disk_total_bytes) : '-'} · ` +
+            `Slope: ${slope.toLocaleString('tr-TR')} bayt/gun · R²: ${r2}`;
+    }
+}
+
+function _renderForecastChart(data) {
+    destroyChart('fc-line-chart');
+    const el = document.getElementById('fc-line-chart');
+    if (!el) return;
+
+    const history = data.history || [];
+    if (history.length === 0) {
+        el.parentElement.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Bu kaynakta tarama gecmisi yok.</div>';
+        return;
+    }
+
+    // Build the projection line: from last historical point -> horizon endpoint.
+    const lastTs = history[history.length - 1].ts;
+    const lastBytes = history[history.length - 1].bytes;
+    const horizonDate = new Date(new Date(lastTs).getTime() + (data.horizon_days || 180) * 86400000);
+    const horizonIso = horizonDate.toISOString();
+
+    const histPoints = history.map(h => ({ x: h.ts, y: h.bytes }));
+    const projection = (data.samples_used || 0) >= 3
+        ? [{ x: lastTs, y: lastBytes }, { x: horizonIso, y: data.predicted_bytes }]
+        : [];
+    const ciLow = (data.samples_used || 0) >= 3
+        ? [{ x: lastTs, y: lastBytes }, { x: horizonIso, y: data.ci_low_bytes }]
+        : [];
+    const ciHigh = (data.samples_used || 0) >= 3
+        ? [{ x: lastTs, y: lastBytes }, { x: horizonIso, y: data.ci_high_bytes }]
+        : [];
+
+    // Threshold line (horizontal) — anchored to history start so the user
+    // sees where the projected line will cross it.
+    const thr = data.threshold_bytes;
+    const thrLine = thr
+        ? [{ x: history[0].ts, y: thr }, { x: horizonIso, y: thr }]
+        : [];
+
+    chartInstances['fc-line-chart'] = new Chart(el, {
+        type: 'line',
+        data: {
+            datasets: [
+                {
+                    label: 'Gecmis (bytes)',
+                    data: histPoints,
+                    borderColor: '#3b82f6',
+                    backgroundColor: '#3b82f622',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    fill: false,
+                    tension: 0.1,
+                },
+                {
+                    label: 'Projeksiyon',
+                    data: projection,
+                    borderColor: '#8b5cf6',
+                    borderDash: [6, 4],
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: false,
+                },
+                {
+                    label: 'CI 95% ust',
+                    data: ciHigh,
+                    borderColor: '#8b5cf655',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: '+1',
+                    backgroundColor: '#8b5cf61a',
+                },
+                {
+                    label: 'CI 95% alt',
+                    data: ciLow,
+                    borderColor: '#8b5cf655',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: false,
+                },
+                ...(thrLine.length ? [{
+                    label: 'Esik',
+                    data: thrLine,
+                    borderColor: '#ef4444',
+                    borderDash: [3, 3],
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                }] : []),
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            parsing: false,
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { unit: 'day' },
+                    grid: { color: '#1e293b' },
+                },
+                y: {
+                    beginAtZero: false,
+                    grid: { color: '#1e293b' },
+                    ticks: {
+                        callback: (v) => formatSize(v),
+                    },
+                },
+            },
+            plugins: {
+                legend: { position: 'top', labels: { boxWidth: 12, padding: 8 } },
+                tooltip: {
+                    callbacks: {
+                        label: (ctx) => `${ctx.dataset.label}: ${formatSize(ctx.parsed.y)}`,
+                    },
+                },
+            },
+        },
+    });
+}
+
+function _renderForecastEntityList(data) {
+    const container = document.getElementById('fc-entity-container');
+    if (!container || typeof renderEntityList !== 'function') return;
+    if ((data.samples_used || 0) < 3) {
+        container.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted)">3+ tarama olunca aylik donum noktalari hesaplanir.</div>';
+        return;
+    }
+
+    // Project monthly milestones across the horizon
+    const slope = data.slope_bytes_per_day || 0;
+    const lastTs = data.last_ts;
+    const lastBytes = data.last_bytes || 0;
+    const horizonDays = data.horizon_days || 180;
+    const monthsOut = Math.max(1, Math.floor(horizonDays / 30));
+    const rows = [];
+    const thr = data.threshold_bytes;
+    const startDate = lastTs ? new Date(lastTs) : new Date();
+
+    for (let m = 1; m <= monthsOut; m++) {
+        const days = m * 30;
+        const dt = new Date(startDate.getTime() + days * 86400000);
+        const projected = lastBytes + slope * days;
+        const pctOfThr = thr ? Math.round((projected / thr) * 100) : null;
+        rows.push({
+            id: m,
+            month: m + ' ay sonra',
+            date: dt.toISOString().slice(0, 10),
+            projected_bytes: Math.round(projected),
+            projected_human: formatSize(projected),
+            pct_of_threshold: pctOfThr === null ? '-' : pctOfThr + '%',
+            over_threshold: thr && projected >= thr ? 'EVET' : '-',
+        });
+    }
+
+    renderEntityList(container, {
+        rows: rows,
+        rowKey: 'id',
+        pageSize: 50,
+        searchKeys: ['month', 'date'],
+        columns: [
+            { key: 'month', label: 'Ufuk' },
+            { key: 'date', label: 'Tarih' },
+            { key: 'projected_human', label: 'Tahmini Boyut' },
+            { key: 'pct_of_threshold', label: '% Esik' },
+            { key: 'over_threshold', label: 'Esik Asildi' },
+        ],
+        toolbar: {},
+        emptyMessage: 'Donum noktasi yok',
+    });
+}
+
+function recomputeForecastAlarm() {
+    const pctInput = document.getElementById('fc-threshold-pct');
+    if (pctInput) pctInput.dataset.userEdited = '1';
+    if (!_fcLastResult) return;
+
+    // Recompute alarm date client-side from slope/intercept + new threshold.
+    const pct = parseFloat(pctInput.value || '85');
+    const diskTotal = _fcLastResult.disk_total_bytes;
+    if (!diskTotal || pct <= 0) return;
+    const newThreshold = diskTotal * pct / 100;
+
+    const slope = _fcLastResult.slope_bytes_per_day || 0;
+    const intercept = _fcLastResult.intercept_bytes || 0;
+    const lastTs = _fcLastResult.last_ts;
+    const lastBytes = _fcLastResult.last_bytes || 0;
+
+    let newAlarm = null;
+    const todayIso = new Date().toISOString().slice(0, 10);
+    if (lastBytes >= newThreshold) {
+        newAlarm = todayIso;
+    } else if (slope > 0 && _fcLastResult.samples_used >= 3) {
+        // intercept + slope * t = newThreshold -> solve t (days from regression t0)
+        const tCross = (newThreshold - intercept) / slope;
+        // Map t back to a real date: t0 = first history sample.
+        const firstTs = (_fcLastResult.history && _fcLastResult.history.length)
+            ? _fcLastResult.history[0].ts : lastTs;
+        if (firstTs) {
+            const alarmDate = new Date(new Date(firstTs).getTime() + tCross * 86400000);
+            if (alarmDate > new Date()) {
+                newAlarm = alarmDate.toISOString().slice(0, 10);
+            } else {
+                newAlarm = todayIso;
+            }
+        }
+    }
+
+    // Patch the result + re-render KPIs (keep the chart's threshold line updated).
+    _fcLastResult.capacity_alarm_at = newAlarm;
+    _fcLastResult.capacity_threshold_pct = pct;
+    _fcLastResult.threshold_bytes = newThreshold;
+    _renderForecastKPIs(_fcLastResult);
+    _renderForecastChart(_fcLastResult);
+}
+
+async function exportForecastXlsx(ev) {
+    const sid = document.getElementById('fc-source').value;
+    const horizon = parseInt(document.getElementById('fc-horizon').value || '180', 10);
+    if (!sid) { notify('Once kaynak secin', 'warning'); return; }
+    await withButtonLoading(ev.target, async (signal) => {
+        await fetchAndDownload(
+            `${API}/forecast/${sid}/export.xlsx?horizon_days=${horizon}`,
+            signal,
+            `forecast_source${sid}_h${horizon}d.xlsx`
         );
     });
 }
