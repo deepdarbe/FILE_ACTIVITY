@@ -423,11 +423,19 @@ class Database:
 
         # Eski veritabanlari icin ALTER TABLE — summary kolonu yoksa ekle.
         # SQLite'ta IF NOT EXISTS ALTER ADD COLUMN yok, bu yuzden try/except.
+        #
+        # Issue #135 — ``current_phase`` ve ``updated_at`` kolonlari eklendi.
+        # Tarama yasam dongusu (enumeration -> insert -> analysis -> completed)
+        # dashboard'da durum etiketi olarak gosterilir; ``updated_at`` ise
+        # FileScanner'in periyodik UPDATE'inde tazelenip "scan canli mi" testine
+        # girer (eski WAL'dan kalan zombie scan_run'larini ayirt etmek icin).
         for col_def in (
             "summary_json TEXT",
             "summary_computed_at TEXT",
             "insights_json TEXT",
             "insights_computed_at TEXT",
+            "current_phase TEXT DEFAULT 'enumeration'",
+            "updated_at TIMESTAMP",
         ):
             col_name = col_def.split()[0]
             try:
@@ -1054,22 +1062,68 @@ class Database:
             return cur.lastrowid
 
     def update_scan_progress(self, scan_id: int, total_files: int, total_size: int):
-        """Tarama sirasinda periyodik ilerleme guncelleme (dashboard aninda gorsun)."""
+        """Tarama sirasinda periyodik ilerleme guncelleme (dashboard aninda gorsun).
+
+        Issue #135 — ``updated_at`` her UPDATE'te tazelenir, boylece dashboard
+        "scan canli mi" testinde ``updated_at < now() - 60s`` ise zombie olarak
+        isaretleyebilir. Tek SQL UPDATE; uzun bir transaction icine sarilmaz —
+        amac scanner'in bulk INSERT lock'una sirayla girip kisa tutmak.
+        """
         with self.get_cursor() as cur:
             cur.execute("""
-                UPDATE scan_runs SET total_files=?, total_size=?
+                UPDATE scan_runs SET total_files=?, total_size=?,
+                    updated_at=datetime('now','localtime')
                 WHERE id=? AND status='running'
             """, (total_files, total_size, scan_id))
 
+    def update_scan_phase(self, scan_id: int, phase: str) -> None:
+        """Issue #135 — tarama fazini guncelle (enumeration/insert/analysis/completed).
+
+        Frontend ``pollScanProgress`` etiketi (``MFT okunuyor`` vs
+        ``DB'ye yaziliyor`` vs ``Analiz calisiyor``) bu kolondan turetilir.
+        Eski (status='completed') scan_run'larini bozmamak icin sadece
+        running olanlari guncelleriz.
+        """
+        with self.get_cursor() as cur:
+            cur.execute("""
+                UPDATE scan_runs
+                SET current_phase=?, updated_at=datetime('now','localtime')
+                WHERE id=? AND status='running'
+            """, (phase, scan_id))
+
+    def get_scan_phase(self, scan_id: int) -> Optional[str]:
+        """Issue #135 — read current_phase for a scan_run (None if not found)."""
+        try:
+            with self.get_read_cursor() as cur:
+                cur.execute(
+                    "SELECT current_phase FROM scan_runs WHERE id=?",
+                    (scan_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                # row may be a dict (read cursor uses dict_factory)
+                if isinstance(row, dict):
+                    return row.get("current_phase")
+                return row[0] if row else None
+        except Exception:
+            return None
+
     def complete_scan_run(self, scan_id: int, total_files: int, total_size: int,
                           errors: int, status: str = "completed"):
+        # Issue #135 — phase reflects the final lifecycle state. ``completed``
+        # status -> ``completed`` phase; ``cancelled``/``failed`` -> phase keeps
+        # the last in-flight value but updated_at moves so dashboard stops
+        # polling.
+        final_phase = "completed" if status == "completed" else status
         with self.get_cursor() as cur:
             cur.execute("""
                 UPDATE scan_runs
                 SET completed_at = datetime('now','localtime'), total_files = ?,
-                    total_size = ?, errors = ?, status = ?
+                    total_size = ?, errors = ?, status = ?,
+                    current_phase = ?, updated_at = datetime('now','localtime')
                 WHERE id = ?
-            """, (total_files, total_size, errors, status, scan_id))
+            """, (total_files, total_size, errors, status, final_phase, scan_id))
 
     def get_scan_runs(self, source_id: Optional[int] = None, limit: int = 20) -> list:
         with self.get_cursor() as cur:
