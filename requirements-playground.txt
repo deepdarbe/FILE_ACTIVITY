@@ -1,0 +1,15 @@
+# file-activity-playground — Streamlit analytics playground (issue #75).
+#
+# Optional dependency set. NOT required by the dashboard or scanner —
+# only install on hosts where an admin needs the ad-hoc exploration UI.
+# The base FILE_ACTIVITY install (requirements.txt) stays untouched.
+#
+#   pip install -r requirements.txt -r requirements-playground.txt
+#   streamlit run src/playground/app.py --server.port 8086
+#
+# DuckDB (already in requirements.txt) is reused via read-only ATTACH;
+# the playground doesn't add a second DuckDB pin.
+
+streamlit>=1.30
+plotly>=5.20
+pandas>=2.0
