@@ -349,6 +349,10 @@ def _make_app_shaped_mgr(tmp_path: Path, **overrides) -> BackupManager:
             "keep_last_n": 10,
             "keep_weekly": 4,
             "auto_restore_on_corruption": False,
+            # Default mode is now 'skip' (master 4c38376). Auto-restore
+            # tests want the actual probe to run, so override here.
+            "corruption_check_mode": "quick",
+            "corruption_check_timeout_seconds": 30,
         },
         "smtp": {"enabled": False},
     }

@@ -34,6 +34,13 @@ from src.storage.corruption_detector import (  # noqa: E402
     is_corrupted,
 )
 
+# Default mode is now 'skip' (master 4c38376 — startup speed > probe).
+# The tests below want to exercise the *actual* check pragma, so we
+# pass an explicit 'quick' config to every is_corrupted() call that
+# wasn't already passing one.
+_QUICK_CFG = {"backup": {"corruption_check_mode": "quick",
+                          "corruption_check_timeout_seconds": 30}}
+
 
 def _make_valid_db(path: Path) -> None:
     """Build a minimal but app-shaped DB with all critical tables.
@@ -65,7 +72,7 @@ def test_corruption_detector_detects_truncated_db(tmp_path: Path):
     # ``DatabaseError: file is not a database`` from the first PRAGMA.
     target.write_bytes(b"NOT A REAL DB" * 64)
 
-    result = is_corrupted(str(target))
+    result = is_corrupted(str(target), _QUICK_CFG)
     assert isinstance(result, CorruptionResult)
     assert result.is_corrupted is True
     assert result.reason == "integrity_fail"
@@ -97,7 +104,7 @@ def test_corruption_detector_detects_missing_tables(tmp_path: Path):
         conn.close()
     assert target.stat().st_size > 0
 
-    result = is_corrupted(str(target))
+    result = is_corrupted(str(target), _QUICK_CFG)
     assert result.is_corrupted is True
     assert result.reason == "missing_tables"
     # All critical tables should be listed in the details.
@@ -115,7 +122,7 @@ def test_corruption_detector_passes_valid_db(tmp_path: Path):
     # Snapshot the file bytes so we can confirm the probe is read-only.
     pre = target.read_bytes()
 
-    result = is_corrupted(str(target))
+    result = is_corrupted(str(target), _QUICK_CFG)
     assert result.is_corrupted is False
     assert result.reason == "none"
 
@@ -138,7 +145,7 @@ def test_corruption_detector_zero_byte_file(tmp_path: Path):
     target.touch()
     assert target.stat().st_size == 0
 
-    result = is_corrupted(str(target))
+    result = is_corrupted(str(target), _QUICK_CFG)
     assert result.is_corrupted is True
     assert result.reason == "missing_tables"
 
@@ -154,7 +161,7 @@ def test_corruption_detector_nonexistent_path(tmp_path: Path):
     target = tmp_path / "does-not-exist.db"
     assert not target.exists()
 
-    result = is_corrupted(str(target))
+    result = is_corrupted(str(target), _QUICK_CFG)
     assert result.is_corrupted is False
     assert result.reason == "none"
 
