@@ -249,9 +249,88 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     vertical-align: middle;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* === Issue #79: Top-bar global progress bar + ETA widget === */
+.global-progress {
+    position: fixed; top: 0; left: 0; right: 0;
+    z-index: 3000; pointer-events: none;
+    display: none;
+}
+.global-progress.active { display: block; }
+.global-progress-bar {
+    height: 3px; width: 100%;
+    background: rgba(59,130,246,0.12);
+    overflow: hidden; position: relative;
+}
+.global-progress-fill {
+    position: absolute; top: 0; left: 0; bottom: 0;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.25s linear;
+    box-shadow: 0 0 8px rgba(59,130,246,0.6);
+}
+.global-progress.indeterminate .global-progress-fill {
+    width: 30%;
+    animation: gp-indeterminate 1.4s ease-in-out infinite;
+    transition: none;
+}
+@keyframes gp-indeterminate {
+    0%   { left: -30%; width: 30%; }
+    50%  { left: 30%;  width: 50%; }
+    100% { left: 100%; width: 30%; }
+}
+.global-progress-meta {
+    pointer-events: auto;
+    position: absolute; top: 6px; right: 16px;
+    background: var(--bg-card); color: var(--text-secondary);
+    border: 1px solid var(--border-light); border-radius: 6px;
+    padding: 4px 10px; font-size: 11px; font-weight: 500;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: var(--shadow); max-width: calc(100% - 32px);
+}
+.global-progress-meta .gp-eta { color: var(--text-primary); }
+.global-progress-meta .gp-slow { color: var(--warning); font-weight: 600; }
+.global-progress-meta .gp-error { color: var(--danger); font-weight: 600; }
+.global-progress-meta .gp-retry {
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 4px; padding: 3px 8px; font-size: 11px; font-weight: 600;
+    cursor: pointer;
+}
+.global-progress-meta .gp-retry:hover { background: var(--accent-dark); }
+.global-progress.error { display: block; }
+.global-progress.error .global-progress-bar { background: rgba(239,68,68,0.15); }
+.global-progress.error .global-progress-fill { background: var(--danger); animation: none; width: 100%; }
+
+/* === Issue #79: Loading skeleton shimmer === */
+.page.loading .card .card-value,
+.page.loading .card .card-sub {
+    color: transparent !important; background: linear-gradient(90deg, var(--bg-hover) 0%, var(--border-light) 50%, var(--bg-hover) 100%);
+    background-size: 200% 100%;
+    animation: gp-shimmer 1.2s ease-in-out infinite;
+    border-radius: 4px;
+    -webkit-text-fill-color: transparent;
+    min-height: 14px;
+}
+.page.loading .card .card-value { min-height: 22px; }
+@keyframes gp-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
 </style>
 </head>
 <body>
+
+<!-- Issue #79: Global page-load progress bar + ETA widget -->
+<div class="global-progress" id="global-progress" role="progressbar"
+     aria-label="Sayfa yukleniyor" aria-valuemin="0" aria-valuemax="100">
+    <div class="global-progress-bar"><div class="global-progress-fill" id="gp-fill"></div></div>
+    <div class="global-progress-meta" id="gp-meta" style="display:none">
+        <span class="gp-status" id="gp-status">yukleniyor...</span>
+        <span class="gp-eta" id="gp-eta"></span>
+        <span class="gp-calls" id="gp-calls"></span>
+        <button class="gp-retry" id="gp-retry" style="display:none" onclick="retryLastLoad()">Tekrar Dene</button>
+    </div>
+</div>
 
 <!-- SIDEBAR -->
 <nav class="sidebar">
@@ -1257,11 +1336,21 @@ function downloadFile(url) {
 }
 
 async function api(path, opts = {}) {
+    // Issue #79: track in-flight calls so the global progress widget can
+    // expose "Loading X/Y endpoints..." as a breadcrumb.
+    const callId = ++_apiCallCounter;
+    currentApiCalls.add(callId);
+    _apiCallsSeen = Math.max(_apiCallsSeen, currentApiCalls.size);
+    _renderApiCallBreadcrumb();
     try {
         const r = await fetch(API + path, { headers: {'Content-Type':'application/json'}, ...opts });
         if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || `HTTP ${r.status}`); }
         return r.json();
     } catch(e) { if (!opts.silent) notify(e.message, 'error'); throw e; }
+    finally {
+        currentApiCalls.delete(callId);
+        _renderApiCallBreadcrumb();
+    }
 }
 
 function notify(msg, type='info') {
@@ -1294,6 +1383,183 @@ async function withButtonLoading(button, fn, timeoutMs = 60000) {
         clearTimeout(timer);
         button.disabled = false;
         button.innerHTML = original;
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// Issue #79: Loading progress + ETA for slow dashboard pages
+// ═══════════════════════════════════════════════════
+const currentApiCalls = new Set();
+let _apiCallCounter = 0;
+let _apiCallsSeen = 0;
+let _gpSlowTimer = null;
+let _gpEtaTimer = null;
+let _gpLastPage = null;
+let _gpLastFn = null;
+
+function _gpEl(id) { return document.getElementById(id); }
+
+function _renderApiCallBreadcrumb() {
+    const widget = _gpEl('global-progress');
+    if (!widget || !widget.classList.contains('active')) return;
+    const total = _apiCallsSeen || currentApiCalls.size;
+    const inflight = currentApiCalls.size;
+    const done = Math.max(0, total - inflight);
+    const txt = total > 0 ? `${done}/${total} endpoint` : '';
+    const callsEl = _gpEl('gp-calls');
+    if (callsEl) callsEl.textContent = txt;
+    widget.setAttribute('aria-label', txt
+        ? `Yukleniyor: ${txt}`
+        : 'Sayfa yukleniyor');
+}
+
+function getEtaForPage(pageName) {
+    /* Read localStorage 'loadDurations.{pageName}' (last 10 ms values).
+       <3 samples => null (caller shows indeterminate). Else => p50 in ms. */
+    try {
+        const raw = localStorage.getItem('loadDurations.' + pageName);
+        if (!raw) return null;
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr) || arr.length < 3) return null;
+        const sorted = arr.slice().sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        const p50 = sorted.length % 2
+            ? sorted[mid]
+            : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+        return p50;
+    } catch (_) { return null; }
+}
+
+function _appendLoadDuration(pageName, ms) {
+    try {
+        const key = 'loadDurations.' + pageName;
+        const raw = localStorage.getItem(key);
+        const arr = raw ? (JSON.parse(raw) || []) : [];
+        arr.push(Math.max(0, Math.round(ms)));
+        // cap last 10
+        const capped = arr.slice(-10);
+        localStorage.setItem(key, JSON.stringify(capped));
+    } catch (_) { /* quota / private mode - ignore */ }
+}
+
+function _gpHide() {
+    const widget = _gpEl('global-progress');
+    if (!widget) return;
+    widget.classList.remove('active', 'indeterminate', 'error');
+    const meta = _gpEl('gp-meta');
+    if (meta) meta.style.display = 'none';
+    const fill = _gpEl('gp-fill');
+    if (fill) fill.style.width = '0%';
+    const retry = _gpEl('gp-retry');
+    if (retry) retry.style.display = 'none';
+    if (_gpSlowTimer) { clearTimeout(_gpSlowTimer); _gpSlowTimer = null; }
+    if (_gpEtaTimer) { clearInterval(_gpEtaTimer); _gpEtaTimer = null; }
+}
+
+function _gpShow(pageName, etaMs, started) {
+    const widget = _gpEl('global-progress');
+    if (!widget) return;
+    widget.classList.add('active');
+    widget.classList.remove('error');
+    const meta = _gpEl('gp-meta');
+    const status = _gpEl('gp-status');
+    const etaEl = _gpEl('gp-eta');
+    const retry = _gpEl('gp-retry');
+    const fill = _gpEl('gp-fill');
+    if (meta) meta.style.display = 'flex';
+    if (retry) retry.style.display = 'none';
+    if (status) {
+        status.classList.remove('gp-error', 'gp-slow');
+        status.textContent = 'yukleniyor...';
+    }
+    if (etaMs == null) {
+        widget.classList.add('indeterminate');
+        if (fill) fill.style.width = '0%';
+        if (etaEl) etaEl.textContent = '';
+    } else {
+        widget.classList.remove('indeterminate');
+        if (etaEl) etaEl.textContent = `Tahmini ~${Math.max(1, Math.round(etaMs / 1000))} sn`;
+        // Drive percentage progress against the p50 estimate. Clamp at 95%
+        // until fn resolves so we don't lie about completion.
+        if (_gpEtaTimer) clearInterval(_gpEtaTimer);
+        _gpEtaTimer = setInterval(() => {
+            const elapsed = performance.now() - started;
+            const pct = Math.min(95, (elapsed / etaMs) * 100);
+            if (fill) fill.style.width = pct.toFixed(1) + '%';
+            widget.setAttribute('aria-valuenow', String(Math.round(pct)));
+        }, 200);
+    }
+}
+
+function _gpMarkSlow(pageName, started) {
+    const status = _gpEl('gp-status');
+    if (status) { status.classList.add('gp-slow'); status.textContent = 'Yavas yanit (>30s)'; }
+    const elapsed = Math.round((performance.now() - started) / 1000);
+    notify(`Yavas yanit, ~${elapsed}s sonra tamamlanir`, 'warning');
+}
+
+async function loadWithProgress(pageName, fn) {
+    /* Issue #79: wrap a page loader with a global progress bar + ETA.
+       - Indeterminate on first call (<3 samples), percentage from p50 after.
+       - On success: hide bar + record duration (cap last 10).
+       - On error: keep bar visible in "error" state with Tekrar Dene retry.
+       - >30s: emit "Yavas yanit" toast once. */
+    if (typeof fn !== 'function') return;
+    _gpLastPage = pageName;
+    _gpLastFn = fn;
+    // Reset breadcrumb counters per page-load
+    _apiCallsSeen = 0;
+    currentApiCalls.clear();
+
+    // Skeleton loading class on the page container (KPI shimmer for overview/insights etc.)
+    const pageEl = document.getElementById('page-' + pageName);
+    if (pageEl) pageEl.classList.add('loading');
+
+    const eta = getEtaForPage(pageName);
+    const started = performance.now();
+    _gpShow(pageName, eta, started);
+    _renderApiCallBreadcrumb();
+
+    if (_gpSlowTimer) clearTimeout(_gpSlowTimer);
+    _gpSlowTimer = setTimeout(() => _gpMarkSlow(pageName, started), 30000);
+
+    try {
+        const result = await fn();
+        const duration = performance.now() - started;
+        _appendLoadDuration(pageName, duration);
+        if (pageEl) pageEl.classList.remove('loading');
+        // Final flash to 100%
+        const fill = _gpEl('gp-fill');
+        const widget = _gpEl('global-progress');
+        if (widget) widget.classList.remove('indeterminate');
+        if (fill) fill.style.width = '100%';
+        setTimeout(_gpHide, 220);
+        return result;
+    } catch (e) {
+        if (pageEl) pageEl.classList.remove('loading');
+        const widget = _gpEl('global-progress');
+        const status = _gpEl('gp-status');
+        const retry = _gpEl('gp-retry');
+        const etaEl = _gpEl('gp-eta');
+        if (widget) { widget.classList.add('error'); widget.classList.remove('indeterminate'); }
+        if (_gpEtaTimer) { clearInterval(_gpEtaTimer); _gpEtaTimer = null; }
+        if (_gpSlowTimer) { clearTimeout(_gpSlowTimer); _gpSlowTimer = null; }
+        if (status) {
+            status.classList.add('gp-error');
+            const msg = (e && e.message ? e.message : String(e || 'bilinmeyen hata')).slice(0, 120);
+            status.textContent = 'Yukleme basarisiz: ' + msg;
+        }
+        if (etaEl) etaEl.textContent = '';
+        if (retry) retry.style.display = 'inline-block';
+        throw e;
+    }
+}
+
+function retryLastLoad() {
+    if (_gpLastPage && _gpLastFn) {
+        loadWithProgress(_gpLastPage, _gpLastFn).catch(() => { /* surfaced in widget */ });
+    } else {
+        _gpHide();
     }
 }
 
@@ -1343,7 +1609,9 @@ function showPage(name) {
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
     const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups };
-    if (loaders[name]) loaders[name]();
+    // Issue #79: route through loadWithProgress so slow pages get a top
+    // progress bar, ETA from p50 history, and a retry path on failure.
+    if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
 }
 
 // ═══════════════════════════════════════════════════
