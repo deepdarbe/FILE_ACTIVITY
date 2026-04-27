@@ -242,6 +242,69 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     olusturulur; smtp.enabled=false ise available=False ile doner ve
     e-posta endpoint'leri {"skipped": true} doner.
     """
+    # ─────────────────────────────────────────────────────────────────
+    # Issue #77 Phase 2 — auto-restore on SQLite corruption.
+    #
+    # Run BEFORE any heavy DB init (analytics ATTACH, scheduler boot,
+    # backfill jobs). The probe is read-only via a transient
+    # connection; if corruption is detected AND
+    # ``backup.auto_restore_on_corruption`` is true we forensic-rename
+    # the broken file and copy the latest snapshot in its place.
+    #
+    # main.py already called ``db.connect()`` before handing us the
+    # Database, so we must close it first — the restore step needs the
+    # WAL file unowned. After a successful restore we re-call connect()
+    # so downstream init talks to the salvaged DB.
+    # ─────────────────────────────────────────────────────────────────
+    last_restore_result = None
+    backup_cfg = (config or {}).get("backup") or {}
+    if backup_cfg.get("enabled", True):
+        try:
+            from src.storage.backup_manager import BackupManager
+            backup_mgr = BackupManager(db.db_path, config or {})
+            # Drop any live thread-local connection so the broken/snap
+            # swap below is safe. Database.close() is idempotent.
+            try:
+                db.close()
+            except Exception:
+                pass
+            last_restore_result = backup_mgr.auto_restore_if_needed()
+            if last_restore_result and last_restore_result.restored:
+                logger.critical(
+                    "DB auto-restored at startup: snapshot=%s broken=%s",
+                    last_restore_result.snapshot_id,
+                    last_restore_result.broken_path,
+                )
+            elif (
+                last_restore_result
+                and not last_restore_result.restored
+                and last_restore_result.reason == "disabled_in_config"
+            ):
+                logger.critical(
+                    "DB corruption detected but "
+                    "auto_restore_on_corruption=false. Manual "
+                    "intervention required. details=%s",
+                    last_restore_result.details,
+                )
+            # Reopen the DB regardless of restore outcome — for the
+            # not-corrupted path we just need the connection back; for
+            # the restored path we want the salvaged file initialised
+            # (table creation / WAL setup runs idempotently).
+            try:
+                db.connect()
+            except Exception as e:
+                logger.error(
+                    "Post-auto-restore db.connect() failed: %s", e,
+                )
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.error("auto-restore probe failed: %s", e)
+            # Make sure the DB is open even if we crashed mid-probe.
+            try:
+                if not getattr(db, "connected", False):
+                    db.connect()
+            except Exception:
+                pass
+
     if analytics is None:
         from src.storage.analytics import AnalyticsEngine
         analytics = AnalyticsEngine(db.db_path, config.get("analytics", {}))
@@ -256,6 +319,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     app.state.analytics = analytics
     app.state.ad_lookup = ad_lookup
     app.state.email_notifier = email_notifier
+    # Phase 2 banner state — frontend reads via /api/system/last-restore.
+    app.state.last_auto_restore = (
+        last_restore_result
+        if (last_restore_result and last_restore_result.restored)
+        else None
+    )
 
     # Ransomware detector (#37) — watcher pushes events here. Construction is
     # cheap; safe to do unconditionally. The detector pulls its own config
@@ -3371,6 +3440,27 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "transports": ["stdio"],
             "install_command":
                 "claude mcp add file-activity -- python -m src.mcp_server",
+        }
+
+    # ─────────────────────────────────────────────────────────────────
+    # Issue #77 Phase 2 — last-auto-restore banner state
+    # ─────────────────────────────────────────────────────────────────
+    @app.get("/api/system/last-restore")
+    async def last_restore():
+        """Returns the most recent auto-restore event for the current
+        process, or ``{"restored": false}`` if no restore happened at
+        startup. Frontend uses this to decide whether to draw the
+        yellow forensic-preserved banner.
+        """
+        info = getattr(app.state, "last_auto_restore", None)
+        if not info or not getattr(info, "restored", False):
+            return {"restored": False}
+        return {
+            "restored": True,
+            "snapshot_id": info.snapshot_id,
+            "broken_path": info.broken_path,
+            "ts": info.ts,
+            "audit_event_id": info.audit_event_id,
         }
 
     # ─────────────────────────────────────────────────────────────────

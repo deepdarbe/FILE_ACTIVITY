@@ -355,6 +355,15 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     </div>
 </div>
 
+<!-- Issue #77 Phase 2: persistent banner shown when the dashboard
+     bootstrap auto-restored the DB from a snapshot. -->
+<div id="auto-restore-banner" style="display:none;position:sticky;top:0;z-index:9000;background:var(--warning,#f59e0b);color:#000;padding:12px 20px;border-bottom:2px solid #b45309;font-size:14px;font-weight:500">
+    <span style="margin-right:8px">⚠️</span>
+    <span id="auto-restore-banner-text"></span>
+    <button id="auto-restore-banner-detail" type="button" style="margin-left:12px;padding:4px 10px;background:#000;color:#f59e0b;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">Detay</button>
+    <button id="auto-restore-banner-close" type="button" style="margin-left:6px;padding:4px 10px;background:transparent;color:#000;border:1px solid #000;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">Kapat</button>
+</div>
+
 <!-- SIDEBAR -->
 <nav class="sidebar">
     <div class="sidebar-header">
@@ -5112,6 +5121,40 @@ async function exportBackupsXlsx(ev) {
 // INIT
 // ═══════════════════════════════════════════════════
 (async function init() {
+    // Issue #77 Phase 2 — auto-restore banner. If the dashboard
+    // bootstrap salvaged the DB from a snapshot, surface a persistent
+    // yellow banner so the operator knows BEFORE they look at any data.
+    fetch('/api/system/last-restore')
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+            if (!d || !d.restored) return;
+            const banner = document.getElementById('auto-restore-banner');
+            const text = document.getElementById('auto-restore-banner-text');
+            const detail = document.getElementById('auto-restore-banner-detail');
+            const closeBtn = document.getElementById('auto-restore-banner-close');
+            if (!banner || !text) return;
+            const sid = d.snapshot_id || '?';
+            const broken = d.broken_path || '?';
+            text.textContent =
+                'Veritabani otomatik geri yuklendi (snapshot: ' + sid +
+                '). Bozuk DB: ' + broken + '. Lutfen kontrol edin.';
+            banner.style.display = 'block';
+            if (detail) detail.onclick = () => {
+                alert(
+                    'Otomatik geri yukleme detaylari:\n\n' +
+                    'Snapshot ID: ' + sid + '\n' +
+                    'Bozuk DB yolu: ' + broken + '\n' +
+                    'Zaman: ' + (d.ts || '?') + '\n' +
+                    'Audit event ID: ' + (d.audit_event_id || '-') + '\n\n' +
+                    'Bozuk DB silinmedi — adli inceleme icin korunuyor.'
+                );
+            };
+            if (closeBtn) closeBtn.onclick = () => {
+                banner.style.display = 'none';
+            };
+        })
+        .catch(() => {}); // Endpoint yoksa sessizce atla
+
     // Sidebar sürümünü dinamik cek (VERSION dosyasindan)
     fetch('/api/system/version')
         .then(r => r.ok ? r.json() : null)

@@ -26,7 +26,11 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from src.storage.backup_manager import BackupManager, SnapshotMeta  # noqa: E402
+from src.storage.backup_manager import (  # noqa: E402
+    BackupManager,
+    RestoreResult,
+    SnapshotMeta,
+)
 
 
 def _make_db(path: Path) -> None:
@@ -292,3 +296,192 @@ def test_cli_snapshot_writes_jsonl_to_stdout(tmp_path: Path):
     assert payload["size_bytes"] > 0
     # And the .bak file actually landed
     assert os.path.exists(payload["path"])
+
+
+# ─────────────────────────────────────────────────────────────
+# Phase 2 (#77) — auto_restore_if_needed
+# ─────────────────────────────────────────────────────────────
+
+def _corrupt_db(path: Path) -> None:
+    """Replace the DB file with garbage so PRAGMA integrity_check
+    will raise ``file is not a database``.
+    """
+    path.write_bytes(b"NOT A REAL DB" * 128)
+
+
+def _make_app_shaped_db(path: Path) -> None:
+    """Like _make_db but also creates the three critical tables the
+    corruption detector probes, so the freshly-restored DB passes the
+    detector and Database.connect() boots cleanly.
+    """
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE scan_runs (id INTEGER PRIMARY KEY)"
+        )
+        conn.execute(
+            "CREATE TABLE scanned_files (id INTEGER PRIMARY KEY)"
+        )
+        conn.execute(
+            "CREATE TABLE file_audit_events ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "source_id INTEGER,"
+            "event_time TEXT,"
+            "event_type TEXT,"
+            "username TEXT,"
+            "file_path TEXT,"
+            "file_name TEXT,"
+            "details TEXT,"
+            "detected_by TEXT)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _make_app_shaped_mgr(tmp_path: Path, **overrides) -> BackupManager:
+    db_path = tmp_path / "live.db"
+    _make_app_shaped_db(db_path)
+    cfg = {
+        "backup": {
+            "enabled": True,
+            "dir": str(tmp_path / "backups"),
+            "keep_last_n": 10,
+            "keep_weekly": 4,
+            "auto_restore_on_corruption": False,
+        },
+        "smtp": {"enabled": False},
+    }
+    cfg["backup"].update(overrides)
+    return BackupManager(str(db_path), cfg)
+
+
+def test_auto_restore_disabled_in_config_no_restore(tmp_path: Path):
+    """Corruption is detected but the config flag is false. No
+    restore, no rename — the broken DB stays exactly where it is so
+    the operator can investigate. Result must report
+    ``reason='disabled_in_config'``.
+    """
+    mgr = _make_app_shaped_mgr(tmp_path)
+    # Take a snapshot first so a viable target exists — we want to
+    # prove the gate is config, not snapshot availability.
+    mgr.snapshot(reason="seed")
+
+    # Corrupt the live DB
+    _corrupt_db(Path(mgr.db_path))
+    pre_size = os.path.getsize(mgr.db_path)
+    pre_bytes = Path(mgr.db_path).read_bytes()
+
+    assert mgr.auto_restore_on_corruption is False
+    result = mgr.auto_restore_if_needed()
+
+    assert isinstance(result, RestoreResult)
+    assert result.restored is False
+    assert result.reason == "disabled_in_config"
+
+    # Live DB untouched — same size, same bytes, no broken-* sibling.
+    assert os.path.getsize(mgr.db_path) == pre_size
+    assert Path(mgr.db_path).read_bytes() == pre_bytes
+    siblings = [p.name for p in Path(mgr.db_path).parent.iterdir()
+                if "broken" in p.name]
+    assert siblings == []
+
+
+def test_auto_restore_enabled_performs_salvage(tmp_path: Path):
+    """Flag true + corrupted DB + valid snapshot:
+       * the broken file is preserved at <db>.broken-<ts>
+       * the snapshot is copied to db_path
+       * the restored db_path passes integrity_check
+       * an audit event is written into the restored DB
+    """
+    mgr = _make_app_shaped_mgr(
+        tmp_path,
+        auto_restore_on_corruption=True,
+    )
+    snap = mgr.snapshot(reason="pre-corrupt")
+
+    # Now corrupt the live DB.
+    _corrupt_db(Path(mgr.db_path))
+
+    result = mgr.auto_restore_if_needed()
+    assert result is not None
+    assert result.restored is True
+    assert result.reason == "auto_restored"
+    assert result.snapshot_id == snap.id
+
+    # Broken file preserved
+    assert result.broken_path is not None
+    assert os.path.exists(result.broken_path), "broken DB must be kept for forensics"
+    # Forensic name format: <db_path>.broken-YYYYMMDD_HHMMSS
+    assert result.broken_path.startswith(mgr.db_path + ".broken-")
+
+    # The restored DB passes integrity_check (we don't compare
+    # byte-for-byte against the snapshot because the auto_restore
+    # audit insert intentionally mutates the live file).
+    assert os.path.exists(mgr.db_path)
+    assert os.path.getsize(mgr.db_path) > 0
+
+    # And it passes integrity_check now.
+    conn = sqlite3.connect(mgr.db_path)
+    try:
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+        assert [r[0] for r in rows] == ["ok"]
+        # The audit event the manager wrote during salvage must be
+        # visible on the restored DB.
+        cur = conn.execute(
+            "SELECT event_type, detected_by FROM file_audit_events "
+            "WHERE event_type='auto_restore'"
+        )
+        rows = cur.fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "auto_restore"
+        assert rows[0][1] == "backup_manager"
+    finally:
+        conn.close()
+    # And the manager reports the audit_event_id it inserted.
+    assert result.audit_event_id is not None
+
+
+def test_auto_restore_no_snapshot_available(tmp_path: Path):
+    """Flag true + corrupted DB + zero snapshots → no salvage,
+    broken file untouched, ``reason='no_snapshot'``.
+    """
+    mgr = _make_app_shaped_mgr(
+        tmp_path,
+        auto_restore_on_corruption=True,
+    )
+    # Don't take any snapshots
+    assert mgr.list_snapshots() == []
+
+    _corrupt_db(Path(mgr.db_path))
+    pre_bytes = Path(mgr.db_path).read_bytes()
+
+    result = mgr.auto_restore_if_needed()
+    assert result is not None
+    assert result.restored is False
+    assert result.reason == "no_snapshot"
+
+    # Broken file is left in place — the application should refuse to
+    # boot rather than silently delete the only copy.
+    assert Path(mgr.db_path).read_bytes() == pre_bytes
+    siblings = [p.name for p in Path(mgr.db_path).parent.iterdir()
+                if ".broken-" in p.name]
+    assert siblings == []
+
+
+def test_auto_restore_passes_when_db_is_healthy(tmp_path: Path):
+    """No corruption, no action — result must say not_corrupted and
+    leave the DB completely alone.
+    """
+    mgr = _make_app_shaped_mgr(
+        tmp_path,
+        auto_restore_on_corruption=True,
+    )
+    mgr.snapshot(reason="seed")
+
+    pre_bytes = Path(mgr.db_path).read_bytes()
+    result = mgr.auto_restore_if_needed()
+    assert result is not None
+    assert result.restored is False
+    assert result.reason == "not_corrupted"
+    assert Path(mgr.db_path).read_bytes() == pre_bytes

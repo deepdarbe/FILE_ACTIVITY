@@ -17,9 +17,11 @@ backup:
   daily_snapshot_hour: 2          # 24h, 0-23 (cron "0 H * * *")
   snapshot_on_update: true        # update.cmd takes a snapshot before reinstall
   snapshot_on_apply: true         # ArchiveEngine + RetentionEngine snapshot before non-dry-run
-  # Phase 2 placeholder — DO NOT enable. Auto-restore on corruption is
-  # not implemented yet; the field exists so config parses cleanly when
-  # Phase 2 lands. See issue #77.
+  # Phase 2 (#77): if true and the dashboard bootstrap detects DB
+  # corruption (PRAGMA integrity_check fail OR critical tables missing),
+  # the broken DB is forensic-renamed to file_activity.db.broken-<ts>
+  # and replaced from the latest snapshot. Default false — opt-in only;
+  # operators should review and consciously enable.
   auto_restore_on_corruption: false
 
 database:
