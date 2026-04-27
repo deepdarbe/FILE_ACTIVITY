@@ -266,6 +266,24 @@ Configure with `FILEACTIVITY_BASE_URL` and (for production deployments
 behind an auth gateway) `FILEACTIVITY_API_KEY`. See `docs/mcp_server.md`
 for the full reference.
 
+## Local Testing with Docker
+
+The full pytest suite runs inside a `python:3.11-slim` container so
+contributors don't need to install the C/C++ toolchain, libhyperscan, or
+the rest of the optional accelerators on their workstation. The wrapper
+script handles build, run, and exit-code propagation. See
+[`docker/README.md`](docker/README.md) for the full reference.
+
+```bash
+./scripts/run-tests.sh                                # full suite
+./scripts/run-tests.sh tests/test_pii_engine.py -v    # single file
+./scripts/run-tests.sh --shell                        # interactive shell
+```
+
+Requires Docker Engine 20.10+ and Docker Compose v2. Tests run as `root`
+inside the container (the upstream Python image default); host files are
+not modified outside `tmp_path` fixtures.
+
 ## Technology Stack
 
 | Layer | Technology |

@@ -1,0 +1,69 @@
+# FILE_ACTIVITY — local test image (issue #91, Phase 1).
+#
+# Single-stage Debian-bookworm-based python:3.11-slim. Installs all required
+# runtime deps + pytest. Hyperscan and MCP extras are installed best-effort:
+# the test suite already gates the affected modules behind pytest.importorskip
+# / runtime feature flags, so missing optional packages just translate to
+# skipped tests rather than red builds.
+#
+# pywin32 is filtered out of requirements.txt before pip install — the
+# package only publishes Windows wheels and would otherwise abort the build
+# on Linux. Tests that actually exercise pywin32 are guarded by
+# `sys.platform == "win32"` and skip on Linux.
+#
+# Build:   docker build -f docker/Dockerfile.test -t fa-test .
+# Run:     docker run --rm fa-test                     # full suite
+#          docker run --rm fa-test tests/test_pii_engine.py -v
+FROM python:3.11-slim AS base
+
+# System deps:
+#   build-essential       — fallback C/C++ toolchain for any wheel that has
+#                           to compile from sdist (e.g. hyperscan on glibc
+#                           combinations PyPI doesn't ship a manylinux wheel
+#                           for).
+#   libpcre3-dev          — pulled in by hyperscan's setup.py when building
+#                           from source.
+#   libhyperscan-dev      — Debian bookworm packages Hyperscan 5.4. Lets the
+#                           hyperscan Python bindings link against the system
+#                           library instead of vendoring the engine, which
+#                           cuts ~200 MB off a from-source build.
+#   git                   — some pip installs (and developer shells via
+#                           --shell) expect git to be present.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpcre3-dev \
+    libhyperscan-dev \
+    git \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ─── Base runtime deps ────────────────────────────────────────────────────
+# Strip pywin32 (Windows-only, no Linux wheel) before installing. We keep
+# the rewrite in-image so requirements.txt itself stays untouched on disk.
+COPY requirements.txt ./requirements.txt
+RUN grep -v -E '^[[:space:]]*pywin32([[:space:]]|>|=|<|!|;|$)' requirements.txt \
+        > /tmp/requirements.linux.txt \
+ && pip install --no-cache-dir -r /tmp/requirements.linux.txt
+
+# ─── Test deps (pytest) ───────────────────────────────────────────────────
+COPY requirements-dev.txt ./requirements-dev.txt
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# ─── Optional accelerators / MCP ──────────────────────────────────────────
+# Install best-effort. Failure here is non-fatal: tests use
+# pytest.importorskip / runtime backend autodetect for these paths.
+COPY requirements-accel.txt requirements-mcp.txt ./
+RUN pip install --no-cache-dir -r requirements-accel.txt -r requirements-mcp.txt \
+    || echo "Optional deps install partial — tests will skip affected paths"
+
+# ─── Project source ───────────────────────────────────────────────────────
+# Copied last so dependency layers stay warm across edits. docker-compose
+# bind-mounts ./ over /app at run time, so during dev the COPY is mostly
+# there to make `docker run --rm fa-test` work without a compose file.
+COPY . .
+
+# Pytest is the entry point — extra args from `docker run` are appended to
+# the default CMD. Use `--entrypoint /bin/bash` to drop into a shell.
+ENTRYPOINT ["python", "-m", "pytest"]
+CMD ["--tb=short", "tests/", "--ignore=tests/bench"]
