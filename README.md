@@ -266,6 +266,23 @@ Configure with `FILEACTIVITY_BASE_URL` and (for production deployments
 behind an auth gateway) `FILEACTIVITY_API_KEY`. See `docs/mcp_server.md`
 for the full reference.
 
+## Analytics Playground (Optional)
+
+A standalone Streamlit app under `src/playground/` for ad-hoc admin
+exploration over the SQLite + DuckDB stack. **Read-only**, runs as a
+separate process on its own port — the FastAPI dashboard and REST
+contract are untouched. Cold-data, duplicate walker, audit timeline,
+retention what-if and PII pivot pages.
+
+```bash
+pip install -r requirements-playground.txt
+export FILEACTIVITY_PLAYGROUND_TOKEN="$(openssl rand -hex 32)"
+streamlit run src/playground/app.py --server.port 8086
+```
+
+Internal/admin use only — see [`docs/playground.md`](docs/playground.md)
+for security notes, auth, and the read-only contract.
+
 ## Local Testing with Docker
 
 The full pytest suite runs inside a `python:3.11-slim` container so
