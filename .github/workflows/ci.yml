@@ -69,61 +69,63 @@ jobs:
       - name: Run ruff (report only)
         run: ruff check src/ main.py dev_server.py --output-format=github || true
 
+  # ---------------------------------------------------------------------
+  # Pytest (Linux, Docker)
+  #
+  # Why Docker: the previous host-runner pytest job was failing in <10 s
+  # on every PR because `pip install` choked on the GHA runner before
+  # pytest could even collect tests -- a transient PyPI / wheel
+  # availability issue, not a code bug. Baking the test environment into
+  # a Docker image (built from `docker/Dockerfile.test`, see issue #91)
+  # moves dependency resolution to image-build time, where it can be
+  # cached and reused across runs. Once the image is built the only
+  # per-CI work is `docker run`, which is deterministic and fast.
+  #
+  # How the cache works: `cache-from: type=gha` + `cache-to: type=gha,
+  # mode=max` route Buildx layers through the GitHub Actions cache (the
+  # same cache backend used by `actions/cache`, scoped to this repo and
+  # free for public/private repos). On a warm hit, only the layers
+  # whose inputs changed (e.g. requirements*.txt) are rebuilt; on a
+  # cold miss, the full image is built and pushed to the cache for
+  # subsequent runs. `mode=max` stores intermediate layers too, so
+  # multi-stage builds benefit from incremental rebuilds. `load: true`
+  # keeps the resulting image local to the runner -- no registry push.
+  #
+  # When to flip `continue-on-error` to `false`: after this job has
+  # produced THREE consecutive green runs on master. At that point the
+  # gate is real and a failing pytest should block the merge.
+  # ---------------------------------------------------------------------
   tests:
-    name: Pytest (Linux)
+    name: Pytest (Linux, Docker)
     runs-on: ubuntu-latest
-    # Marked advisory while we stabilise the runner pip-install path:
-    # the first two runs failed in <10 s, well before pytest could
-    # collect anything -- the runner clearly can't reach PyPI reliably
-    # in this environment. Local repro of the full suite is clean
-    # (220 tests collected, 200+ pass). Flip back to a hard-fail gate
-    # once the environment is stable for a few weeks.
+    # Was advisory while pip-install on the runner stabilised.
+    # Now the test environment is baked into a Docker image at build
+    # time, so pip flakes can't fail the gate. Flip to gating once we
+    # see a few green runs in a row.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image (with cache)
+        uses: docker/build-push-action@v5
         with:
-          python-version: "3.11"
-          cache: pip
-          # Cache key is derived from the hash of every requirements
-          # file we install below. Editing any of them invalidates the
-          # cache; otherwise warm starts skip the wheel download. The
-          # actions/setup-python log line "Cache restored successfully"
-          # vs "Cache not found" makes hit/miss visible per run.
-          cache-dependency-path: |
-            requirements.txt
-            requirements-accel.txt
-            requirements-mcp.txt
-            requirements-dev.txt
-
-      - name: Install base + dev dependencies (required)
-        run: |
-          python -m pip install --upgrade pip
-          # NB: pywin32 (in requirements.txt) is a no-op install on
-          # Linux -- pip just skips it because it has no Linux wheel
-          # marker. The Windows-gated tests handle the absence at
-          # collection time.
-          python -m pip install \
-            -r requirements.txt \
-            -r requirements-dev.txt
-
-      - name: Install optional accelerator + MCP dependencies (advisory)
-        # Hyperscan needs a system C++ toolchain on some runners and
-        # `mcp` pulls in a heavy SDK; either failing should NOT mark
-        # the gating test job red. Tests that need them use
-        # `pytest.importorskip` and skip cleanly when absent.
-        continue-on-error: true
-        run: |
-          python -m pip install -r requirements-accel.txt -r requirements-mcp.txt
+          context: .
+          file: docker/Dockerfile.test
+          tags: fa-test:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Pytest collection summary
         run: |
-          python -m pytest --collect-only -q tests/ || true
+          docker run --rm fa-test:ci --collect-only -q tests/
 
       - name: Run pytest
         run: |
-          python -m pytest --tb=short tests/
+          docker run --rm fa-test:ci --tb=short tests/ --ignore=tests/bench
 
   tests-windows:
     # Optional companion to the Linux `tests` job: re-runs the two
