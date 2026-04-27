@@ -31,7 +31,11 @@ backup:
   #     also reconciles every index. Use when ops suspect corruption.
   #   "skip"            — disable the probe entirely (NOT recommended
   #     unless you have an external integrity workflow).
-  corruption_check_mode: "quick"
+  # Default 'skip' (was 'quick' before #131): on multi-GB DBs even
+  # quick_check can take 60+s with WAL contention, blocking dashboard
+  # startup. The probe's only role is to feed auto-restore — operators
+  # who want it should explicitly opt into 'quick' or 'full'.
+  corruption_check_mode: "skip"
   # Hard cap on the probe (seconds). If the pragma doesn't return in
   # this budget the probe aborts and assumes healthy + logs a WARNING.
   # Prevents a slow/locked DB from hanging dashboard startup forever.

@@ -66,7 +66,7 @@ CRITICAL_TABLES: tuple[str, ...] = (
 
 # Defaults preserved when the operator's config.yaml predates the
 # hotfix and lacks the new knobs.
-DEFAULT_CHECK_MODE = "quick"
+DEFAULT_CHECK_MODE = "skip"
 DEFAULT_CHECK_TIMEOUT_SECONDS = 30
 
 
