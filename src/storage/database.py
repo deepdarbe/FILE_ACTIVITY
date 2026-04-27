@@ -720,6 +720,60 @@ class Database:
             "ON legal_holds(created_at DESC)"
         )
 
+        # Gain reports (issue #83 Phase 1) — before/after/delta metric
+        # snapshots captured around any write operation. The first user is
+        # the duplicate quarantine flow; later phases will plug in archive,
+        # retention purge, etc. Each row carries pretty-printed JSON so
+        # operators can diff the exact numbers in the UI without recomputing.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gain_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation TEXT NOT NULL,
+                scan_id INTEGER,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                before_json TEXT NOT NULL,
+                after_json TEXT NOT NULL,
+                delta_json TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gain_op "
+            "ON gain_reports(operation, started_at DESC)"
+        )
+
+        # Quarantine log (issue #83 Phase 1) — forensic record of every
+        # file moved into the quarantine root. Hard delete is intentionally
+        # NOT in this phase; Phase 2 will add an auto-cleanup job that
+        # references gain_report_id to record the "before" snapshot of
+        # the purge. NEVER DELETE rows from this table — the quarantine
+        # operation must remain auditable even after a forensics export.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS quarantine_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER,
+                original_path TEXT NOT NULL,
+                quarantine_path TEXT NOT NULL,
+                sha256 TEXT,
+                file_size INTEGER,
+                moved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                moved_by TEXT,
+                gain_report_id INTEGER REFERENCES gain_reports(id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quarantine_moved "
+            "ON quarantine_log(moved_at DESC)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quarantine_report "
+            "ON quarantine_log(gain_report_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quarantine_orig "
+            "ON quarantine_log(original_path)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(

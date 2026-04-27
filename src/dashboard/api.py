@@ -2032,6 +2032,81 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             g["waste_size_formatted"] = format_size(g.get("waste_size", 0))
         return result
 
+    # --- DUPLICATE QUARANTINE (issue #83 Phase 1) ---
+    # Quarantine-only delete. Files MOVE to data/quarantine/<YYYYMMDD>/<hash>/,
+    # they are NEVER os.remove()'d. Hard delete + auto-cleanup are Phase 2.
+    # Both endpoints share the same DuplicateCleaner so config (kill-switch,
+    # cap, token requirement) is read once.
+
+    @app.post("/api/reports/duplicates/{source_id}/quarantine/preview")
+    async def duplicates_quarantine_preview(source_id: int, request: Request):
+        """Dry-run: would_move / skipped_held / skipped_last_copy + size."""
+        from src.archiver.duplicate_cleaner import DuplicateCleaner
+        _get_source(db, source_id)
+        body = await request.json()
+        file_ids = body.get("file_ids") or []
+        if not isinstance(file_ids, list):
+            raise HTTPException(400, "file_ids must be a list")
+        cleaner = DuplicateCleaner(db, config)
+        try:
+            preview = cleaner.preview([int(i) for i in file_ids])
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        return preview.to_dict()
+
+    @app.post("/api/reports/duplicates/{source_id}/quarantine")
+    async def duplicates_quarantine(source_id: int, request: Request):
+        """Move selected files to the quarantine root. Requires confirm
+        AND safety_token == "QUARANTINE". Returns full QuarantineResult
+        with before/after/delta and the persisted gain_report_id."""
+        from src.archiver.duplicate_cleaner import DuplicateCleaner
+        _get_source(db, source_id)
+        body = await request.json()
+        file_ids = body.get("file_ids") or []
+        confirm = bool(body.get("confirm", False))
+        safety_token = body.get("safety_token", "")
+        moved_by = body.get("moved_by") or "system"
+        if not isinstance(file_ids, list):
+            raise HTTPException(400, "file_ids must be a list")
+        cleaner = DuplicateCleaner(db, config)
+        try:
+            result = cleaner.quarantine(
+                file_ids=[int(i) for i in file_ids],
+                confirm=confirm,
+                safety_token=safety_token,
+                moved_by=moved_by,
+                source_id=source_id,
+            )
+        except ValueError as e:
+            # Confirm/token/cap failures are 400 — not 500.
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            # Kill-switch off → 403 so the UI can show a clear hint.
+            raise HTTPException(403, str(e))
+        return result.to_dict()
+
+    # --- OPERATIONS HISTORY (gain reports) ---
+    # Read-only listing of gain_reports rows (any operation). Used by the
+    # "Islem Gecmisi" page to render before/after/delta panels.
+
+    @app.get("/api/operations/history")
+    async def operations_history(limit: int = Query(50, ge=1, le=500),
+                                  operation: Optional[str] = None):
+        from src.storage.gain_reporter import GainReporter
+        reporter = GainReporter(db, config)
+        return {"reports": reporter.list_reports(
+            limit=limit, operation=operation
+        )}
+
+    @app.get("/api/operations/{op_id}")
+    async def operation_detail(op_id: int):
+        from src.storage.gain_reporter import GainReporter
+        reporter = GainReporter(db, config)
+        report = reporter.get_report(op_id)
+        if report is None:
+            raise HTTPException(404, "Operation report not found")
+        return report
+
     @app.post("/api/archive/selective")
     async def archive_selective(request):
         """Secili dosyalari arsivle (duplicate cleanup icin)."""
