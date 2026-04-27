@@ -439,6 +439,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="nav-section">
         <div class="nav-label">Sistem</div>
         <div class="nav-item" onclick="showPage('backups')"><span class="icon">💾</span> <span>Yedekler</span></div>
+        <div class="nav-item" onclick="showPage('quarantine')"><span class="icon">🧪</span> <span>Karantina</span></div>
         <div class="nav-item" onclick="showPage('operations')"><span class="icon">📜</span> <span>Islem Gecmisi</span></div>
         <div class="nav-item" onclick="showPage('approvals')"><span class="icon">✅</span> <span>Onaylar</span></div>
     </div>
@@ -1394,6 +1395,32 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     </div>
 </div>
 
+<!-- ============ QUARANTINE BROWSER (issue #110 Phase 2) ============ -->
+<div class="page" id="page-quarantine">
+    <div class="page-header">
+        <div>
+            <h2>Karantina</h2>
+            <div class="desc">Duplicate cleaner ile karantinaya alinmis dosyalar — geri yukleme, manuel hard delete ve otomatik purge bekleyenler.</div>
+        </div>
+        <div class="actions" style="display:flex;gap:8px;align-items:center">
+            <select id="qrn-filter" onchange="loadQuarantine()" style="width:200px">
+                <option value="">Tum Kayitlar</option>
+                <option value="quarantined">Sadece Karantinada</option>
+                <option value="restored">Geri Yuklenen</option>
+                <option value="purged">Hard Delete Edilen</option>
+            </select>
+            <button class="btn btn-outline" onclick="loadQuarantine()">Yenile</button>
+        </div>
+    </div>
+    <div id="qrn-disabled-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;border-radius:var(--radius);padding:12px 16px;margin-bottom:16px;font-size:12px">
+        <strong>Quarantine devre disi:</strong> <code>duplicates.quarantine.enabled=false</code>. Yeni kayit eklenemiyor — mevcut kayitlar salt-okunur listelenir.
+    </div>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;font-size:12px;color:var(--text-muted)">
+        Karantinaya alinan dosyalar <code id="qrn-days">30</code> gun sonra <strong>daily_quarantine_purge</strong> isi tarafindan kalici olarak silinir. SHA-256 dogrulamasi her hard delete oncesi yapilir; uyusmazlik = adli koruma, asla silme.
+    </div>
+    <div id="qrn-list-host" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:8px"></div>
+</div>
+
 <!-- ============ OPERATIONS HISTORY (issue #83) ============ -->
 <div class="page" id="page-operations">
     <div class="page-header">
@@ -1971,7 +1998,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -4982,6 +5009,143 @@ function _ensureModal(id, maxWidth) {
 // ═══════════════════════════════════════════════════
 // OPERATIONS HISTORY (issue #83 — gain reports)
 // ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// QUARANTINE BROWSER (issue #110 Phase 2)
+// ═══════════════════════════════════════════════════
+async function loadQuarantine() {
+    const host = document.getElementById('qrn-list-host');
+    const banner = document.getElementById('qrn-disabled-banner');
+    const daysSpan = document.getElementById('qrn-days');
+    const filter = document.getElementById('qrn-filter')?.value || '';
+    if (!host) return;
+    if (typeof renderEntityList !== 'function') {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">entity-list yuklenmedi</div>';
+        return;
+    }
+    host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Yukleniyor...</div>';
+    let data;
+    try {
+        const qs = filter ? `?status=${encodeURIComponent(filter)}` : '';
+        data = await api('/quarantine' + qs);
+    } catch (e) {
+        host.innerHTML = `<div style="padding:20px;color:var(--danger)">Yukleme hatasi: ${e.message || e}</div>`;
+        return;
+    }
+    if (banner) banner.style.display = data.enabled === false ? 'block' : 'none';
+    if (daysSpan) daysSpan.textContent = String(data.quarantine_days || 30);
+    const rows = (data.rows || []).map(r => Object.assign({}, r, {
+        _status_label: r.status === 'purged' ? 'Hard Delete Edildi'
+            : (r.status === 'restored' ? 'Geri Yuklendi' : 'Karantinada'),
+    }));
+    if (!rows.length) {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Kayit yok</div>';
+        return;
+    }
+    renderEntityList(host, {
+        rows,
+        rowKey: 'id',
+        pageSize: 50,
+        searchKeys: ['original_path', 'quarantine_path', 'moved_by'],
+        columns: [
+            {key: 'id', label: 'ID', sort: true},
+            {key: 'original_path', label: 'Orijinal Yol', sort: true},
+            {key: 'quarantine_path', label: 'Karantina Yolu', sort: true},
+            {key: 'moved_at', label: 'Tasinma', sort: true},
+            {key: 'will_purge_at', label: 'Otomatik Silinme', sort: true,
+             render: (v, row) => row.status === 'quarantined' ? (v || '-') : '<span style="color:var(--text-muted)">-</span>'},
+            {key: '_status_label', label: 'Durum', sort: true,
+             render: (v, row) => {
+                 const color = row.status === 'purged' ? 'var(--danger)'
+                     : (row.status === 'restored' ? 'var(--success)' : 'var(--accent)');
+                 return `<span style="color:${color};font-weight:600">${v}</span>`;
+             }},
+        ],
+        toolbar: {
+            bulkActions: [
+                {label: 'Geri Yukle', action: 'restore', confirm: true},
+                {label: 'Hemen Sil', action: 'purge-now', confirm: true},
+            ],
+        },
+        onBulkAction: async (actionId, selectedRows) => {
+            if (!selectedRows.length) {
+                notify('Lutfen en az bir kayit secin', 'warning');
+                return;
+            }
+            if (actionId === 'restore') {
+                await _bulkQuarantineRestore(selectedRows);
+            } else if (actionId === 'purge-now') {
+                await _bulkQuarantinePurge(selectedRows);
+            }
+        },
+        emptyMessage: 'Bu filtre icin kayit yok',
+    });
+}
+
+async function _bulkQuarantineRestore(selectedRows) {
+    const eligible = selectedRows.filter(r => r.status === 'quarantined');
+    if (!eligible.length) {
+        notify('Sadece "Karantinada" durumundaki kayitlar geri yuklenebilir', 'warning');
+        return;
+    }
+    if (!confirm(`${eligible.length} dosya orijinal konumlarina geri yuklenecek. Emin misiniz?`)) return;
+    let ok = 0, failed = 0;
+    for (const row of eligible) {
+        try {
+            await api(`/quarantine/${row.id}/restore`, {
+                method: 'POST',
+                body: JSON.stringify({confirm: true}),
+            });
+            ok += 1;
+        } catch (e) {
+            failed += 1;
+            console.warn('restore failed', row.id, e);
+        }
+    }
+    notify(`Geri yukleme: ${ok} basarili, ${failed} basarisiz`,
+           failed ? 'warning' : 'success');
+    loadQuarantine();
+}
+
+async function _bulkQuarantinePurge(selectedRows) {
+    const eligible = selectedRows.filter(r => r.status === 'quarantined');
+    if (!eligible.length) {
+        notify('Sadece "Karantinada" durumundaki kayitlar hard delete edilebilir', 'warning');
+        return;
+    }
+    const typed = prompt(
+        `${eligible.length} dosya KALICI OLARAK silinecek. ` +
+        `Onay icin "PURGE" yazin (buyuk harflerle):`
+    );
+    if (typed !== 'PURGE') {
+        notify('Onay metni "PURGE" yazilmadi — islem iptal edildi', 'info');
+        return;
+    }
+    let ok = 0, sha = 0, failed = 0;
+    for (const row of eligible) {
+        try {
+            await api(`/quarantine/${row.id}/purge`, {
+                method: 'POST',
+                body: JSON.stringify({confirm: true, safety_token: 'PURGE'}),
+            });
+            ok += 1;
+        } catch (e) {
+            // 409 with sha_mismatch — surface separately so the operator
+            // knows which files were preserved.
+            if (e && e.status === 409 && /sha_mismatch/i.test(e.message || '')) {
+                sha += 1;
+            } else {
+                failed += 1;
+            }
+            console.warn('purge failed', row.id, e);
+        }
+    }
+    let msg = `Hard delete: ${ok} basarili`;
+    if (sha) msg += `, ${sha} SHA uyusmazligi (adli koruma)`;
+    if (failed) msg += `, ${failed} basarisiz`;
+    notify(msg, (failed || sha) ? 'warning' : 'success');
+    loadQuarantine();
+}
+
 async function loadOperations() {
     const tbody = document.getElementById('ops-tbody');
     const filter = document.getElementById('ops-filter')?.value || '';

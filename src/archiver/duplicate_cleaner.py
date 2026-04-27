@@ -46,7 +46,7 @@ import logging
 import os
 import shutil
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +54,7 @@ logger = logging.getLogger("file_activity.archiver.duplicate_cleaner")
 
 
 SAFETY_TOKEN_VALUE = "QUARANTINE"
+PURGE_SAFETY_TOKEN_VALUE = "PURGE"
 
 
 # ──────────────────────────────────────────────
@@ -95,6 +96,65 @@ class QuarantineResult:
     delta: dict = field(default_factory=dict)
     gain_report_id: Optional[int] = None
     confirm: bool = True
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+# ──────────────────────────────────────────────
+# Phase 2 (issue #110) — hard delete + restore
+# ──────────────────────────────────────────────
+
+
+@dataclass
+class PurgeResult:
+    """Per-file outcome for hard-delete (``purge_one``).
+
+    ``status`` is one of:
+      * ``"purged"``        — file removed AND ``quarantine_log.purged_at`` set
+      * ``"skipped_missing"`` — file already gone from disk; row stamped
+      * ``"skipped_already_purged"`` — row already has ``purged_at``
+      * ``"skipped_restored"`` — row was restored, must not be purged
+      * ``"skipped_not_found"`` — no quarantine_log row with that id
+      * ``"abort_sha_mismatch"`` — SHA-256 differs from sidecar; FORENSIC,
+        NO DELETE — operator review required
+      * ``"error"``         — anything else (filesystem, db); details in
+        ``reason``
+    """
+
+    quarantine_log_id: Optional[int] = None
+    status: str = "error"
+    reason: Optional[str] = None
+    quarantine_path: Optional[str] = None
+    original_path: Optional[str] = None
+    sha256_expected: Optional[str] = None
+    sha256_actual: Optional[str] = None
+    audit_event_id: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class RestoreResult:
+    """Per-file outcome for restore from quarantine.
+
+    ``status`` is one of:
+      * ``"restored"``           — file moved back to ``original_path``
+      * ``"skipped_collision"``  — original_path already has a file
+      * ``"skipped_already_restored"`` — row.restored_at already set
+      * ``"skipped_already_purged"``   — row.purged_at already set
+      * ``"skipped_not_found"``  — no quarantine_log row with that id
+      * ``"skipped_missing"``    — quarantine_path already gone
+      * ``"error"``              — anything else; details in ``reason``
+    """
+
+    quarantine_log_id: Optional[int] = None
+    status: str = "error"
+    reason: Optional[str] = None
+    quarantine_path: Optional[str] = None
+    original_path: Optional[str] = None
+    audit_event_id: Optional[int] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -149,6 +209,20 @@ class DuplicateCleaner:
         self.quarantine_root = Path(cfg.get("dir") or "data/quarantine")
         self.bulk_max = int(cfg.get("bulk_delete_max_files") or 500)
         self.require_token = bool(cfg.get("require_safety_token", True))
+        # Phase 2 retention horizon — files older than this are eligible
+        # for hard delete by the daily purge job. Operators can extend
+        # in config.yaml; we never go below 1 (sanity floor) or accept
+        # nonsense (negatives, strings).
+        try:
+            self.quarantine_days = max(1, int(cfg.get("quarantine_days") or 30))
+        except (TypeError, ValueError):
+            self.quarantine_days = 30
+        try:
+            self.purge_hour = int(cfg.get("purge_hour", 3))
+        except (TypeError, ValueError):
+            self.purge_hour = 3
+        if self.purge_hour < 0 or self.purge_hour > 23:
+            self.purge_hour = 3
         # Idempotent — no error when the dir already exists.
         try:
             self.quarantine_root.mkdir(parents=True, exist_ok=True)
@@ -677,6 +751,397 @@ class DuplicateCleaner:
             logger.warning("audit_simple fallback failed (%s): %s",
                            event_type, e)
         return None
+
+    # ──────────────────────────────────────────────
+    # Phase 2 (issue #110) — hard delete + restore
+    # ──────────────────────────────────────────────
+
+    def purge_one(self, quarantine_log_id: int,
+                  purged_by: str = "system") -> PurgeResult:
+        """Hard-delete a single quarantined file.
+
+        SAFETY-CRITICAL contract:
+          1. Read the ``quarantine_log`` row. If missing → ``skipped_not_found``.
+          2. If row already has ``purged_at`` → ``skipped_already_purged``.
+          3. If row has ``restored_at`` → ``skipped_restored`` (don't purge
+             a file the operator pulled back).
+          4. If quarantine_path missing → stamp ``purged_at`` and return
+             ``skipped_missing`` (so the row reflects reality, doesn't get
+             retried daily forever).
+          5. **VERIFY SHA-256** of the on-disk file against the sidecar.
+             Any mismatch → ``abort_sha_mismatch`` and we DO NOT call
+             ``os.remove``. The row stays untouched so the operator can
+             investigate. This is the forensic-preserve rule: corruption
+             mid-quarantine = preserve, never silent delete.
+          6. ``os.remove`` the file + sidecars. Stamp ``purged_at``.
+             Write audit event.
+
+        Per-file errors never raise — they return a ``PurgeResult`` with
+        ``status='error'`` so batch callers can keep going.
+        """
+        result = PurgeResult(quarantine_log_id=int(quarantine_log_id))
+        try:
+            row = self._fetch_quarantine_row(int(quarantine_log_id))
+        except Exception as e:
+            result.status = "error"
+            result.reason = f"db read failed: {e}"
+            return result
+        if row is None:
+            result.status = "skipped_not_found"
+            result.reason = "quarantine_log id not found"
+            return result
+
+        result.quarantine_path = row.get("quarantine_path")
+        result.original_path = row.get("original_path")
+        result.sha256_expected = row.get("sha256")
+
+        if row.get("purged_at"):
+            result.status = "skipped_already_purged"
+            result.reason = "row already has purged_at"
+            return result
+        if row.get("restored_at"):
+            result.status = "skipped_restored"
+            result.reason = "row was restored — refusing to purge"
+            return result
+
+        qpath = row.get("quarantine_path") or ""
+
+        # Pre-existing physical absence: stamp the row so we don't keep
+        # retrying — but log it as an audit event for forensics.
+        if not qpath or not os.path.exists(qpath):
+            self._stamp_purged(int(quarantine_log_id))
+            result.audit_event_id = self._audit(
+                event_type="duplicate_quarantine_purge_skipped_missing",
+                source_id=None,
+                username=purged_by,
+                file_path=qpath or row.get("original_path") or "",
+                details=(
+                    f"Quarantined file already missing on disk; row "
+                    f"#{quarantine_log_id} stamped purged_at without delete."
+                ),
+            )
+            result.status = "skipped_missing"
+            result.reason = "quarantine_path missing on disk"
+            return result
+
+        # Defensive SHA-256 verify against sidecar / row.
+        actual = _sha256_file(qpath)
+        result.sha256_actual = actual
+        expected = self._read_sidecar_sha(qpath) or row.get("sha256")
+        if expected and actual and expected != actual:
+            # FORENSIC: never delete a corrupted-or-tampered file. Audit
+            # loudly so the SOC can investigate.
+            result.status = "abort_sha_mismatch"
+            result.reason = (
+                f"sha256 mismatch: expected={expected} actual={actual}"
+            )
+            result.audit_event_id = self._audit(
+                event_type="duplicate_quarantine_purge_sha_mismatch",
+                source_id=None,
+                username=purged_by,
+                file_path=qpath,
+                details=(
+                    f"Refused hard delete of quarantine_log #"
+                    f"{quarantine_log_id}: sha256 mismatch "
+                    f"(expected={expected} actual={actual}). "
+                    f"File preserved for forensic review."
+                ),
+            )
+            logger.warning(
+                "purge_one aborted (sha mismatch) for log #%s path=%s",
+                quarantine_log_id, qpath,
+            )
+            return result
+
+        # If we have neither expected nor actual, that's a degraded case:
+        # we still proceed (operators may have wiped sidecars), but we
+        # record a softer audit reason.
+        if not expected:
+            logger.info(
+                "purge_one: no sidecar/row sha for log #%s — proceeding",
+                quarantine_log_id,
+            )
+
+        # Hard delete: remove the file + sidecars (best-effort).
+        try:
+            os.remove(qpath)
+        except FileNotFoundError:
+            # Race with manual rm — treat as missing.
+            self._stamp_purged(int(quarantine_log_id))
+            result.audit_event_id = self._audit(
+                event_type="duplicate_quarantine_purge_skipped_missing",
+                source_id=None,
+                username=purged_by,
+                file_path=qpath,
+                details=(
+                    f"Race: file disappeared between sha verify and "
+                    f"remove for row #{quarantine_log_id}."
+                ),
+            )
+            result.status = "skipped_missing"
+            result.reason = "file disappeared mid-purge"
+            return result
+        except Exception as e:
+            result.status = "error"
+            result.reason = f"os.remove failed: {e}"
+            logger.error("purge_one os.remove failed for %s: %s", qpath, e)
+            return result
+
+        # Best-effort sidecar cleanup (failures only logged).
+        for suffix in (".sha256", ".manifest.json"):
+            sidecar = qpath + suffix
+            try:
+                if os.path.exists(sidecar):
+                    os.remove(sidecar)
+            except Exception as e:
+                logger.warning("sidecar remove failed for %s: %s", sidecar, e)
+
+        # Stamp row + audit.
+        self._stamp_purged(int(quarantine_log_id))
+        result.audit_event_id = self._audit(
+            event_type="duplicate_quarantine_purged",
+            source_id=None,
+            username=purged_by,
+            file_path=qpath,
+            details=(
+                f"Hard-deleted quarantine_log #{quarantine_log_id} "
+                f"sha256={actual or '-'} original_path="
+                f"{row.get('original_path')}"
+            ),
+        )
+        result.status = "purged"
+        return result
+
+    def purge_expired(self, now: Optional[datetime] = None,
+                      purged_by: str = "system") -> list[PurgeResult]:
+        """Find every quarantine_log row older than ``quarantine_days``
+        and call :meth:`purge_one` on each.
+
+        Returns a list of :class:`PurgeResult`. Per-file errors never
+        abort the batch — every row gets a result entry so the scheduler
+        run-log can show a comprehensive summary.
+        """
+        if now is None:
+            now = datetime.now()
+        cutoff = now - timedelta(days=self.quarantine_days)
+        results: list[PurgeResult] = []
+        try:
+            rows = self._fetch_purge_candidates(cutoff)
+        except Exception as e:
+            logger.error("purge_expired candidate query failed: %s", e)
+            return results
+
+        for r in rows:
+            try:
+                results.append(self.purge_one(
+                    int(r["id"]), purged_by=purged_by,
+                ))
+            except Exception as e:
+                # Defence in depth — purge_one is supposed to never raise,
+                # but if a defect slips through we still record a per-row
+                # error and keep going.
+                logger.error(
+                    "purge_one raised unexpectedly for log #%s: %s",
+                    r.get("id"), e,
+                )
+                results.append(PurgeResult(
+                    quarantine_log_id=int(r["id"]),
+                    status="error",
+                    reason=f"purge_one raised: {e}",
+                    quarantine_path=r.get("quarantine_path"),
+                    original_path=r.get("original_path"),
+                ))
+        return results
+
+    def restore(self, quarantine_log_id: int,
+                restored_by: str = "system") -> RestoreResult:
+        """Move a quarantined file back to ``original_path``.
+
+        Refuses if:
+          * row not found → ``skipped_not_found``
+          * row already restored or purged
+          * ``original_path`` already exists on disk (collision)
+          * quarantine file missing on disk
+
+        On success: ``shutil.move(quarantine_path, original_path)``,
+        stamps ``restored_at``, writes audit event, and best-effort
+        cleans up the orphan sidecars.
+        """
+        result = RestoreResult(quarantine_log_id=int(quarantine_log_id))
+        try:
+            row = self._fetch_quarantine_row(int(quarantine_log_id))
+        except Exception as e:
+            result.status = "error"
+            result.reason = f"db read failed: {e}"
+            return result
+        if row is None:
+            result.status = "skipped_not_found"
+            result.reason = "quarantine_log id not found"
+            return result
+
+        result.quarantine_path = row.get("quarantine_path")
+        result.original_path = row.get("original_path")
+
+        if row.get("purged_at"):
+            result.status = "skipped_already_purged"
+            result.reason = "row already purged — file no longer exists"
+            return result
+        if row.get("restored_at"):
+            result.status = "skipped_already_restored"
+            result.reason = "row already restored"
+            return result
+
+        qpath = row.get("quarantine_path") or ""
+        opath = row.get("original_path") or ""
+
+        if not qpath or not os.path.exists(qpath):
+            result.status = "skipped_missing"
+            result.reason = "quarantine_path missing on disk"
+            return result
+        if not opath:
+            result.status = "error"
+            result.reason = "original_path is empty"
+            return result
+        if os.path.exists(opath):
+            result.status = "skipped_collision"
+            result.reason = (
+                f"original_path already exists ({opath}) — refusing to "
+                f"overwrite"
+            )
+            result.audit_event_id = self._audit(
+                event_type="duplicate_quarantine_restore_collision",
+                source_id=None,
+                username=restored_by,
+                file_path=opath,
+                details=(
+                    f"Refused restore of #{quarantine_log_id}: "
+                    f"original_path already exists."
+                ),
+            )
+            return result
+
+        # Make sure the parent of original_path exists.
+        try:
+            parent = os.path.dirname(opath)
+            if parent and not os.path.isdir(parent):
+                os.makedirs(parent, exist_ok=True)
+        except Exception as e:
+            result.status = "error"
+            result.reason = f"mkdir parent failed: {e}"
+            return result
+
+        try:
+            shutil.move(qpath, opath)
+        except Exception as e:
+            result.status = "error"
+            result.reason = f"shutil.move failed: {e}"
+            logger.error("restore move failed for %s: %s", qpath, e)
+            return result
+
+        # Best-effort sidecar cleanup (orphans now).
+        for suffix in (".sha256", ".manifest.json"):
+            sidecar = qpath + suffix
+            try:
+                if os.path.exists(sidecar):
+                    os.remove(sidecar)
+            except Exception as e:
+                logger.warning(
+                    "restore sidecar remove failed for %s: %s", sidecar, e
+                )
+
+        self._stamp_restored(int(quarantine_log_id))
+        result.audit_event_id = self._audit(
+            event_type="duplicate_quarantine_restored",
+            source_id=None,
+            username=restored_by,
+            file_path=opath,
+            details=(
+                f"Restored quarantine_log #{quarantine_log_id} from "
+                f"{qpath} to {opath}"
+            ),
+        )
+        result.status = "restored"
+        return result
+
+    # ──────────────────────────────────────────────
+    # Phase 2 internal helpers
+    # ──────────────────────────────────────────────
+
+    def _fetch_quarantine_row(self, qlog_id: int) -> Optional[dict]:
+        with self.db.get_cursor() as cur:
+            cur.execute(
+                "SELECT id, file_id, original_path, quarantine_path, "
+                "sha256, file_size, moved_at, moved_by, gain_report_id, "
+                "purged_at, restored_at "
+                "FROM quarantine_log WHERE id = ?",
+                (int(qlog_id),),
+            )
+            r = cur.fetchone()
+            return dict(r) if r else None
+
+    def _fetch_purge_candidates(self, cutoff: datetime) -> list[dict]:
+        """Rows with moved_at < cutoff and not yet purged/restored."""
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        with self.db.get_cursor() as cur:
+            cur.execute(
+                "SELECT id, original_path, quarantine_path, moved_at "
+                "FROM quarantine_log "
+                "WHERE moved_at < ? "
+                "  AND purged_at IS NULL "
+                "  AND restored_at IS NULL "
+                "ORDER BY moved_at ASC",
+                (cutoff_str,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def _stamp_purged(self, qlog_id: int) -> None:
+        try:
+            with self.db.get_cursor() as cur:
+                cur.execute(
+                    "UPDATE quarantine_log SET purged_at = "
+                    "CURRENT_TIMESTAMP WHERE id = ? AND purged_at IS NULL",
+                    (int(qlog_id),),
+                )
+        except Exception as e:
+            logger.error("purged_at stamp failed for #%s: %s", qlog_id, e)
+
+    def _stamp_restored(self, qlog_id: int) -> None:
+        try:
+            with self.db.get_cursor() as cur:
+                cur.execute(
+                    "UPDATE quarantine_log SET restored_at = "
+                    "CURRENT_TIMESTAMP WHERE id = ? AND restored_at IS NULL",
+                    (int(qlog_id),),
+                )
+        except Exception as e:
+            logger.error("restored_at stamp failed for #%s: %s", qlog_id, e)
+
+    @staticmethod
+    def _read_sidecar_sha(qpath: str) -> Optional[str]:
+        """Read the ``<qpath>.sha256`` sidecar and return the hex digest.
+
+        The sidecar format is ``<digest>  <filename>\\n`` (sha256sum-style).
+        Tolerates trailing whitespace, missing file, malformed content;
+        returns ``None`` on any failure.
+        """
+        sidecar = qpath + ".sha256"
+        try:
+            with open(sidecar, "r", encoding="utf-8") as f:
+                line = f.readline().strip()
+            if not line:
+                return None
+            token = line.split()[0]
+            # Hex digests are 64 chars for sha256.
+            if len(token) >= 32 and all(
+                c in "0123456789abcdefABCDEF" for c in token
+            ):
+                return token.lower()
+            return None
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            logger.warning("sidecar read failed for %s: %s", sidecar, e)
+            return None
 
     def _link_quarantine_to_report(self, moved_files: list[dict],
                                     report_id: int) -> None:

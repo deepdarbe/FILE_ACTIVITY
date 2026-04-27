@@ -817,6 +817,27 @@ class Database:
             "ON cost_center_owners(owner_pattern)"
         )
 
+        # Phase 2 (issue #110): hard-delete + restore lifecycle columns.
+        for _alter in (
+            "ALTER TABLE quarantine_log ADD COLUMN purged_at TIMESTAMP",
+            "ALTER TABLE quarantine_log ADD COLUMN restored_at TIMESTAMP",
+        ):
+            try:
+                cur.execute(_alter)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    logger.warning("quarantine_log ALTER failed (%s): %s",
+                                   _alter, e)
+
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quarantine_purged "
+            "ON quarantine_log(purged_at)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quarantine_restored "
+            "ON quarantine_log(restored_at)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(

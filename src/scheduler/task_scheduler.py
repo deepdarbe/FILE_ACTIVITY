@@ -36,6 +36,9 @@ class TaskScheduler:
         # approval queue. Always-on (cheap no-op when there are no
         # pending rows or approvals.enabled=false).
         self._register_approval_expiry_job()
+        # Issue #110 Phase 2: register the daily quarantine purge job.
+        # Hard-deletes quarantine_log rows older than quarantine_days.
+        self._register_daily_quarantine_purge_job()
         self.scheduler.start()
         logger.info("TaskScheduler başlatıldı")
 
@@ -439,6 +442,99 @@ class TaskScheduler:
         except Exception as e:
             logger.error(
                 "Failed to register expire_stale_approvals: %s", e
+            )
+
+    def _run_daily_quarantine_purge(self, task=None):
+        """Issue #110 Phase 2: hard-delete quarantine_log rows older than
+        ``duplicates.quarantine.quarantine_days``.
+
+        Per-file errors never abort the batch — they're surfaced in the
+        returned summary so operators can review the next morning.
+        Defensive SHA-256 verification happens inside ``purge_one``;
+        any mismatch returns ``abort_sha_mismatch`` and the file is
+        preserved (forensic) rather than silently deleted.
+        """
+        try:
+            from src.archiver.duplicate_cleaner import DuplicateCleaner
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": f"duplicate_cleaner import failed: {e}",
+            }
+
+        dup_cfg = ((self.config or {}).get("duplicates") or {}).get(
+            "quarantine"
+        ) or {}
+        if not dup_cfg.get("enabled", True):
+            return {"status": "skipped",
+                    "message": "duplicates.quarantine.enabled=false"}
+
+        try:
+            cleaner = DuplicateCleaner(self.db, self.config)
+            results = cleaner.purge_expired(purged_by="scheduler")
+            summary = {
+                "status": "completed",
+                "candidates": len(results),
+                "purged": sum(1 for r in results if r.status == "purged"),
+                "skipped_missing": sum(
+                    1 for r in results if r.status == "skipped_missing"
+                ),
+                "abort_sha_mismatch": sum(
+                    1 for r in results
+                    if r.status == "abort_sha_mismatch"
+                ),
+                "skipped_already_purged": sum(
+                    1 for r in results
+                    if r.status == "skipped_already_purged"
+                ),
+                "skipped_restored": sum(
+                    1 for r in results if r.status == "skipped_restored"
+                ),
+                "errors": sum(1 for r in results if r.status == "error"),
+            }
+            logger.info("daily_quarantine_purge summary: %s", summary)
+            return summary
+        except Exception as e:
+            logger.error("daily_quarantine_purge failed: %s", e,
+                         exc_info=True)
+            return {"status": "error", "message": str(e)}
+
+    def _register_daily_quarantine_purge_job(self):
+        """Register the config-driven daily quarantine purge job (#110)."""
+        dup_cfg = ((self.config or {}).get("duplicates") or {}).get(
+            "quarantine"
+        ) or {}
+        if not dup_cfg.get("enabled", True):
+            logger.info(
+                "daily_quarantine_purge not registered: "
+                "duplicates.quarantine.enabled=false"
+            )
+            return
+        try:
+            hour = int(dup_cfg.get("purge_hour", 3))
+        except (TypeError, ValueError):
+            hour = 3
+        if hour < 0 or hour > 23:
+            logger.warning(
+                "purge_hour=%r out of range — defaulting to 3", hour
+            )
+            hour = 3
+        try:
+            trigger = CronTrigger(minute="0", hour=str(hour))
+            self.scheduler.add_job(
+                self._run_daily_quarantine_purge,
+                trigger=trigger,
+                id="daily_quarantine_purge",
+                name="daily_quarantine_purge:duplicates",
+                replace_existing=True,
+            )
+            logger.info(
+                "daily_quarantine_purge job registered (cron: 0 %d * * *)",
+                hour,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to register daily_quarantine_purge: %s", e
             )
 
     def reload_tasks(self):
