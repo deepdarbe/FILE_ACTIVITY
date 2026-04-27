@@ -6,6 +6,7 @@
 <title>FILE ACTIVITY - Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/components/entity-list.js"></script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>📊</text></svg>">
 <style>
 :root {
@@ -692,6 +693,16 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="panel" style="margin-top:20px">
         <h3 class="panel-title" style="color:var(--warning)">En Iyi Uygulama Sapmalari (Best Practices)</h3>
         <div class="table-wrap"><table id="naming-bp-table"></table></div>
+    </div>
+
+    <!-- ============ Issue #80: Reusable entity-list (toplu islemler) ============ -->
+    <div class="panel" style="margin-top:20px">
+        <h3 class="panel-title">Ihlal Eden Dosyalar (Toplu Islemler)</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
+            Asagidaki tabloda en cok ihlal alan ilk dosyalar listelenir. XLSX export
+            tum ihlalleri (file × rule) dosyaya yazar.
+        </div>
+        <div id="mit-naming-container"></div>
     </div>
 </div>
 
@@ -2689,7 +2700,134 @@ async function loadNaming() {
         }
         // Export butonunu goster
         document.getElementById('naming-export-btn').style.display = '';
+
+        // Issue #80: reusable entity-list ile ihlal eden dosyalari listele
+        renderMitNamingEntityList(sourceId, data);
     } catch(e) { console.error('MIT naming load error:', e); }
+}
+
+// Issue #80 — entity-list component'ini mit-naming sayfasina baglar.
+async function renderMitNamingEntityList(sourceId, report) {
+    const container = document.getElementById('mit-naming-container');
+    if (!container || typeof renderEntityList !== 'function') return;
+
+    // Loading shimmer
+    container.innerHTML =
+        '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:12px">' +
+        'Ihlal eden dosyalar yukleniyor...</div>';
+
+    // Hangi kurallar icin dosya cekilecek? Rapordaki kurallar (count > 0).
+    const codesToFetch = []
+        .concat((report.requirements || []).map(r => r.code))
+        .concat((report.best_practices || []).map(b => b.code));
+
+    if (codesToFetch.length === 0) {
+        container.innerHTML =
+            '<div style="padding:30px;text-align:center;color:var(--success);font-size:13px">' +
+            'Hicbir ihlal yok — listelenecek dosya bulunamadi.</div>';
+        return;
+    }
+
+    // Her kural icin ilk 50 dosyayi cek; ayni dosyayi birden fazla kural
+    // birlestirecekse "rules" alaninda biriktir. UI tarafinda her satir =
+    // bir dosya (cogu rule violating); XLSX export'unda her (dosya × rule).
+    try {
+        const results = await Promise.all(codesToFetch.map(code =>
+            api(`/reports/mit-naming/${sourceId}/files?code=${code}&page=1&page_size=50`,
+                {silent: true}).catch(() => ({files: []}))
+        ));
+
+        const byId = new Map();
+        codesToFetch.forEach((code, i) => {
+            (results[i].files || []).forEach(f => {
+                const key = f.id != null ? f.id : f.file_path;
+                if (!byId.has(key)) {
+                    byId.set(key, {
+                        id: f.id,
+                        file_path: f.file_path,
+                        file_name: f.file_name,
+                        directory: f.directory || '',
+                        owner: f.owner || '',
+                        last_modify_time: f.last_modify_time || '',
+                        file_size: f.file_size || 0,
+                        file_size_formatted: f.file_size_formatted || formatSize(f.file_size || 0),
+                        rules: [],
+                    });
+                }
+                byId.get(key).rules.push(code);
+            });
+        });
+
+        const rows = Array.from(byId.values())
+            .sort((a, b) => b.rules.length - a.rules.length)
+            .slice(0, 1000); // UI cap; XLSX export covers everything server-side
+
+        // Determine highest severity per row.
+        const severityOf = code => {
+            if (code && code[0] === 'R') return 'danger';
+            if (code === 'B1' || code === 'B2' || code === 'B3') return 'warning';
+            return 'info';
+        };
+
+        rows.forEach(r => {
+            r.severity = r.rules.some(c => c[0] === 'R') ? 'danger'
+                : r.rules.some(c => ['B1','B2','B3'].includes(c)) ? 'warning' : 'info';
+            r.rule_summary = r.rules.join(', ');
+        });
+
+        renderEntityList(container, {
+            rows: rows,
+            rowKey: 'id',
+            pageSize: 50,
+            searchKeys: ['file_path', 'file_name', 'owner', 'rule_summary'],
+            columns: [
+                {key: 'file_name', label: 'Dosya Adi'},
+                {key: 'file_path', label: 'Tam Yol'},
+                {key: 'rule_summary', label: 'Ihlal Kodlari'},
+                {key: 'severity', label: 'Onem',
+                 render: v => `<span class="badge badge-${v}">${v}</span>`},
+                {key: 'file_size', label: 'Boyut',
+                 render: (v, row) => row.file_size_formatted || formatSize(v || 0)},
+                {key: 'owner', label: 'Sahip'},
+            ],
+            toolbar: {
+                xlsxExport: {
+                    endpoint: `/api/reports/mit-naming/${sourceId}/export.xlsx`,
+                    filenameBase: `naming-${sourceId}`,
+                },
+                bulkActions: [
+                    {label: 'Hedefe Git', action: 'open-folder'},
+                    // Destructive actions deferred to issue #83.
+                    {label: 'Toplu Arsivle', action: 'bulk-archive',
+                     confirm: true, comingSoon: 'Yakinda eklenecek (#83)'},
+                    {label: 'Legal Hold Ekle', action: 'add-hold',
+                     confirm: true, comingSoon: 'Yakinda eklenecek (#83)'},
+                ],
+            },
+            onBulkAction: async (actionId, selectedRows) => {
+                if (actionId === 'open-folder') {
+                    if (selectedRows.length > 5) {
+                        notify('Bir defada en fazla 5 konum acilabilir', 'warning');
+                        return;
+                    }
+                    for (const r of selectedRows) {
+                        // Use existing openFolder() — already handles localhost vs
+                        // remote per #82 Bug 1 fix.
+                        const target = r.directory || (r.file_path || '').replace(/[\\/][^\\/]*$/, '');
+                        if (target) openFolder(target);
+                    }
+                    return;
+                }
+                // Other action ids fall here only if not flagged comingSoon.
+                notify('Bilinmeyen toplu islem: ' + actionId, 'warning');
+            },
+            emptyMessage: 'Ihlal eden dosya bulunamadi',
+        });
+    } catch (e) {
+        container.innerHTML =
+            '<div style="padding:20px;color:var(--danger);font-size:12px">' +
+            'Liste yuklenemedi: ' + (e && e.message ? e.message : e) + '</div>';
+    }
 }
 
 async function showNamingFiles(code, sourceId) {
@@ -2741,13 +2879,15 @@ async function showNamingFiles(code, sourceId) {
 async function exportNamingReport(event) {
     const sourceId = document.getElementById('naming-source')?.value;
     if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
+    // Issue #80: streaming XLSX endpoint -- direct download via fetch
+    // wrapped in #82 Bug 3 withButtonLoading helper (spinner + abort timeout).
     const btn = event?.currentTarget;
     await withButtonLoading(btn, async (signal) => {
-        const r = await fetch(`/api/export/start?report_type=mit_naming&source_id=${sourceId}`, { method: 'POST', signal });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const data = await r.json();
-        notify('Excel raporu arka planda hazirlaniyor...', 'info');
-        if (data && data.job_id) pollExportStatus(data.job_id);
+        await fetchAndDownload(
+            `${API}/reports/mit-naming/${sourceId}/export.xlsx`,
+            signal,
+            `naming-${sourceId}.xlsx`
+        );
     });
 }
 

@@ -1288,6 +1288,152 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
+    @app.get("/api/reports/mit-naming/{source_id}/export.xlsx")
+    async def export_mit_naming_xlsx(
+        source_id: int,
+        ids: Optional[str] = Query(
+            None,
+            description="Comma-separated scanned_files.id values; empty = all violating rows",
+        ),
+    ):
+        """Export MIT-naming violations as XLSX (issue #80).
+
+        Columns: file_path, owner, last_modify_time, file_size, rule, severity.
+        One row per (file × violated rule); a single file violating R1+B4
+        produces two rows. ``ids`` filters to scanned_files.id values; empty
+        means every violating row in the latest scan.
+        """
+        import re as re_mod
+        from fastapi.responses import StreamingResponse
+        import io
+        from datetime import datetime
+
+        try:
+            from openpyxl import Workbook
+        except ImportError as e:  # pragma: no cover - openpyxl is in requirements.txt
+            raise HTTPException(
+                500,
+                "openpyxl is not installed; add openpyxl>=3.1.0 to requirements.txt",
+            ) from e
+
+        scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama bulunamadi")
+
+        # Rule definitions: code -> (label, severity, predicate(path, name))
+        # severity matches MITNamingAnalyzer.get_report() conventions.
+        rules = [
+            ("R1", "Bosluk Iceren", "critical",
+             lambda p, n: bool(re_mod.search(r"\s", n))),
+            ("R2", "Ilk Karakter Harf Degil", "critical",
+             lambda p, n: bool(n) and not re_mod.match(r"^[a-zA-Z]", n)),
+            ("R3", "Yasak Karakter", "critical",
+             lambda p, n: bool(n) and "." in n
+             and not re_mod.match(r"^[a-zA-Z0-9._-]+$", n[: n.rfind(".")])),
+            ("R4", "Uzanti Sorunu", "critical",
+             lambda p, n: "." not in n or not n.rsplit(".", 1)[-1].isalpha()),
+            ("B1", "Uzun Ad (>31)", "warning",
+             lambda p, n: len(n) > 31),
+            ("B2", "Uzun Yol (>256)", "warning",
+             lambda p, n: len(p) > 256),
+            ("B3", "Base'de Nokta", "warning",
+             lambda p, n: "." in n and n[: n.rfind(".")].count(".") > 0),
+            ("B4", "Buyuk Harf", "info",
+             lambda p, n: bool(re_mod.search(
+                 r"[A-Z]", n[: n.rfind(".")] if "." in n else n))),
+            ("B5", "Ayirici Yok", "info",
+             lambda p, n: len(n) > 10 and "_" not in n and "-" not in n),
+            ("B6", "Dizin Adinda Nokta", "info",
+             lambda p, n: any(
+                 "." in part and part not in ("", ".", "..")
+                 for part in p.replace("\\", "/").split("/")
+             )),
+        ]
+
+        # Parse the optional ids filter once.
+        id_filter: Optional[set] = None
+        if ids:
+            id_filter = set()
+            for tok in ids.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    id_filter.add(int(tok))
+                except ValueError:
+                    # Skip non-numeric tokens silently — exporting is best-effort.
+                    continue
+
+        # Collect violating (file × rule) rows.
+        export_rows: list[dict] = []
+        with db.get_cursor() as cur:
+            cur.execute(
+                """SELECT id, file_path, file_name, owner, last_modify_time, file_size
+                   FROM scanned_files
+                   WHERE source_id = ? AND scan_id = ?""",
+                (source_id, scan_id),
+            )
+            for r in cur:
+                if id_filter is not None and r["id"] not in id_filter:
+                    continue
+                path = r["file_path"] or ""
+                name = r["file_name"] or ""
+                for code, label, severity, fn in rules:
+                    try:
+                        if fn(path, name):
+                            export_rows.append({
+                                "file_path": path,
+                                "owner": r["owner"] or "",
+                                "last_modify_time": r["last_modify_time"] or "",
+                                "file_size": r["file_size"] or 0,
+                                "rule": f"{code} - {label}",
+                                "severity": severity,
+                            })
+                    except Exception:  # pragma: no cover - defensive predicate guard
+                        continue
+
+        # Build workbook in-memory.
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "MIT Naming"
+        headers = ["file_path", "owner", "last_modify_time",
+                   "file_size", "rule", "severity"]
+        ws.append(headers)
+        for row in export_rows:
+            ws.append([row[h] for h in headers])
+
+        # Total wasted-bytes formula across all rows (column D = file_size).
+        # Empty result -> "0" so the cell is still meaningful.
+        last_data_row = ws.max_row
+        if last_data_row > 1:
+            total_row = last_data_row + 2
+            ws.cell(row=total_row, column=3, value="TOTAL BYTES")
+            ws.cell(
+                row=total_row,
+                column=4,
+                value=f"=SUM(D2:D{last_data_row})",
+            )
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        filename = (
+            f"MIT_Naming_Report_source{source_id}_scan{scan_id}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        return StreamingResponse(
+            buf,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "X-Total-Rows": str(len(export_rows)),
+            },
+        )
+
     @app.get("/api/insights/{source_id}/files")
     async def insight_files(source_id: int, insight_type: str = "stale_1year",
                             page: int = Query(1, ge=1, le=10000),
