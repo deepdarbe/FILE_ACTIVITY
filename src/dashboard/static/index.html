@@ -310,6 +310,12 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('schedules')"><span class="icon">⏰</span> <span>Zamanlama</span></div>
         <div class="nav-item" onclick="showPage('sqlquery')"><span class="icon">🔍</span> <span>Sorgu</span></div>
     </div>
+    <div class="nav-section">
+        <div class="nav-label">Uyumluluk</div>
+        <div class="nav-item" onclick="showPage('pii')"><span class="icon">🛡️</span> <span>PII Bulgular</span></div>
+        <div class="nav-item" onclick="showPage('retention')"><span class="icon">🗓️</span> <span>Saklama Politikalari</span></div>
+        <div class="nav-item" onclick="showPage('legal-holds')"><span class="icon">⚖️</span> <span>Legal Hold</span></div>
+    </div>
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
     </div>
@@ -783,31 +789,92 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     </div>
 </div>
 
-<!-- ============ LEGAL HOLDS (issue #59 placeholder) ============ -->
-<div class="page" id="page-legal-holds">
+<!-- ============ COMPLIANCE: PII FINDINGS (issue #81) ============ -->
+<div class="page" id="page-pii">
     <div class="page-header">
-        <div><h2>Legal Holds</h2><div class="desc">Yasal/uyumluluk donmus dosya yollari — arsiv ve retention disinda tutulur</div></div>
-    </div>
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
-        <div style="color:var(--text-muted);font-size:13px;line-height:1.5">
-            Aktif legal hold'lar API uzerinden listelenir:
-            <code style="color:var(--accent)">GET /api/compliance/legal-holds/active</code>.
-            Yeni hold ekleme: <code style="color:var(--accent)">POST /api/compliance/legal-holds</code>.
-            Tam UI bir sonraki release'te. Bu sayfada simdilik salt-okunur tablo gosterilir.
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Uyumluluk &raquo; PII Bulgular</div>
+            <h2>PII Bulgular (GDPR)</h2>
+            <div class="desc">Tarama × pattern isabet haritasi, drill-down ve Article 17/30 subject export</div>
+        </div>
+        <div class="actions">
+            <select id="pii-source" onchange="loadPii()" style="width:200px">
+                <option value="">Tum kaynaklar</option>
+            </select>
+            <select id="pii-pattern-filter" onchange="loadPii()" style="width:160px">
+                <option value="">Tum pattern'ler</option>
+            </select>
+            <button class="btn btn-outline" onclick="openPiiSubjectModal()">Subject Export (GDPR)</button>
         </div>
     </div>
-    <div class="table-wrap" style="overflow:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius)">
-        <table id="legal-holds-table" style="width:100%;border-collapse:collapse">
-            <thead><tr>
-                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">ID</th>
-                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Pattern</th>
-                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Sebep</th>
-                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Dava No</th>
-                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Olusturan</th>
-                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Tarih</th>
-            </tr></thead>
-            <tbody id="legal-holds-tbody"><tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
-        </table>
+    <div id="pii-disabled-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:13px">
+        Bu ozellik kapali — <code>config.yaml &gt; compliance.pii.enabled: true</code> ile aciliyor
+    </div>
+    <!-- Heatmap -->
+    <div class="panel" style="margin-bottom:16px">
+        <h3 class="panel-title">Tarama × Pattern Isabet Haritasi</h3>
+        <div id="pii-heatmap" style="overflow-x:auto;padding:8px"></div>
+    </div>
+    <!-- Findings list -->
+    <div class="panel">
+        <h3 class="panel-title">Bulgular</h3>
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
+            Snippet'ler maskelenmis (j***n@x.com gibi). Tum sutunlarda arama yapilir.
+        </div>
+        <div id="pii-list-container"></div>
+    </div>
+</div>
+
+<!-- ============ COMPLIANCE: RETENTION POLICIES (issue #81) ============ -->
+<div class="page" id="page-retention">
+    <div class="page-header">
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Uyumluluk &raquo; Saklama Politikalari</div>
+            <h2>Saklama Politikalari (Retention)</h2>
+            <div class="desc">CRUD + kuru-cek (dry-run) onizleme + denetim raporu (attestation)</div>
+        </div>
+        <div class="actions">
+            <button class="btn btn-primary" onclick="openRetentionPolicyModal()">+ Yeni Policy</button>
+            <button class="btn btn-outline" onclick="openRetentionAttestationModal()">Attestation Raporu</button>
+        </div>
+    </div>
+    <div id="retention-disabled-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:13px">
+        Bu ozellik kapali — <code>config.yaml &gt; compliance.retention.enabled: true</code> ile aciliyor
+    </div>
+    <div class="panel">
+        <h3 class="panel-title">Tanimli Politikalar</h3>
+        <div id="retention-list-container"></div>
+    </div>
+</div>
+
+<!-- ============ COMPLIANCE: LEGAL HOLDS (issue #81, extends #59 placeholder) ============ -->
+<div class="page" id="page-legal-holds">
+    <div class="page-header">
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Uyumluluk &raquo; Legal Hold</div>
+            <h2>Legal Holds</h2>
+            <div class="desc">Yasal/uyumluluk donmus dosya yollari — arsiv ve retention disinda tutulur</div>
+        </div>
+        <div class="actions">
+            <input id="lh-check-path" placeholder="/share/.../file.pdf" style="width:240px;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:12px">
+            <button class="btn btn-outline" onclick="lhPathCheck()">Path Check</button>
+            <span id="lh-check-result" style="display:none;padding:4px 10px;border-radius:12px;font-size:12px"></span>
+            <button class="btn btn-primary" onclick="openLegalHoldModal()">+ Yeni Hold</button>
+        </div>
+    </div>
+    <div id="lh-disabled-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;padding:10px 14px;border-radius:6px;margin-bottom:14px;font-size:13px">
+        Bu ozellik kapali — <code>config.yaml &gt; compliance.legal_hold.enabled: true</code> ile aciliyor
+    </div>
+    <!-- Tabs -->
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px">
+        <div id="lh-tab-active" class="lh-tab" style="padding:10px 18px;cursor:pointer;border-bottom:2px solid var(--accent);color:var(--accent);font-weight:600" onclick="lhSwitchTab('active')">Aktif</div>
+        <div id="lh-tab-history" class="lh-tab" style="padding:10px 18px;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-muted)" onclick="lhSwitchTab('history')">Gecmis</div>
+    </div>
+    <div id="lh-active-pane">
+        <div id="lh-active-container"></div>
+    </div>
+    <div id="lh-history-pane" style="display:none">
+        <div id="lh-history-container"></div>
     </div>
 </div>
 
@@ -1092,7 +1159,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention };
     if (loaders[name]) loaders[name]();
 }
 
@@ -1118,10 +1185,10 @@ async function loadSources() {
 }
 
 function populateAllSourceSelects() {
-    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source'].forEach(id => populateSourceSelect(id));
+    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source'].forEach(id => populateSourceSelect(id));
     // Auto-select first source if only one
     if (sources.length === 1) {
-        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source'].forEach(id => {
+        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source'].forEach(id => {
             const sel = document.getElementById(id);
             if (sel && !sel.value) sel.value = sources[0].id;
         });
@@ -1132,9 +1199,14 @@ function populateSourceSelect(id) {
     const sel = document.getElementById(id);
     if (!sel) return;
     const cur = sel.value;
-    sel.innerHTML = '<option value="">Kaynak secin...</option>' + sources.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+    // Issue #81: PII findings and similar pages support "all sources"
+    // (empty value); use a different placeholder there.
+    const placeholder = (id === 'pii-source')
+        ? '<option value="">Tum kaynaklar</option>'
+        : '<option value="">Kaynak secin...</option>';
+    sel.innerHTML = placeholder + sources.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
     if (cur) sel.value = cur;
-    else if (sources.length === 1) sel.value = sources[0].id;
+    else if (sources.length === 1 && id !== 'pii-source') sel.value = sources[0].id;
 }
 
 function renderSources() {
