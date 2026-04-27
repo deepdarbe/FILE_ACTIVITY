@@ -48,6 +48,38 @@ logger = logging.getLogger("file_activity.storage.backup_manager")
 
 
 @dataclass
+class RestoreResult:
+    """Outcome of an :meth:`BackupManager.auto_restore_if_needed` call.
+
+    ``restored=True`` means the live DB was replaced from a snapshot;
+    the broken file lives on at ``broken_path`` for forensics. When
+    ``restored=False`` the ``reason`` carries one of:
+
+      * ``"not_corrupted"`` — probe said the DB is fine, no action taken.
+      * ``"disabled_in_config"`` — corruption detected but
+        ``backup.auto_restore_on_corruption`` is False. Caller should
+        log CRITICAL.
+      * ``"corruption_detected"`` — alias used at the API layer for the
+        disabled-in-config path so the dashboard can surface a banner.
+      * ``"no_snapshot"`` — corruption detected, config flag true, but
+        no snapshot is available to restore from.
+      * ``"restore_failed"`` — corruption detected, attempted restore,
+        but the salvage step itself raised. Broken DB is preserved.
+    """
+
+    restored: bool
+    reason: str
+    snapshot_id: Optional[str] = None
+    broken_path: Optional[str] = None
+    audit_event_id: Optional[int] = None
+    ts: Optional[str] = None
+    details: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
 class SnapshotMeta:
     """Metadata for one backup snapshot.
 
@@ -97,7 +129,10 @@ class BackupManager:
         self.backup_dir: str = str(backup_cfg.get("dir", "data/backups"))
         self.keep_last_n: int = int(backup_cfg.get("keep_last_n", 10) or 0)
         self.keep_weekly: int = int(backup_cfg.get("keep_weekly", 4) or 0)
-        # Phase 2 placeholder — read but never acted on this round.
+        # Phase 2 (#77): when True and the dashboard bootstrap probe
+        # finds the live DB corrupted, ``auto_restore_if_needed`` will
+        # forensic-rename the broken file and copy the newest snapshot
+        # over ``db_path``. Default False — opt-in only.
         self.auto_restore_on_corruption: bool = bool(
             backup_cfg.get("auto_restore_on_corruption", False)
         )
@@ -388,9 +423,10 @@ class BackupManager:
         for stopping the dashboard / scheduler first; this method
         refuses to run if it detects a live connection.
 
-        NOTE (Phase 1): never auto-called. Phase 2 will wire this from
-        the startup corruption probe when
-        ``backup.auto_restore_on_corruption`` is True.
+        NOTE: this is the manual-restore path. Phase 2 (#77) auto-restore
+        on corruption goes through :meth:`auto_restore_if_needed`, which
+        runs *before* any live connection is opened so the live-lock
+        check below is automatically satisfied.
         """
         metas = {m.id: m for m in self.list_snapshots()}
         meta = metas.get(snapshot_id)
@@ -452,6 +488,305 @@ class BackupManager:
             "restore ok: id=%s -> %s (size=%d)",
             meta.id, self.db_path, meta.size_bytes,
         )
+
+    # ──────────────────────────────────────────────
+    # Phase 2 — auto-restore on corruption (#77)
+    # ──────────────────────────────────────────────
+
+    def auto_restore_if_needed(self) -> Optional["RestoreResult"]:
+        """Probe the live DB; if corrupted, salvage from latest snapshot.
+
+        Called once at dashboard bootstrap, BEFORE the main ``Database``
+        instance opens its long-lived connection. By then the DB is
+        unowned (no other connection holds the WAL lock), so we can
+        safely move the broken file aside and drop the snapshot in its
+        place.
+
+        Behaviour matrix:
+
+          * Not corrupted → returns ``RestoreResult(restored=False,
+            reason="not_corrupted")``. No I/O.
+          * Corrupted + ``auto_restore_on_corruption=False`` → returns
+            ``RestoreResult(restored=False, reason="disabled_in_config",
+            details=<probe details>)``. Caller logs CRITICAL.
+          * Corrupted + flag true + no snapshot → returns
+            ``RestoreResult(restored=False, reason="no_snapshot")``.
+            The broken DB is left untouched.
+          * Corrupted + flag true + snapshot found → forensic-renames
+            the broken DB, copies the snapshot over, wipes -wal/-shm,
+            writes an ``auto_restore`` audit event and (if SMTP is on)
+            emails the admin. Returns ``RestoreResult(restored=True,
+            ...)``.
+
+        Never raises on the corruption-detection path; restore-step
+        failures bubble out as ``reason="restore_failed"`` with the
+        traceback summarised in ``details``.
+        """
+        # Local import to avoid circular import at module load time.
+        from src.storage.corruption_detector import is_corrupted
+
+        probe = is_corrupted(self.db_path)
+        if not probe.is_corrupted:
+            return RestoreResult(
+                restored=False,
+                reason="not_corrupted",
+                details=probe.details,
+            )
+
+        logger.critical(
+            "DB CORRUPTION DETECTED: db=%s reason=%s details=%s",
+            self.db_path, probe.reason, probe.details,
+        )
+
+        if not self.auto_restore_on_corruption:
+            return RestoreResult(
+                restored=False,
+                reason="disabled_in_config",
+                details=f"{probe.reason}: {probe.details}",
+            )
+
+        # Locate the newest snapshot. ``list_snapshots`` returns
+        # ascending-by-id so the tail is freshest.
+        try:
+            metas = self.list_snapshots()
+        except Exception as e:
+            logger.error("auto-restore: cannot read manifest: %s", e)
+            return RestoreResult(
+                restored=False,
+                reason="restore_failed",
+                details=f"manifest read failed: {e}",
+            )
+
+        # Walk newest-first, skip any whose .bak file is gone from disk.
+        chosen: Optional[SnapshotMeta] = None
+        for meta in reversed(metas):
+            if meta.path and os.path.exists(meta.path):
+                chosen = meta
+                break
+        if chosen is None:
+            logger.error(
+                "auto-restore: no usable snapshot (manifest=%d entries)",
+                len(metas),
+            )
+            return RestoreResult(
+                restored=False,
+                reason="no_snapshot",
+                details=f"manifest_entries={len(metas)}",
+            )
+
+        # 1. Forensic-rename the broken DB. NEVER delete it.
+        ts = self._now().strftime("%Y%m%d_%H%M%S")
+        broken_path = f"{self.db_path}.broken-{ts}"
+        try:
+            os.replace(self.db_path, broken_path)
+        except OSError as e:
+            logger.error(
+                "auto-restore: cannot rename broken DB %s -> %s: %s",
+                self.db_path, broken_path, e,
+            )
+            return RestoreResult(
+                restored=False,
+                reason="restore_failed",
+                details=f"rename broken DB failed: {e}",
+            )
+
+        # 2. Copy the snapshot over db_path. ``shutil.copy2`` preserves
+        # mtime so the file looks freshly minted to ops tooling.
+        try:
+            shutil.copy2(chosen.path, self.db_path)
+        except OSError as e:
+            # Try to restore the broken file so we don't leave the
+            # caller with no DB at all.
+            try:
+                os.replace(broken_path, self.db_path)
+            except OSError:
+                pass
+            logger.error(
+                "auto-restore: snapshot copy failed: %s", e,
+            )
+            return RestoreResult(
+                restored=False,
+                reason="restore_failed",
+                details=f"copy snapshot failed: {e}",
+            )
+
+        # 3. Wipe -wal/-shm siblings — they belong to the broken DB.
+        for sibling in (self.db_path + "-wal", self.db_path + "-shm"):
+            try:
+                if os.path.exists(sibling):
+                    os.remove(sibling)
+            except OSError as e:
+                logger.warning(
+                    "auto-restore: failed to remove %s: %s", sibling, e,
+                )
+
+        logger.critical(
+            "auto-restore OK: snapshot=%s -> %s (broken preserved at %s)",
+            chosen.id, self.db_path, broken_path,
+        )
+
+        # 4. Write audit event + 5. send admin email. Both best-effort —
+        # neither failure should mask the successful restore.
+        audit_event_id = self._write_auto_restore_audit(
+            snapshot_id=chosen.id,
+            broken_path=broken_path,
+            corruption_reason=probe.reason,
+            corruption_details=probe.details,
+        )
+        self._send_auto_restore_email(
+            snapshot_id=chosen.id,
+            broken_path=broken_path,
+            corruption_reason=probe.reason,
+            corruption_details=probe.details,
+        )
+
+        return RestoreResult(
+            restored=True,
+            reason="auto_restored",
+            snapshot_id=chosen.id,
+            broken_path=broken_path,
+            audit_event_id=audit_event_id,
+            ts=self._now().isoformat(timespec="seconds"),
+            details=f"{probe.reason}: {probe.details}",
+        )
+
+    def _write_auto_restore_audit(
+        self,
+        snapshot_id: str,
+        broken_path: str,
+        corruption_reason: str,
+        corruption_details: str,
+    ) -> Optional[int]:
+        """Append an ``auto_restore`` row to ``file_audit_events`` in the
+        freshly-restored DB.
+
+        We deliberately bypass the full ``Database`` constructor here:
+        the dashboard's ``create_app`` will call ``db.connect()`` right
+        after we return, and that path runs the whole table+index
+        initialisation. Doing it twice (once here, once there) is both
+        wasteful and brittle — instead we open a raw stdlib sqlite3
+        connection, perform a single INSERT against ``file_audit_events``
+        (which is one of the critical tables the corruption detector
+        verified to exist on the snapshot we just restored from), and
+        close. Mirrors ``insert_audit_event_simple`` row-shape.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            try:
+                now = self._now().strftime("%Y-%m-%d %H:%M:%S")
+                file_name = os.path.basename(self.db_path)
+                details = json.dumps({
+                    "snapshot_id": snapshot_id,
+                    "broken_path": broken_path,
+                    "corruption_reason": corruption_reason,
+                    "corruption_details": corruption_details[:500],
+                }, sort_keys=True)
+                cur = conn.execute(
+                    "INSERT INTO file_audit_events "
+                    "(source_id, event_time, event_type, username, "
+                    " file_path, file_name, details, detected_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (None, now, "auto_restore", "system",
+                     self.db_path, file_name, details,
+                     "backup_manager"),
+                )
+                event_id = cur.lastrowid
+                conn.commit()
+                logger.info(
+                    "auto-restore: audit event %s written", event_id,
+                )
+                return event_id
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning(
+                "auto-restore: audit event write failed: %s", e,
+            )
+            return None
+
+    def _send_auto_restore_email(
+        self,
+        snapshot_id: str,
+        broken_path: str,
+        corruption_reason: str,
+        corruption_details: str,
+    ) -> None:
+        """Best-effort admin notification. Skipped silently when SMTP
+        isn't configured (``smtp.enabled=false`` or fields missing).
+        """
+        smtp_cfg = (self.config or {}).get("smtp") or {}
+        if not smtp_cfg.get("enabled", False):
+            return
+        notif_cfg = (self.config or {}).get("notifications") or {}
+        admin = (notif_cfg.get("admin_cc_email") or "").strip()
+        if not admin:
+            return
+
+        try:  # pragma: no cover - SMTP path is integration-tested elsewhere
+            import smtplib
+            import ssl
+            from email.mime.text import MIMEText
+
+            host = smtp_cfg.get("host", "").strip()
+            port = int(smtp_cfg.get("port", 587))
+            from_addr = smtp_cfg.get("from_address", "")
+            if not host or not from_addr:
+                return
+
+            subject_prefix = (
+                notif_cfg.get("subject_prefix") or "[File Activity]"
+            ).strip()
+            subject = (
+                f"{subject_prefix} DB auto-restored from snapshot "
+                f"{snapshot_id}"
+            )
+            body = (
+                f"FILE ACTIVITY detected SQLite corruption at startup "
+                f"and auto-restored the database.\n\n"
+                f"  db_path:     {self.db_path}\n"
+                f"  snapshot:    {snapshot_id}\n"
+                f"  broken_path: {broken_path}\n"
+                f"  reason:      {corruption_reason}\n"
+                f"  details:     {corruption_details[:500]}\n\n"
+                f"The broken DB has been preserved for forensics. "
+                f"Please investigate."
+            )
+            msg = MIMEText(body, "plain", "utf-8")
+            msg["Subject"] = subject
+            msg["From"] = from_addr
+            msg["To"] = admin
+
+            timeout = int(smtp_cfg.get("timeout_seconds", 10))
+            if smtp_cfg.get("use_ssl", False):
+                ctx = ssl.create_default_context()
+                client = smtplib.SMTP_SSL(host, port,
+                                          timeout=timeout, context=ctx)
+            else:
+                client = smtplib.SMTP(host, port, timeout=timeout)
+                client.ehlo()
+                if smtp_cfg.get("use_tls", True):
+                    ctx = ssl.create_default_context()
+                    client.starttls(context=ctx)
+                    client.ehlo()
+            try:
+                username = smtp_cfg.get("username", "")
+                password = (
+                    os.environ.get("SMTP_PASSWORD")
+                    or smtp_cfg.get("password", "")
+                )
+                if username and password:
+                    client.login(username, password)
+                client.sendmail(from_addr, [admin], msg.as_string())
+            finally:
+                try:
+                    client.quit()
+                except Exception:
+                    pass
+            logger.info("auto-restore: admin notification sent to %s", admin)
+        except Exception as e:
+            logger.warning(
+                "auto-restore: admin email failed (non-fatal): %s", e,
+            )
 
 
 # ──────────────────────────────────────────────
