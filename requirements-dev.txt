@@ -11,7 +11,7 @@
 #
 # ──────────────────────────────────────────────────────────────────────
 # Test runner. Pinned to a recent 8.x; compatible with Python 3.10-3.12.
-pytest>=8.0,<9
+pytest>=9.0.3,<10
 
 # Optional: handy when iterating locally to print captured stdout on
 # failure with nicer formatting. Not required by the suite itself.
