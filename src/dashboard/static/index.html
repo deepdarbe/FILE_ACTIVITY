@@ -435,6 +435,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="nav-section">
         <div class="nav-label">Sistem</div>
         <div class="nav-item" onclick="showPage('backups')"><span class="icon">💾</span> <span>Yedekler</span></div>
+        <div class="nav-item" onclick="showPage('operations')"><span class="icon">📜</span> <span>Islem Gecmisi</span></div>
     </div>
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
@@ -744,7 +745,10 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <!-- Toplu islem butonlari -->
         <div id="dup-actions" style="display:none;margin-top:16px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);justify-content:space-between;align-items:center">
             <span id="dup-selected-info" style="font-size:13px;color:var(--text-secondary)">0 dosya secildi</span>
-            <button class="btn btn-primary" onclick="archiveSelectedDuplicates()">Secilenleri Arsivle</button>
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-primary" onclick="archiveSelectedDuplicates()">Secilenleri Arsivle</button>
+                <button class="btn btn-danger" onclick="quarantineSelectedDuplicates()">Quarantine'e Tasi</button>
+            </div>
         </div>
     </div>
     <!-- Profesyonel mod (issue #84): entity-list of files -->
@@ -1226,6 +1230,38 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
                 <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border);width:120px">Islem</th>
             </tr></thead>
             <tbody id="backups-tbody"><tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ============ OPERATIONS HISTORY (issue #83) ============ -->
+<div class="page" id="page-operations">
+    <div class="page-header">
+        <div><h2>Islem Gecmisi</h2><div class="desc">Quarantine, arsiv ve diger yazma islemlerinin "neydik / ne olduk / kazanim" raporlari</div></div>
+        <div class="actions" style="display:flex;gap:8px;align-items:center">
+            <select id="ops-filter" onchange="loadOperations()" style="width:240px">
+                <option value="">Tum Islemler</option>
+                <option value="duplicate_quarantine">Duplicate Quarantine</option>
+            </select>
+            <button class="btn btn-outline" onclick="loadOperations()">Yenile</button>
+        </div>
+    </div>
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;font-size:12px;color:var(--text-muted)">
+        Her islem icin <strong>before / after / delta</strong> snapshot'i tutulur. Detay
+        butonu ile JSON'i acabilirsiniz. Kayitlar <code>gain_reports</code> tablosuna
+        yazilir; silinmez.
+    </div>
+    <div class="table-wrap" style="overflow:auto">
+        <table style="width:100%;border-collapse:collapse">
+            <thead><tr>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">ID</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Tarih</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Islem</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Sonraki Durum</th>
+                <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Israftan Kazanim</th>
+                <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border);width:100px">Detay</th>
+            </tr></thead>
+            <tbody id="ops-tbody"><tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
         </table>
     </div>
 </div>
@@ -1775,7 +1811,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -4523,6 +4559,43 @@ function _renderDuplicatesGrid() {
             {key: 'last_modify', label: 'Son Degisiklik'},
             {key: 'owner', label: 'Sahip'},
         ],
+        toolbar: {
+            // Issue #83 Phase 1 — quarantine-only delete. Hard delete is
+            // intentionally NOT exposed in this round.
+            bulkActions: [
+                {label: 'Hedefe Git', action: 'open-folder'},
+                {label: "Quarantine'e Tasi", action: 'quarantine',
+                 danger: true},
+            ],
+        },
+        onBulkAction: async (actionId, selectedRows) => {
+            if (actionId === 'open-folder') {
+                if (selectedRows.length > 5) {
+                    notify('Bir defada en fazla 5 konum acilabilir', 'warning');
+                    return;
+                }
+                for (const r of selectedRows) {
+                    const target = (r.file_path || '').replace(/[\\/][^\\/]*$/, '');
+                    if (target) openFolder(target);
+                }
+                return;
+            }
+            if (actionId === 'quarantine') {
+                const sourceId = document.getElementById('dup-source')?.value;
+                if (!sourceId) {
+                    notify('Once bir kaynak secin', 'warning');
+                    return;
+                }
+                const fileIds = selectedRows.map(r => r.id).filter(v => v != null);
+                if (!fileIds.length) {
+                    notify('Once en az bir dosya secin', 'warning');
+                    return;
+                }
+                await openQuarantineConfirmModal(parseInt(sourceId), fileIds);
+                return;
+            }
+            notify('Bilinmeyen toplu islem: ' + actionId, 'warning');
+        },
         emptyMessage: 'Kopya dosya bulunamadi',
     });
 }
@@ -4586,6 +4659,252 @@ async function archiveSelectedDuplicates() {
         notify(`${resp.archived || 0} dosya arsivlendi (${resp.total_size_formatted || ''})`, 'success');
         loadDuplicates(dupCurrentPage);
     } catch(e) { notify('Arsivleme hatasi: ' + e.message, 'error'); }
+}
+
+// Issue #83 Phase 1 — quarantine-only delete (no hard delete in this round).
+// Visual mode entry point: gathers the checkbox selection and hands off to
+// the same modal that the entity-list bulk action uses.
+async function quarantineSelectedDuplicates() {
+    if (dupSelectedFiles.size === 0) return;
+    const sourceId = document.getElementById('dup-source')?.value;
+    if (!sourceId) return;
+    await openQuarantineConfirmModal(parseInt(sourceId),
+                                       Array.from(dupSelectedFiles));
+}
+
+async function openQuarantineConfirmModal(sourceId, fileIds) {
+    if (!fileIds || !fileIds.length) {
+        notify('Once en az bir dosya secin', 'warning');
+        return;
+    }
+    let preview;
+    try {
+        preview = await api(
+            `/reports/duplicates/${sourceId}/quarantine/preview`,
+            {method: 'POST',
+             body: JSON.stringify({file_ids: fileIds})}
+        );
+    } catch (e) {
+        notify('Onizleme hatasi: ' + (e && e.message ? e.message : e), 'error');
+        return;
+    }
+    const wouldMove = preview.would_move || 0;
+    const skippedHeld = preview.skipped_held || 0;
+    const skippedLast = preview.skipped_last_copy || 0;
+    const skippedMissing = preview.skipped_missing || 0;
+    const sizeGb = preview.total_size_freed_gb || 0;
+    const errors = (preview.errors || []).slice(0, 5);
+
+    const modal = _ensureModal('modal-quarantine-confirm', 720);
+    modal.querySelector('.modal').innerHTML = `
+        <div style="padding:20px">
+            <h3 style="margin:0 0 16px 0;color:var(--danger)">Quarantine'e Tasi</h3>
+            <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-bottom:14px;font-size:13px;line-height:1.7">
+                <div><strong>${wouldMove}</strong> dosya quarantine'e tasinacak (<strong>${sizeGb.toFixed(4)} GB</strong> serbest kalacak).</div>
+                <div>${skippedHeld} dosya legal hold nedeniyle atlanacak.</div>
+                <div>${skippedLast} dosya son kopya oldugu icin atlanacak (veri kaybi koruma).</div>
+                ${skippedMissing ? `<div>${skippedMissing} dosya disk uzerinde bulunamadi.</div>` : ''}
+                ${errors.length ? `<div style="margin-top:8px;color:var(--warning)">Uyarilar:<br>${errors.map(er => '- ' + (er.error || er) + (er.id ? ' (id=' + er.id + ')' : '')).join('<br>')}</div>` : ''}
+            </div>
+            <div style="background:rgba(220,38,38,0.08);border:1px solid var(--danger);border-radius:var(--radius);padding:12px;margin-bottom:14px;font-size:12px;color:var(--text-primary)">
+                <strong>Phase 1: Quarantine-only.</strong> Dosyalar fiziksel olarak silinmez —
+                <code>data/quarantine/&lt;YYYYMMDD&gt;/...</code> altina tasinir. Geri yukleme
+                forensik kayitlardan yapilabilir.
+            </div>
+            <div class="form-group">
+                <label>Onaylamak icin <code>QUARANTINE</code> yazin:</label>
+                <input id="quar-confirm-token" placeholder="QUARANTINE" autocomplete="off"
+                       style="font-family:monospace;text-transform:none">
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-outline" onclick="closeModal('modal-quarantine-confirm')">Iptal</button>
+                <button id="quar-confirm-btn" class="btn btn-danger" ${wouldMove === 0 ? 'disabled' : ''}>Onayla ve Tasi</button>
+            </div>
+        </div>
+    `;
+    modal.classList.add('active');
+    const btn = modal.querySelector('#quar-confirm-btn');
+    if (btn) {
+        btn.addEventListener('click', async () => {
+            const token = (modal.querySelector('#quar-confirm-token')?.value || '').trim();
+            if (token !== 'QUARANTINE') {
+                notify('Onay icin "QUARANTINE" yazmaniz gerekiyor', 'warning');
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Tasiniyor...';
+            try {
+                const result = await api(
+                    `/reports/duplicates/${sourceId}/quarantine`,
+                    {method: 'POST',
+                     body: JSON.stringify({
+                         file_ids: fileIds,
+                         confirm: true,
+                         safety_token: 'QUARANTINE',
+                     })}
+                );
+                closeModal('modal-quarantine-confirm');
+                notify(`${result.moved || 0} dosya quarantine'e tasindi`, 'success');
+                showQuarantineGainModal(result);
+                loadDuplicates(dupCurrentPage);
+            } catch (e) {
+                notify('Quarantine hatasi: ' + (e && e.message ? e.message : e), 'error');
+                btn.disabled = false;
+                btn.textContent = 'Onayla ve Tasi';
+            }
+        });
+    }
+}
+
+function showQuarantineGainModal(result) {
+    const before = result.before || {};
+    const after = result.after || {};
+    const delta = result.delta || {};
+    const reportId = result.gain_report_id;
+    const fmtGb = v => (typeof v === 'number' ? v.toFixed(4) + ' GB' : '-');
+
+    const card = (title, snap) => `
+        <div class="card" style="border-top:3px solid var(--accent)">
+            <div class="card-label">${title}</div>
+            <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);margin-top:6px">
+                Toplam Dosya: <strong>${snap.total_files ?? '-'}</strong><br>
+                Toplam Boyut: <strong>${fmtGb(snap.total_size_gb)}</strong><br>
+                Kopya Grup: <strong>${snap.duplicate_groups ?? '-'}</strong><br>
+                Israf: <strong>${fmtGb(snap.duplicate_waste_gb)}</strong>
+            </div>
+        </div>`;
+
+    const modal = _ensureModal('modal-quarantine-gain', 820);
+    modal.querySelector('.modal').innerHTML = `
+        <div style="padding:20px">
+            <h3 style="margin:0 0 16px 0">Kazanim Raporu</h3>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+                ${card('Neydik (Before)', before)}
+                ${card('Ne Olduk (After)', after)}
+                <div class="card" style="border-top:3px solid var(--success)">
+                    <div class="card-label">Kazanim (Delta)</div>
+                    <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);margin-top:6px">
+                        Tasinan: <strong>${result.moved || 0}</strong> dosya<br>
+                        Atlanan (hold): <strong>${result.skipped_held || 0}</strong><br>
+                        Atlanan (son kopya): <strong>${result.skipped_last_copy || 0}</strong><br>
+                        Serbest Alan: <strong>${(result.total_size_freed_gb || 0).toFixed(4)} GB</strong><br>
+                        Kopya Grup Azalmasi: <strong>${delta.duplicate_groups || 0}</strong>
+                    </div>
+                </div>
+            </div>
+            ${(result.errors && result.errors.length) ? `
+            <div style="background:rgba(245,158,11,0.08);border:1px solid var(--warning);border-radius:var(--radius);padding:10px;margin-bottom:14px;font-size:12px">
+                <strong>Uyarilar (${result.errors.length}):</strong><br>
+                ${result.errors.slice(0, 10).map(er => '- ' + (er.error || JSON.stringify(er))).join('<br>')}
+            </div>` : ''}
+            <div class="modal-actions">
+                ${reportId != null ? `<button class="btn btn-outline" onclick="closeModal('modal-quarantine-gain');showPage('operations');setTimeout(()=>showGainReportDetail(${reportId}), 250)">Operations History'de Gor</button>` : ''}
+                <button class="btn btn-primary" onclick="closeModal('modal-quarantine-gain')">Kapat</button>
+            </div>
+        </div>
+    `;
+    modal.classList.add('active');
+}
+
+function _ensureModal(id, maxWidth) {
+    let modal = document.getElementById(id);
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = id;
+        modal.className = 'modal-overlay';
+        modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('active'); };
+        modal.innerHTML = `<div class="modal" style="max-width:${maxWidth || 720}px;width:95%"></div>`;
+        document.body.appendChild(modal);
+    }
+    return modal;
+}
+
+// ═══════════════════════════════════════════════════
+// OPERATIONS HISTORY (issue #83 — gain reports)
+// ═══════════════════════════════════════════════════
+async function loadOperations() {
+    const tbody = document.getElementById('ops-tbody');
+    const filter = document.getElementById('ops-filter')?.value || '';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr>';
+    try {
+        const qs = filter ? `?operation=${encodeURIComponent(filter)}&limit=50` : '?limit=50';
+        const data = await api('/operations/history' + qs);
+        const reports = data.reports || [];
+        if (!reports.length) {
+            if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Henuz islem kaydi yok</td></tr>';
+            return;
+        }
+        if (tbody) tbody.innerHTML = reports.map(r => {
+            const delta = r.delta || {};
+            const after = r.after || {};
+            const wasteGb = (delta.duplicate_waste_gb || 0).toFixed(4);
+            return `<tr>
+                <td>${r.id}</td>
+                <td>${r.started_at || ''}</td>
+                <td><code>${r.operation || '-'}</code></td>
+                <td>${after.total_files ?? '-'} dosya</td>
+                <td style="color:var(--success)">${wasteGb} GB</td>
+                <td><button class="btn btn-sm btn-outline" onclick="showGainReportDetail(${r.id})">Detay</button></td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--danger)">Yukleme hatasi: ${e.message || e}</td></tr>`;
+    }
+}
+
+async function showGainReportDetail(opId) {
+    let detail;
+    try {
+        detail = await api('/operations/' + opId);
+    } catch (e) {
+        notify('Detay yuklenemedi: ' + (e && e.message ? e.message : e), 'error');
+        return;
+    }
+    const before = detail.before || {};
+    const after = detail.after || {};
+    const delta = detail.delta || {};
+    const fmtGb = v => (typeof v === 'number' ? v.toFixed(4) + ' GB' : '-');
+    const card = (title, snap, color) => `
+        <div class="card" style="border-top:3px solid ${color}">
+            <div class="card-label">${title}</div>
+            <div style="font-size:11px;line-height:1.7;color:var(--text-secondary);margin-top:6px">
+                Toplam Dosya: <strong>${snap.total_files ?? '-'}</strong><br>
+                Toplam Boyut: <strong>${fmtGb(snap.total_size_gb)}</strong><br>
+                Kopya Grup: <strong>${snap.duplicate_groups ?? '-'}</strong><br>
+                Israf: <strong>${fmtGb(snap.duplicate_waste_gb)}</strong>
+            </div>
+        </div>`;
+
+    const modal = _ensureModal('modal-operation-detail', 900);
+    modal.querySelector('.modal').innerHTML = `
+        <div style="padding:20px">
+            <h3 style="margin:0 0 8px 0">Islem #${detail.id} — <code>${detail.operation}</code></h3>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px">
+                Baslangic: ${detail.started_at || '-'} &nbsp;|&nbsp;
+                Tamamlandi: ${detail.completed_at || '-'} &nbsp;|&nbsp;
+                Scan: ${detail.scan_id ?? '-'}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+                ${card('Neydik (Before)', before, 'var(--accent)')}
+                ${card('Ne Olduk (After)', after, 'var(--accent)')}
+                ${card('Kazanim (Delta)', delta, 'var(--success)')}
+            </div>
+            <details style="margin-bottom:14px">
+                <summary style="cursor:pointer;font-size:12px;color:var(--text-secondary)">Ham JSON</summary>
+                <pre style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;max-height:280px;overflow:auto">${_escapeHtml(JSON.stringify({before, after, delta}, null, 2))}</pre>
+            </details>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="closeModal('modal-operation-detail')">Kapat</button>
+            </div>
+        </div>
+    `;
+    modal.classList.add('active');
+}
+
+function _escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
 }
 
 async function exportDuplicatesCSV(event) {

@@ -149,6 +149,22 @@ content_duplicates:
   workers: 4                  # ProcessPoolExecutor boyutu (CPU-bound)
   prefix_bytes: 4096          # Ilk 4 KB hash icin
 
+duplicates:
+  # Issue #83 Phase 1 — duplicate delete is QUARANTINE-only. Files are
+  # MOVED to <dir>/<YYYYMMDD>/<sha1(parent)>/ with a SHA-256 sidecar +
+  # JSON manifest; they are NEVER os.remove()'d in Phase 1. Hard delete
+  # and the auto-cleanup job are Phase 2 follow-ups.
+  #
+  # The quarantine root MUST live on the same filesystem as the source
+  # share — shutil.move falls back to copy+remove across volumes, which
+  # defeats the "rename is atomic" property on Windows.
+  quarantine:
+    enabled: true               # global kill-switch — flip false in emergencies
+    dir: "data/quarantine"
+    bulk_delete_max_files: 500  # safety cap per request
+    require_safety_token: true  # MUST remain true in prod (defence in depth)
+    quarantine_days: 30         # Phase 2 auto-purge horizon
+
 archiving:
   verify_checksum: true       # SHA-256 doğrulama
   dry_run: false              # taşımadan sadece raporla
