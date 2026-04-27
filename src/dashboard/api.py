@@ -337,6 +337,24 @@ def _get_source(db, source_id: int):
     return src
 
 
+def _attach_cache_envelope(envelope: dict) -> dict:
+    """Merge a ``{"results": ..., "cache": ...}`` envelope back into the
+    flat report shape the frontend expects.
+
+    Issue #123 spec: existing endpoints' response shape stays unchanged;
+    the ``cache`` field is purely additive (frontend ignores it, ops
+    debugging uses it). Implementation detail: the cache layer wraps the
+    underlying ``ReportGenerator`` output in ``"results"`` so it can be
+    treated as an opaque blob; we unwrap here and tag on the envelope.
+    """
+    results = envelope.get("results", {})
+    if not isinstance(results, dict):
+        return {"results": results, "cache": envelope.get("cache", {})}
+    out = dict(results)
+    out["cache"] = envelope.get("cache", {})
+    return out
+
+
 def _read_version() -> str:
     """Proje kok dizinindeki VERSION dosyasindan sürümü oku.
 
@@ -737,6 +755,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     @app.get("/api/reports/frequency/{source_id}")
     async def report_frequency(source_id: int, days: Optional[str] = None):
         from src.analyzer.report_generator import ReportGenerator
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         # Once v2 summary_json'daki age_buckets'a bak — scanned_files'i
         # hic tarama. Custom days verildiyse klasik hesaplamaya dus.
@@ -760,21 +779,47 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
                     }
         gen = ReportGenerator(db, config)
         custom = [int(d) for d in days.split(",")] if days else None
-        return gen.generate_frequency_report(src.id, custom)
+        # Custom-days variants get a distinct cache slot per bucket spec
+        # (otherwise different callers would shadow each other).
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_frequency_report(src.id, custom)
+        analyzer_name = "frequency" if not custom else f"frequency:{','.join(map(str, custom))}"
+        envelope = analyzer_cache.get_or_compute(
+            db, analyzer_name, scan_id,
+            lambda: gen.generate_frequency_report(src.id, custom),
+        )
+        return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/types/{source_id}")
     async def report_types(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
-        return gen.generate_type_report(src.id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_type_report(src.id)
+        envelope = analyzer_cache.get_or_compute(
+            db, "types", scan_id,
+            lambda: gen.generate_type_report(src.id),
+        )
+        return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/sizes/{source_id}")
     async def report_sizes(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
-        return gen.generate_size_report(src.id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_size_report(src.id)
+        envelope = analyzer_cache.get_or_compute(
+            db, "sizes", scan_id,
+            lambda: gen.generate_size_report(src.id),
+        )
+        return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/full/{source_id}")
     async def report_full(source_id: int):
