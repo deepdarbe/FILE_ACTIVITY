@@ -838,6 +838,24 @@ class Database:
             "ON quarantine_log(restored_at)"
         )
 
+        # Analyzer cache (issue #123) — frequency / type / size analyzer
+        # results are deterministic per scan_id but expensive to compute
+        # (multi-million row aggregations). Cache here for cross-restart
+        # persistence; an in-memory LRU sits in front.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS analyzer_cache (
+                scan_id        INTEGER NOT NULL,
+                analyzer_name  TEXT NOT NULL,
+                result_json    TEXT NOT NULL,
+                computed_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (scan_id, analyzer_name)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_analyzer_cache_scan "
+            "ON analyzer_cache(scan_id)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(
@@ -2954,10 +2972,27 @@ class Database:
                 )
                 deleted_orphans = cur.rowcount
 
+                # Issue #123: analyzer_cache rows for vanished scan_ids
+                # become dead weight - purge alongside scanned_files
+                # orphans. ``IF NOT EXISTS`` on the table guarantees this
+                # is safe even on legacy DBs created before the cache.
+                deleted_cache = 0
+                try:
+                    cur.execute(
+                        "DELETE FROM analyzer_cache "
+                        "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
+                    )
+                    deleted_cache = cur.rowcount or 0
+                except sqlite3.OperationalError:
+                    # Table missing on a legacy DB without the cache schema
+                    # yet - harmless, will be created on next connect().
+                    pass
+
             return {
                 "deleted_runs": deleted_runs,
                 "deleted_files": deleted_files,
                 "deleted_orphans": deleted_orphans,
+                "deleted_cache": deleted_cache,
             }
         except Exception as e:
             logger.error(f"Cleanup error: {e}")

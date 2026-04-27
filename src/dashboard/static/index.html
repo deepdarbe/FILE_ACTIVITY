@@ -2377,10 +2377,24 @@ async function pollScanProgress(sourceId) {
                 document.getElementById('gsp-detail').textContent = `${p.total_size_formatted || formatSize(p.total_size)} | ${p.files_per_second || 0}/s | ${p.elapsed || ''}`;
             }
 
-            // Auto-refresh current analysis page every 10 seconds during scan
-            if (p.file_count > 0 && p.file_count % 5000 < 500) {
-                const activePage = document.querySelector('.page.active')?.id?.replace('page-','');
-                if (['frequency','types','sizes','treemap','overview'].includes(activePage)) {
+            // Issue #123: throttle mid-scan auto-refresh to >= 15 minutes.
+            //
+            // Old behaviour: ``file_count % 5000 < 500`` fires for ~10% of
+            // polls (every 3s during a scan) — on a 2.5M-row scan that hit
+            // /api/reports/{frequency,types,sizes} every ~30s, hammering DB
+            // and CPU. With backend caching keyed on scan_id, *any* repeat
+            // hit is a no-op; but mid-scan the scan_id is still ``running``
+            // so each call invalidates the cache as soon as new files land.
+            // Combine: rate-limit to once per 15 min per page, AND skip if
+            // the last call was less than 15 min ago for this scan_id.
+            window._reportRefreshLast = window._reportRefreshLast || {};
+            const activePage = document.querySelector('.page.active')?.id?.replace('page-','');
+            if (p.file_count > 0 && ['frequency','types','sizes','treemap','overview'].includes(activePage)) {
+                const now = Date.now();
+                const last = window._reportRefreshLast[activePage] || 0;
+                const FIFTEEN_MIN = 15 * 60 * 1000;
+                if (now - last >= FIFTEEN_MIN) {
+                    window._reportRefreshLast[activePage] = now;
                     const loaders = { overview: loadOverview, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, treemap: loadTreemap };
                     if (loaders[activePage]) loaders[activePage]();
                 }
