@@ -1697,26 +1697,29 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             None,
             description="Comma-separated scanned_files.id values; empty = all violating rows",
         ),
+        format: Optional[str] = Query(
+            None,
+            description="Set to 'csv' to bypass Excel's 1,048,576-row limit (issue #122)",
+        ),
     ):
-        """Export MIT-naming violations as XLSX (issue #80).
+        """Export MIT-naming violations as XLSX (issue #80; #122 streaming).
 
         Columns: file_path, owner, last_modify_time, file_size, rule, severity.
         One row per (file × violated rule); a single file violating R1+B4
         produces two rows. ``ids`` filters to scanned_files.id values; empty
         means every violating row in the latest scan.
+
+        For scans that produce more than ~1M violation rows the workbook is
+        split across ``Data_1``, ``Data_2``, ... sheets via
+        ``write_large_workbook`` (issue #122). Pass ``?format=csv`` to opt
+        into a single-file CSV instead — no row cap at all.
         """
         import re as re_mod
         from fastapi.responses import StreamingResponse
         import io
         from datetime import datetime
 
-        try:
-            from openpyxl import Workbook
-        except ImportError as e:  # pragma: no cover - openpyxl is in requirements.txt
-            raise HTTPException(
-                500,
-                "openpyxl is not installed; add openpyxl>=3.1.0 to requirements.txt",
-            ) from e
+        from src.utils.xlsx_writer import write_large_workbook, stream_csv
 
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
@@ -1766,63 +1769,70 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     # Skip non-numeric tokens silently — exporting is best-effort.
                     continue
 
-        # Collect violating (file × rule) rows.
-        export_rows: list[dict] = []
-        with db.get_cursor() as cur:
-            cur.execute(
-                """SELECT id, file_path, file_name, owner, last_modify_time, file_size
-                   FROM scanned_files
-                   WHERE source_id = ? AND scan_id = ?""",
-                (source_id, scan_id),
-            )
-            for r in cur:
-                if id_filter is not None and r["id"] not in id_filter:
-                    continue
-                path = r["file_path"] or ""
-                name = r["file_name"] or ""
-                for code, label, severity, fn in rules:
-                    try:
-                        if fn(path, name):
-                            export_rows.append({
-                                "file_path": path,
-                                "owner": r["owner"] or "",
-                                "last_modify_time": r["last_modify_time"] or "",
-                                "file_size": r["file_size"] or 0,
-                                "rule": f"{code} - {label}",
-                                "severity": severity,
-                            })
-                    except Exception:  # pragma: no cover - defensive predicate guard
+        columns = [
+            {"key": "file_path", "header": "file_path", "width": 60},
+            {"key": "owner", "header": "owner", "width": 24},
+            {"key": "last_modify_time", "header": "last_modify_time", "width": 22},
+            {"key": "file_size", "header": "file_size", "width": 14},
+            {"key": "rule", "header": "rule", "width": 28},
+            {"key": "severity", "header": "severity", "width": 12},
+        ]
+
+        # Generator that streams (file × violating-rule) rows out of the DB
+        # cursor. ``write_large_workbook`` and ``stream_csv`` both pull from
+        # this lazily — peak memory stays in the MB range even for the 5M-row
+        # internal probe (issue #122).
+        def _violation_rows():
+            with db.get_cursor() as cur:
+                cur.execute(
+                    """SELECT id, file_path, file_name, owner,
+                              last_modify_time, file_size
+                       FROM scanned_files
+                       WHERE source_id = ? AND scan_id = ?""",
+                    (source_id, scan_id),
+                )
+                for r in cur:
+                    if id_filter is not None and r["id"] not in id_filter:
                         continue
+                    path = r["file_path"] or ""
+                    name = r["file_name"] or ""
+                    for code, label, severity, fn in rules:
+                        try:
+                            if fn(path, name):
+                                yield {
+                                    "file_path": path,
+                                    "owner": r["owner"] or "",
+                                    "last_modify_time": r["last_modify_time"] or "",
+                                    "file_size": r["file_size"] or 0,
+                                    "rule": f"{code} - {label}",
+                                    "severity": severity,
+                                }
+                        except Exception:  # pragma: no cover - defensive predicate guard
+                            continue
 
-        # Build workbook in-memory.
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "MIT Naming"
-        headers = ["file_path", "owner", "last_modify_time",
-                   "file_size", "rule", "severity"]
-        ws.append(headers)
-        for row in export_rows:
-            ws.append([row[h] for h in headers])
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        # Total wasted-bytes formula across all rows (column D = file_size).
-        # Empty result -> "0" so the cell is still meaningful.
-        last_data_row = ws.max_row
-        if last_data_row > 1:
-            total_row = last_data_row + 2
-            ws.cell(row=total_row, column=3, value="TOTAL BYTES")
-            ws.cell(
-                row=total_row,
-                column=4,
-                value=f"=SUM(D2:D{last_data_row})",
+        # ---- CSV fallback (issue #122) — bypasses Excel's row cap ---------
+        if (format or "").lower() == "csv":
+            filename_csv = (
+                f"MIT_Naming_Report_source{source_id}_scan{scan_id}_{ts}.csv"
+            )
+            return StreamingResponse(
+                stream_csv(_violation_rows(), columns),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": f"attachment; filename={filename_csv}",
+                    "X-Format-Fallback": "csv",
+                },
             )
 
+        # ---- XLSX (default) — write_only streaming + auto sheet split ----
         buf = io.BytesIO()
-        wb.save(buf)
+        meta = write_large_workbook(_violation_rows(), columns, buf)
         buf.seek(0)
 
         filename = (
-            f"MIT_Naming_Report_source{source_id}_scan{scan_id}_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            f"MIT_Naming_Report_source{source_id}_scan{scan_id}_{ts}.xlsx"
         )
         return StreamingResponse(
             buf,
@@ -1832,7 +1842,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             ),
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
-                "X-Total-Rows": str(len(export_rows)),
+                "X-Total-Rows": str(meta["total_rows"]),
+                "X-Sheet-Count": str(meta["sheet_count"]),
             },
         )
 
@@ -4404,25 +4415,24 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             None,
             description="Comma-separated pii_findings.id values; empty = all matching rows",
         ),
+        format: Optional[str] = Query(
+            None,
+            description="Set to 'csv' to bypass Excel's 1,048,576-row limit (issue #122)",
+        ),
     ):
-        """Export persisted PII findings as XLSX (issue #81).
+        """Export persisted PII findings as XLSX (issue #81; #122 streaming).
 
         Mirrors the mit-naming export pattern: optional ``ids`` filter
         scopes the workbook to a subset selected in the dashboard's
         entity-list. ``pattern`` and ``source_id`` honour the same
-        filters as the JSON listing endpoint.
+        filters as the JSON listing endpoint. Pass ``?format=csv`` for an
+        unbounded streaming CSV (issue #122 fallback).
         """
         from fastapi.responses import StreamingResponse
         import io
         from datetime import datetime
 
-        try:
-            from openpyxl import Workbook
-        except ImportError as e:  # pragma: no cover - in requirements.txt
-            raise HTTPException(
-                500,
-                "openpyxl is not installed; add openpyxl>=3.1.0 to requirements.txt",
-            ) from e
+        from src.utils.xlsx_writer import write_large_workbook, stream_csv
 
         _get_pii_engine()
 
@@ -4450,36 +4460,60 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     continue
 
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        with db.get_cursor() as cur:
-            cur.execute(
-                f"""SELECT p.id, p.scan_id, p.file_path, p.pattern_name,
-                           p.hit_count, p.sample_snippet, p.detected_at
-                    FROM pii_findings p {where}
-                    ORDER BY p.detected_at DESC, p.id DESC""",
-                params,
-            )
-            rows = [dict(r) for r in cur.fetchall()]
 
-        if id_filter is not None:
-            rows = [r for r in rows if r["id"] in id_filter]
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "PII Findings"
-        headers = [
-            "id", "scan_id", "file_path", "pattern_name",
-            "hit_count", "sample_snippet", "detected_at",
+        columns = [
+            {"key": "id", "header": "id", "width": 10},
+            {"key": "scan_id", "header": "scan_id", "width": 10},
+            {"key": "file_path", "header": "file_path", "width": 60},
+            {"key": "pattern_name", "header": "pattern_name", "width": 18},
+            {"key": "hit_count", "header": "hit_count", "width": 10},
+            {"key": "sample_snippet", "header": "sample_snippet", "width": 40},
+            {"key": "detected_at", "header": "detected_at", "width": 22},
         ]
-        ws.append(headers)
-        for row in rows:
-            ws.append([row.get(h, "") for h in headers])
 
+        # Stream rows directly out of the cursor — keeps memory flat even
+        # when the findings table grows past 1M rows on big PII scans.
+        def _finding_rows():
+            with db.get_cursor() as cur:
+                cur.execute(
+                    f"""SELECT p.id, p.scan_id, p.file_path, p.pattern_name,
+                               p.hit_count, p.sample_snippet, p.detected_at
+                        FROM pii_findings p {where}
+                        ORDER BY p.detected_at DESC, p.id DESC""",
+                    params,
+                )
+                for r in cur:
+                    if id_filter is not None and r["id"] not in id_filter:
+                        continue
+                    yield {
+                        "id": r["id"],
+                        "scan_id": r["scan_id"],
+                        "file_path": r["file_path"] or "",
+                        "pattern_name": r["pattern_name"] or "",
+                        "hit_count": r["hit_count"] or 0,
+                        "sample_snippet": r["sample_snippet"] or "",
+                        "detected_at": r["detected_at"] or "",
+                    }
+
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # ---- CSV fallback (issue #122) ------------------------------------
+        if (format or "").lower() == "csv":
+            return StreamingResponse(
+                stream_csv(_finding_rows(), columns),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition":
+                        f"attachment; filename=pii_findings_{ts}.csv",
+                    "X-Format-Fallback": "csv",
+                },
+            )
+
+        # ---- XLSX (default) ----------------------------------------------
         buf = io.BytesIO()
-        wb.save(buf)
+        meta = write_large_workbook(_finding_rows(), columns, buf)
         buf.seek(0)
-        filename = (
-            f"pii_findings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        )
+        filename = f"pii_findings_{ts}.xlsx"
         return StreamingResponse(
             buf,
             media_type=(
@@ -4488,7 +4522,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             ),
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
-                "X-Total-Rows": str(len(rows)),
+                "X-Total-Rows": str(meta["total_rows"]),
+                "X-Sheet-Count": str(meta["sheet_count"]),
             },
         )
 
@@ -4981,20 +5016,93 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result.to_dict()
 
     @app.get("/api/chargeback/{source_id}/export.xlsx")
-    async def chargeback_export_xlsx(source_id: int):
+    async def chargeback_export_xlsx(
+        source_id: int,
+        format: Optional[str] = Query(
+            None,
+            description="Set to 'csv' for a flat CSV (issue #122 fallback)",
+        ),
+    ):
+        """Chargeback workbook (issue #111).
+
+        XLSX preserves the auditor-editable Settings!$B$2 rate cell + the
+        per-row =Settings!$B$2*C{r} formulas byte-identically (chargeback
+        rows are top-N owners + unmapped, never anywhere near Excel's
+        1M-row cap, so #122's split logic does not apply here). For
+        completeness with the rest of the export surface we still expose
+        ``?format=csv``, which flattens Detail to a single CSV — the rate
+        is materialised per-row instead of formula-driven.
+        """
         from fastapi.responses import StreamingResponse
         import io as _io
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if not scan_id:
             raise HTTPException(404, "Tamamlanmis scan yok")
+
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        if (format or "").lower() == "csv":
+            from src.utils.xlsx_writer import stream_csv
+            cb = _chargeback_report()
+            result = cb.compute(scan_id)
+            # Flatten owners + unmapped buckets into a single row stream.
+            # The CSV materialises monthly_cost rather than carrying the
+            # =Settings!$B$2 formula since CSV has no formula support.
+            _BYTES_PER_GB = 1024 ** 3
+            # Pick the first non-zero rate as the global default — same
+            # heuristic the XLSX export uses for Settings!$B$2.
+            default_rate = 0.0
+            non_zero = [c.cost_per_gb_month for c in result.centers
+                        if c.cost_per_gb_month]
+            if non_zero:
+                default_rate = float(non_zero[0])
+
+            def _detail_rows():
+                for ct in result.centers:
+                    for o in ct.top_owners:
+                        gb = float(o.get("total_bytes") or 0) / _BYTES_PER_GB
+                        rate = (ct.cost_per_gb_month
+                                if ct.cost_per_gb_month else default_rate)
+                        yield {
+                            "cost_center": ct.name,
+                            "owner": o.get("owner") or "",
+                            "total_gb": round(gb, 6),
+                            "file_count": int(o.get("file_count") or 0),
+                            "monthly_cost": round(gb * rate, 4),
+                        }
+                for u in result.unmapped_owners or []:
+                    gb = float(u.get("total_bytes") or 0) / _BYTES_PER_GB
+                    yield {
+                        "cost_center": "__unmapped__",
+                        "owner": u.get("owner") or "",
+                        "total_gb": round(gb, 6),
+                        "file_count": int(u.get("file_count") or 0),
+                        "monthly_cost": round(gb * default_rate, 4),
+                    }
+
+            csv_columns = [
+                {"key": "cost_center", "header": "cost_center"},
+                {"key": "owner", "header": "owner"},
+                {"key": "total_gb", "header": "total_gb"},
+                {"key": "file_count", "header": "file_count"},
+                {"key": "monthly_cost", "header": "monthly_cost"},
+            ]
+            return StreamingResponse(
+                stream_csv(_detail_rows(), csv_columns),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition":
+                        f"attachment; filename=Chargeback_source{source_id}"
+                        f"_scan{scan_id}_{ts}.csv",
+                    "X-Format-Fallback": "csv",
+                },
+            )
+
         try:
             blob = _chargeback_report().export_xlsx(scan_id)
         except RuntimeError as e:
             raise HTTPException(500, str(e))
-        filename = (
-            f"Chargeback_source{source_id}_scan{scan_id}_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        )
+        filename = f"Chargeback_source{source_id}_scan{scan_id}_{ts}.xlsx"
         return StreamingResponse(
             _io.BytesIO(blob),
             media_type=(
@@ -5122,11 +5230,21 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         source_id: int,
         horizon_days: int = Query(180, ge=1, le=3650),
         threshold_bytes: Optional[int] = Query(None, ge=0),
+        format: Optional[str] = Query(
+            None,
+            description="Set to 'csv' for a flat CSV of the History sheet (issue #122)",
+        ),
     ):
-        """XLSX workbook: Summary + History + Settings (editable threshold)."""
+        """XLSX workbook: Summary + History + Settings (editable threshold).
+
+        Issue #122: ``?format=csv`` flattens the History sheet to a single
+        streaming CSV with no row cap (Summary/Settings are tiny; CSV
+        callers don't need them).
+        """
         from fastapi.responses import StreamingResponse
         import io as _io
         from src.reports.forecast import forecast_growth
+        from src.utils.xlsx_writer import stream_csv
 
         fc_cfg = _forecast_config()
         if not fc_cfg["enabled"]:
@@ -5153,6 +5271,34 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             capacity_threshold_bytes=thr,
             source_id=source_id,
         )
+
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        # ---- CSV fallback (issue #122) ------------------------------------
+        if (format or "").lower() == "csv":
+            csv_columns = [
+                {"key": "started_at", "header": "started_at"},
+                {"key": "total_size_bytes", "header": "total_size_bytes"},
+                {"key": "total_files", "header": "total_files"},
+            ]
+
+            def _hist_rows():
+                for r in rows:
+                    yield {
+                        "started_at": r.get("started_at") or "",
+                        "total_size_bytes": int(r.get("total_size") or 0),
+                        "total_files": int(r.get("total_files") or 0),
+                    }
+            return StreamingResponse(
+                stream_csv(_hist_rows(), csv_columns),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition":
+                        f"attachment; filename=Forecast_source{source_id}"
+                        f"_h{horizon_days}d_{ts}.csv",
+                    "X-Format-Fallback": "csv",
+                },
+            )
 
         try:
             from openpyxl import Workbook
@@ -5239,8 +5385,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         blob = buf.getvalue()
 
         filename = (
-            f"Forecast_source{source_id}_h{horizon_days}d_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            f"Forecast_source{source_id}_h{horizon_days}d_{ts}.xlsx"
         )
         return StreamingResponse(
             _io.BytesIO(blob),

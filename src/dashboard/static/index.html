@@ -2018,6 +2018,36 @@ async function withButtonLoading(button, fn, timeoutMs = 60000) {
     }
 }
 
+// Issue #122: surface a hint when an XLSX export was either split across
+// multiple sheets (>1M rows hit Excel's hard limit) or had to fall back to
+// streaming CSV. Callers that fetch an export endpoint manually (Response
+// object in hand) pass it through this helper before triggering the
+// download, so the user sees a toast explaining what just happened.
+function notifyExportFormat(response) {
+    if (!response || !response.headers || typeof notify !== 'function') return;
+    try {
+        const ctype = (response.headers.get('Content-Type') || '').toLowerCase();
+        const fallback = (response.headers.get('X-Format-Fallback') || '').toLowerCase();
+        const sheetCount = parseInt(response.headers.get('X-Sheet-Count') || '0', 10);
+        const cdisp = response.headers.get('Content-Disposition') || '';
+
+        if (fallback === 'csv') {
+            notify("Cok fazla satir, CSV formatina dusuldu", 'warn');
+            return;
+        }
+        const isXlsx = ctype.indexOf('spreadsheetml') >= 0
+            || ctype.indexOf('vnd.openxmlformats') >= 0;
+        if (isXlsx && (sheetCount > 1 || /_part1\.xlsx/i.test(cdisp))) {
+            const n = sheetCount > 1 ? sheetCount : 'birden fazla';
+            notify(
+                "Cok buyuk rapor: " + n + " sheet halinde indirildi, "
+                + "Excel'de Index sheet'inden gezebilirsiniz",
+                'info'
+            );
+        }
+    } catch (_) { /* best-effort UI hint — never throw out of a download path */ }
+}
+
 // ═══════════════════════════════════════════════════
 // Issue #79: Loading progress + ETA for slow dashboard pages
 // ═══════════════════════════════════════════════════
