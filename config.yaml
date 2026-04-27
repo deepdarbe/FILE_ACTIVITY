@@ -344,3 +344,24 @@ approvals:
   #                         startup warning. Use only during evaluation.)
   identity_source: "client_supplied"
   identity_header: "X-Forwarded-User"
+
+# Auto error reporting to GitHub Issues (issue #118, Phase 1).
+# Disabled by default — flip ``enabled`` and export the token env var
+# to opt in. With the defaults below the dashboard never makes a
+# network call to GitHub, even when an unhandled exception occurs.
+telemetry:
+  enabled: false
+  github:
+    repo: "deepdarbe/file_activity"
+    # Name of the env var that holds a fine-scoped GitHub PAT with
+    # ``issues: write``. Never put the token itself in this file.
+    token_env: "FILEACTIVITY_TELEMETRY_TOKEN"
+    label: "auto-report"
+  rate_limit:
+    # Hard cap on issues/comments filed in any rolling 1-hour window.
+    max_per_hour: 10
+  privacy:
+    # Strip UNC paths and Windows home-dir usernames from the report
+    # body. Recommended on. Secret-keyed dict values are always
+    # redacted regardless of this flag.
+    redact_paths: true
