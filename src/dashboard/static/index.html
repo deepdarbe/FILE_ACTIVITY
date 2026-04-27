@@ -436,6 +436,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-label">Sistem</div>
         <div class="nav-item" onclick="showPage('backups')"><span class="icon">💾</span> <span>Yedekler</span></div>
         <div class="nav-item" onclick="showPage('operations')"><span class="icon">📜</span> <span>Islem Gecmisi</span></div>
+        <div class="nav-item" onclick="showPage('approvals')"><span class="icon">✅</span> <span>Onaylar</span></div>
     </div>
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
@@ -1203,6 +1204,64 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     </div>
 </div>
 
+<!-- ============ APPROVALS (#112) ============ -->
+<div class="page" id="page-approvals">
+    <div class="page-header">
+        <div><h2>Iki Kisilik Onay Kuyrugu</h2><div class="desc">Yuksek etkili admin islemleri icin ikinci kisi dogrulamasi (snapshot restore vb.)</div></div>
+        <div class="actions">
+            <input id="approvals-current-user" placeholder="Kullanici adi (header/proxy yoksa)" style="width:220px">
+            <button class="btn btn-primary" onclick="loadApprovalsAll()">Yenile</button>
+        </div>
+    </div>
+    <div id="approvals-flag-banner" style="display:none;background:var(--warning,#f59e0b);color:#000;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px">
+        <strong>Onay cercevesi kapali.</strong> Aktif etmek icin <code>config.yaml</code> dosyasinda <code>approvals.enabled: true</code> ayarlayin ve <code>require_for</code> listesine ilgili islemi ekleyin.
+    </div>
+    <div id="approvals-meta" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:16px;font-size:12px;color:var(--text-muted);display:none">
+        Aktif islemler: <span id="approvals-require-for" style="color:var(--accent)">-</span> &nbsp;|&nbsp;
+        Sona erme: <span id="approvals-expiry-hours">-</span>h &nbsp;|&nbsp;
+        Kimlik kaynagi: <code id="approvals-identity-source">-</code>
+    </div>
+
+    <div class="tabs" style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--border)">
+        <button class="btn btn-outline approvals-tab active" data-tab="pending" onclick="switchApprovalsTab('pending')">Bekleyen</button>
+        <button class="btn btn-outline approvals-tab" data-tab="history" onclick="switchApprovalsTab('history')">Onay Gecmisi</button>
+    </div>
+
+    <div id="approvals-pending-wrap">
+        <div class="table-wrap" style="overflow:auto">
+            <table style="width:100%;border-collapse:collapse">
+                <thead><tr>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">ID</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Islem</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Payload</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Talep Eden</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Talep Zamani</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Sona Eriyor</th>
+                    <th style="text-align:right;padding:10px;border-bottom:1px solid var(--border);width:240px">Islem</th>
+                </tr></thead>
+                <tbody id="approvals-pending-tbody"><tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="approvals-history-wrap" style="display:none">
+        <div class="table-wrap" style="overflow:auto">
+            <table style="width:100%;border-collapse:collapse">
+                <thead><tr>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">ID</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Islem</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Durum</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Talep Eden</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Onaylayan</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Reddeden</th>
+                    <th style="text-align:left;padding:10px;border-bottom:1px solid var(--border)">Talep Zamani</th>
+                </tr></thead>
+                <tbody id="approvals-history-tbody"><tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 <!-- ============ BACKUPS ============ -->
 <div class="page" id="page-backups">
     <div class="page-header">
@@ -1811,7 +1870,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -5625,6 +5684,213 @@ async function exportBackupsXlsx(ev) {
     if (!btn) return;
     await withButtonLoading(btn, async (signal) => {
         await fetchAndDownload('/api/system/backups/export', signal, 'backups.xlsx');
+    });
+}
+
+// ═══════════════════════════════════════════════════
+// APPROVALS (issue #112)
+// ═══════════════════════════════════════════════════
+
+let _approvalsConfig = { enabled: false, require_for: [], expiry_hours: 24, identity_source: 'client_supplied' };
+let _approvalsTab = 'pending';
+
+function _approvalsCurrentUser() {
+    const el = document.getElementById('approvals-current-user');
+    return (el && el.value || '').trim();
+}
+
+function _formatExpiry(expiresAt) {
+    if (!expiresAt) return '-';
+    const exp = new Date(expiresAt.replace(' ', 'T'));
+    if (isNaN(exp.getTime())) return _esc(expiresAt);
+    const ms = exp.getTime() - Date.now();
+    if (ms <= 0) return '<span style="color:var(--danger)">Sona erdi</span>';
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    return `<span title="${_esc(expiresAt)}">${h}s ${m}d</span>`;
+}
+
+async function loadApprovalsConfig() {
+    try {
+        const r = await fetch('/api/approvals/config');
+        if (!r.ok) return;
+        const d = await r.json();
+        _approvalsConfig = d || _approvalsConfig;
+        const banner = document.getElementById('approvals-flag-banner');
+        if (banner) banner.style.display = _approvalsConfig.enabled ? 'none' : 'block';
+        const meta = document.getElementById('approvals-meta');
+        if (meta) {
+            meta.style.display = 'block';
+            const rf = (_approvalsConfig.require_for || []).join(', ') || '(yok)';
+            const rfEl = document.getElementById('approvals-require-for');
+            if (rfEl) rfEl.textContent = rf;
+            const exEl = document.getElementById('approvals-expiry-hours');
+            if (exEl) exEl.textContent = _approvalsConfig.expiry_hours;
+            const idEl = document.getElementById('approvals-identity-source');
+            if (idEl) idEl.textContent = _approvalsConfig.identity_source;
+        }
+    } catch (e) {
+        console.error('loadApprovalsConfig error:', e);
+    }
+}
+
+async function loadApprovalsAll() {
+    await loadApprovalsConfig();
+    await loadApprovalsPending();
+    await loadApprovalsHistory();
+}
+
+function switchApprovalsTab(tab) {
+    _approvalsTab = tab;
+    document.querySelectorAll('.approvals-tab').forEach(b => {
+        if (b.getAttribute('data-tab') === tab) b.classList.add('active');
+        else b.classList.remove('active');
+    });
+    const pendingWrap = document.getElementById('approvals-pending-wrap');
+    const historyWrap = document.getElementById('approvals-history-wrap');
+    if (pendingWrap) pendingWrap.style.display = (tab === 'pending') ? 'block' : 'none';
+    if (historyWrap) historyWrap.style.display = (tab === 'history') ? 'block' : 'none';
+}
+
+async function loadApprovalsPending() {
+    const tbody = document.getElementById('approvals-pending-tbody');
+    if (!tbody) return;
+    try {
+        const r = await fetch('/api/approvals/pending');
+        const d = r.ok ? await r.json() : { rows: [] };
+        const rows = d.rows || [];
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text-muted)">Bekleyen onay yok</td></tr>';
+            return;
+        }
+        const me = _approvalsCurrentUser();
+        tbody.innerHTML = rows.map(row => {
+            const isSelf = me && (me === row.requested_by);
+            const buttons = `
+                <button class="btn btn-primary" style="font-size:11px;padding:4px 10px;margin-right:4px"
+                        ${isSelf ? 'disabled title="Kendi talebinizi onaylayamazsiniz"' : ''}
+                        onclick="approveApproval(${row.id}, this)">Onayla</button>
+                <button class="btn btn-outline" style="font-size:11px;padding:4px 10px;border-color:var(--danger);color:var(--danger);margin-right:4px"
+                        onclick="openRejectModal(${row.id})">Reddet</button>
+                <button class="btn btn-outline" style="font-size:11px;padding:4px 10px"
+                        onclick="executeApproval(${row.id}, this)">Calistir</button>`;
+            return `
+                <tr>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${row.id}</code></td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${_esc(row.operation_type)}</code></td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border);font-size:11px"><code>${_esc(JSON.stringify(row.payload || {}))}</code></td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)">${_esc(row.requested_by)}</td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border);font-size:11px">${_esc(row.requested_at)}</td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)">${_formatExpiry(row.expires_at)}</td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border);text-align:right">${buttons}</td>
+                </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadApprovalsPending error:', e);
+        tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--danger)">Hata: ${_esc(e.message)}</td></tr>`;
+    }
+}
+
+async function loadApprovalsHistory() {
+    const tbody = document.getElementById('approvals-history-tbody');
+    if (!tbody) return;
+    try {
+        const r = await fetch('/api/approvals/history?limit=100');
+        const d = r.ok ? await r.json() : { rows: [] };
+        const rows = d.rows || [];
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text-muted)">Kayit yok</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rows.map(row => {
+            const statusColor = {
+                pending: 'var(--warning)', approved: 'var(--accent)',
+                rejected: 'var(--danger)', expired: 'var(--text-muted)',
+                executed: 'var(--success)',
+            }[row.status] || 'var(--text-muted)';
+            return `
+                <tr>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${row.id}</code></td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${_esc(row.operation_type)}</code></td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border);color:${statusColor};font-weight:600">${_esc(row.status)}</td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)">${_esc(row.requested_by)}</td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)">${_esc(row.approved_by || '-')}</td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border)">${_esc(row.rejected_by || '-')}</td>
+                    <td style="padding:10px;border-bottom:1px solid var(--border);font-size:11px">${_esc(row.requested_at)}</td>
+                </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadApprovalsHistory error:', e);
+        tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--danger)">Hata: ${_esc(e.message)}</td></tr>`;
+    }
+}
+
+async function approveApproval(id, btn) {
+    const me = _approvalsCurrentUser();
+    if (!me) {
+        if (!confirm('Kullanici adi girilmedi. Server tarafi kimlik cozumlemesi kullanilacak. Devam edilsin mi?')) return;
+    }
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch(`/api/approvals/${id}/approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(me ? { approved_by: me } : {}),
+            signal,
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            notify('Onaylanamadi: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            return;
+        }
+        notify('Onaylandi: #' + id, 'success');
+        await loadApprovalsAll();
+    });
+}
+
+function openRejectModal(id) {
+    const reason = prompt('Red gerekcesi:', '');
+    if (reason === null) return;
+    rejectApproval(id, reason);
+}
+
+async function rejectApproval(id, reason) {
+    const me = _approvalsCurrentUser();
+    const body = { reason: reason || '' };
+    if (me) body.rejected_by = me;
+    try {
+        const r = await fetch(`/api/approvals/${id}/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            notify('Reddedilemedi: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            return;
+        }
+        notify('Reddedildi: #' + id, 'success');
+        loadApprovalsAll();
+    } catch (e) {
+        notify('Reddedilemedi: ' + e.message, 'error');
+    }
+}
+
+async function executeApproval(id, btn) {
+    if (!confirm('Onaylanmis islem calistirilsin mi? Bu islem geri alinamaz.')) return;
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch(`/api/approvals/${id}/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+            signal,
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            notify('Calistirma basarisiz: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            return;
+        }
+        notify('Islem calistirildi: #' + id, 'success');
+        await loadApprovalsAll();
     });
 }
 

@@ -281,3 +281,32 @@ compliance:
   legal_hold:
     enabled: true
     poll_interval_minutes: 5
+
+approvals:
+  # Two-person approval framework (issue #112). Phase 1 wires the
+  # snapshot restore endpoint as a proof of concept; archive_bulk,
+  # purge_bulk and retention_apply are queued for follow-up PRs.
+  # When ``enabled: false`` (default) every existing endpoint behaves
+  # exactly as before — no row is queued, no second person is asked.
+  # Self-approval (B == A) is refused server-side regardless of any
+  # client-side disablement.
+  enabled: false
+  # Operations that require a second person before execution. Even
+  # when ``enabled: true``, an op missing from this list runs straight
+  # through the normal endpoint.
+  require_for: []
+  # e.g.:
+  #   require_for: ['snapshot_restore', 'archive_bulk', 'purge_bulk',
+  #                 'retention_apply']
+  # Pending rows older than this are flipped to ``expired`` by an
+  # hourly APScheduler job. 24h is the default — long enough for an
+  # off-hours request to be approved, short enough to keep the queue
+  # tidy.
+  expiry_hours: 24
+  # How the framework figures out *who* is calling the API:
+  #   * 'windows'         — os.getlogin() (recommended on Windows hosts)
+  #   * 'header'          — read identity_header (auth proxy in front)
+  #   * 'client_supplied' — read body['username'] (UNSAFE; emits a
+  #                         startup warning. Use only during evaluation.)
+  identity_source: "client_supplied"
+  identity_header: "X-Forwarded-User"

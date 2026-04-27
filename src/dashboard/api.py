@@ -3790,15 +3790,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             raise HTTPException(500, f"snapshot_failed: {e}")
         return {"ok": True, **meta.to_dict()}
 
-    @app.post("/api/system/backups/restore/{snapshot_id}")
-    async def restore_snapshot(snapshot_id: str, body: dict):
-        """Restore the live DB from ``snapshot_id``. Refuses if a live
-        connection holds the DB lock — the caller must stop the dashboard
-        first. Body must include ``confirm: true``.
+    def _do_snapshot_restore(payload: dict) -> dict:
+        """Execute a snapshot restore from a payload dict.
+
+        Shared by the direct endpoint (when approvals are disabled or
+        the op isn't gated) and ``ApprovalRegistry.execute`` so the same
+        code path runs whether or not the two-person rule is in effect.
+        Raises ``HTTPException`` so both callers can surface the same
+        error semantics.
         """
-        body = body or {}
-        if not bool(body.get("confirm", False)):
-            raise HTTPException(400, "confirm: true required")
+        snapshot_id = (payload or {}).get("snapshot_id")
+        if not snapshot_id:
+            raise HTTPException(400, "snapshot_id required in payload")
         try:
             mgr = _get_backup_manager()
         except Exception as e:
@@ -3812,12 +3815,59 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         except FileNotFoundError as e:
             raise HTTPException(404, str(e))
         except RuntimeError as e:
-            # Live-connection refusal or sha mismatch — surface to UI.
             raise HTTPException(409, str(e))
         except Exception as e:
             logger.error("restore failed: %s", e)
             raise HTTPException(500, f"restore_failed: {e}")
         return {"ok": True, "restored": snapshot_id}
+
+    # Map of operation_type -> executor callable. Used by
+    # ``POST /api/approvals/{id}/execute`` to dispatch the approved
+    # payload back through the original code path. Phase 1 only wires
+    # snapshot_restore — archive_bulk, purge_bulk, retention_apply
+    # follow in subsequent PRs.
+    app.state.approval_executors = {
+        "snapshot_restore": _do_snapshot_restore,
+    }
+
+    @app.post("/api/system/backups/restore/{snapshot_id}")
+    async def restore_snapshot(snapshot_id: str, body: dict, request: Request):
+        """Restore the live DB from ``snapshot_id``. Refuses if a live
+        connection holds the DB lock — the caller must stop the dashboard
+        first. Body must include ``confirm: true``.
+
+        When ``approvals.enabled=true`` AND ``'snapshot_restore'`` is in
+        ``approvals.require_for``, this endpoint queues a pending
+        approval row instead of executing immediately. The caller must
+        then have a *different* operator approve via
+        ``POST /api/approvals/{id}/approve`` and finally trigger
+        execution via ``POST /api/approvals/{id}/execute``.
+        """
+        body = body or {}
+        if not bool(body.get("confirm", False)):
+            raise HTTPException(400, "confirm: true required")
+
+        # Route through approvals when gated. The framework is opt-in;
+        # default config keeps this branch dormant.
+        registry = getattr(app.state, "approval_registry", None)
+        if registry is not None and registry.is_required("snapshot_restore"):
+            from src.security.identity import resolve_user
+            requested_by = resolve_user(request, config, body)
+            req = registry.request(
+                "snapshot_restore",
+                {"snapshot_id": snapshot_id},
+                requested_by,
+            )
+            return {
+                "pending_approval_id": req.id,
+                "status": "pending",
+                "operation_type": req.operation_type,
+                "expires_at": req.expires_at,
+                "requested_by": req.requested_by,
+                "message": "Awaiting second-person approval",
+            }
+
+        return _do_snapshot_restore({"snapshot_id": snapshot_id})
 
     @app.get("/api/system/backups/export")
     async def export_backups_xlsx():
@@ -4367,5 +4417,122 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "active_count": len(actives),
             "held_paths_count": held_paths,
         }
+
+    # ──────────────────────────────────────────────
+    # Two-person approval framework (issue #112)
+    # ──────────────────────────────────────────────
+    # Registry lives on app.state so the snapshot-restore endpoint
+    # (above) and these endpoints share a single instance. Constructed
+    # unconditionally — when ``approvals.enabled=false`` every
+    # ``is_required`` call short-circuits to False and existing ops run
+    # straight through, so this is zero-cost backwards compat.
+    from src.security.approvals import (
+        ApprovalRegistry, ApprovalNotFound, SelfApprovalError,
+        InvalidStateError, ApprovalExpiredError, ApprovalError,
+    )
+    from src.security.identity import resolve_user, warn_if_unsafe
+    app.state.approval_registry = ApprovalRegistry(db, config)
+    warn_if_unsafe(config)
+
+    def _approval_to_json(req) -> dict:
+        return req.to_dict()
+
+    @app.get("/api/approvals/config")
+    async def approvals_config():
+        """Expose the runtime config of the approval framework so the
+        frontend can render the right banners + disable/enable buttons.
+        Safe to read while disabled — returns ``enabled=false``."""
+        cfg = (config or {}).get("approvals") or {}
+        return {
+            "enabled": bool(cfg.get("enabled", False)),
+            "require_for": list(cfg.get("require_for") or []),
+            "expiry_hours": int(cfg.get("expiry_hours", 24) or 24),
+            "identity_source": (cfg.get("identity_source")
+                                or "client_supplied"),
+        }
+
+    @app.get("/api/approvals/pending")
+    async def approvals_list_pending():
+        registry = app.state.approval_registry
+        rows = registry.list_pending()
+        return {"rows": [_approval_to_json(r) for r in rows]}
+
+    @app.get("/api/approvals/history")
+    async def approvals_history(limit: int = Query(50, ge=1, le=1000)):
+        registry = app.state.approval_registry
+        rows = registry.list_history(limit=limit)
+        return {"rows": [_approval_to_json(r) for r in rows]}
+
+    @app.post("/api/approvals/{approval_id}/approve")
+    async def approvals_approve(approval_id: int, body: dict, request: Request):
+        body = body or {}
+        registry = app.state.approval_registry
+        approved_by = (body.get("approved_by")
+                       or resolve_user(request, config, body))
+        try:
+            req = registry.approve(approval_id, approved_by)
+        except ApprovalNotFound:
+            raise HTTPException(404, f"approval {approval_id} not found")
+        except SelfApprovalError as e:
+            raise HTTPException(403, str(e))
+        except ApprovalExpiredError as e:
+            raise HTTPException(409, str(e))
+        except InvalidStateError as e:
+            raise HTTPException(409, str(e))
+        except ApprovalError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "approval": _approval_to_json(req)}
+
+    @app.post("/api/approvals/{approval_id}/reject")
+    async def approvals_reject(approval_id: int, body: dict, request: Request):
+        body = body or {}
+        registry = app.state.approval_registry
+        rejected_by = (body.get("rejected_by")
+                       or resolve_user(request, config, body))
+        reason = (body.get("reason") or "").strip()
+        try:
+            req = registry.reject(approval_id, rejected_by, reason)
+        except ApprovalNotFound:
+            raise HTTPException(404, f"approval {approval_id} not found")
+        except InvalidStateError as e:
+            raise HTTPException(409, str(e))
+        except ApprovalError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "approval": _approval_to_json(req)}
+
+    @app.post("/api/approvals/{approval_id}/execute")
+    async def approvals_execute(approval_id: int, body: dict):
+        """Run the executor mapped to the approval's operation_type.
+
+        Body may carry an ``executor_token`` reserved for future
+        signing (issue #112 follow-up); Phase 1 ignores it but the
+        field is documented in the API surface so client code can
+        pre-stage support.
+        """
+        body = body or {}
+        registry = app.state.approval_registry
+        try:
+            req = registry.get(approval_id)
+        except ApprovalNotFound:
+            raise HTTPException(404, f"approval {approval_id} not found")
+
+        executor_map = getattr(app.state, "approval_executors", {}) or {}
+        executor = executor_map.get(req.operation_type)
+        if executor is None:
+            raise HTTPException(
+                400,
+                f"no executor registered for operation_type "
+                f"{req.operation_type!r} (Phase 1 wires snapshot_restore only)",
+            )
+        try:
+            result = registry.execute(approval_id, executor)
+        except InvalidStateError as e:
+            raise HTTPException(409, str(e))
+        except HTTPException:
+            # Executor surfaced its own HTTP error — propagate.
+            raise
+        except ApprovalError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "result": result}
 
     return app

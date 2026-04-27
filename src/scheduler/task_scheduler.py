@@ -32,6 +32,10 @@ class TaskScheduler:
         # This is config-driven (not stored in scheduled_tasks) so it
         # works on fresh installs without a manual setup step.
         self._register_daily_backup_job()
+        # Issue #112: hourly expire_stale job for the two-person
+        # approval queue. Always-on (cheap no-op when there are no
+        # pending rows or approvals.enabled=false).
+        self._register_approval_expiry_job()
         self.scheduler.start()
         logger.info("TaskScheduler başlatıldı")
 
@@ -389,6 +393,53 @@ class TaskScheduler:
             )
         except Exception as e:
             logger.error("Failed to register daily_backup: %s", e)
+
+    def _run_approval_expiry(self):
+        """Flip stale pending approvals to ``expired`` (issue #112)."""
+        try:
+            from src.security.approvals import ApprovalRegistry
+        except Exception as e:
+            logger.warning("approvals import failed: %s", e)
+            return {"status": "error", "message": str(e)}
+        try:
+            registry = ApprovalRegistry(self.db, self.config)
+            n = registry.expire_stale()
+            logger.info("expire_stale_approvals: flipped %d row(s)", n)
+            return {"status": "ok", "expired": n}
+        except Exception as e:
+            logger.error("expire_stale_approvals failed: %s", e, exc_info=True)
+            return {"status": "error", "message": str(e)}
+
+    def _register_approval_expiry_job(self):
+        """Register the hourly approval-expiry job (issue #112)."""
+        approvals_cfg = (self.config or {}).get("approvals") or {}
+        # Allow operators to override the cron with
+        # approvals.expire_check_hour (still hourly, just lets them set
+        # which minute each hour the job runs). Default minute=5 to
+        # avoid the top-of-hour scheduler-startup rush.
+        try:
+            minute = int(approvals_cfg.get("expire_check_minute", 5))
+        except (TypeError, ValueError):
+            minute = 5
+        if minute < 0 or minute > 59:
+            minute = 5
+        try:
+            trigger = CronTrigger(minute=str(minute))
+            self.scheduler.add_job(
+                self._run_approval_expiry,
+                trigger=trigger,
+                id="expire_stale_approvals",
+                name="expire_stale_approvals",
+                replace_existing=True,
+            )
+            logger.info(
+                "expire_stale_approvals job registered (cron: %d * * * *)",
+                minute,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to register expire_stale_approvals: %s", e
+            )
 
     def reload_tasks(self):
         """Görevleri yeniden yükle."""
