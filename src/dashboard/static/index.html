@@ -239,6 +239,15 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 /* === RESPONSIVE === */
 @media (max-width: 1200px) { .chart-grid { grid-template-columns: 1fr; } .progress-stats { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 900px) { .sidebar { width: 60px; } .sidebar .nav-item span, .sidebar .nav-label, .sidebar-header .subtitle, .sidebar-header .version, .sidebar-footer .status span { display: none; } .sidebar-header h1 span { display: none; } .main { margin-left: 60px; } }
+
+/* === SPINNER (Bug 3 fix - export button loading state) === */
+.spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -314,8 +323,8 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
                 <option value="">Kaynak secin...</option>
             </select>
             <button class="btn btn-primary" onclick="showPage('sources')">Kaynak Yonet</button>
-            <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(document.getElementById('overview-source').value)">PDF</button>
-            <button class="btn-export" onclick="exportXLS(document.getElementById('overview-source').value)">XLS</button>
+            <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(document.getElementById('overview-source').value, event)">PDF</button>
+            <button class="btn-export" onclick="exportXLS(document.getElementById('overview-source').value, event)">XLS</button>
         </div>
     </div>
     <!-- KPI Row: 7 cards -->
@@ -423,8 +432,8 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div><h2>Erisim Sikligi</h2><div class="desc">Dosyalarin son erisim zamanina gore dagilimi</div></div>
         <div class="actions">
             <select id="freq-source" onchange="loadFrequency()" style="width:200px"><option value="">Kaynak secin...</option></select>
-            <button class="btn-export" onclick="exportXLS(document.getElementById('freq-source').value)">XLS Indir</button>
-            <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(document.getElementById('freq-source').value)">PDF Indir</button>
+            <button class="btn-export" onclick="exportXLS(document.getElementById('freq-source').value, event)">XLS Indir</button>
+            <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(document.getElementById('freq-source').value, event)">PDF Indir</button>
         </div>
     </div>
     <div class="cards" id="freq-cards"></div>
@@ -438,7 +447,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 <div class="page" id="page-types">
     <div class="page-header">
         <div><h2>Dosya Turleri</h2><div class="desc">Uzanti bazli dosya analizi</div></div>
-        <div class="actions"><select id="types-source" onchange="loadTypes()" style="width:200px"><option value="">Kaynak secin...</option></select><button class="btn-export" onclick="exportXLS(document.getElementById('types-source').value)" style="margin-left:8px">XLS Indir</button><button class="btn-export" style="background:var(--danger);margin-left:4px" onclick="exportPDF(document.getElementById('types-source').value)">PDF Indir</button></div>
+        <div class="actions"><select id="types-source" onchange="loadTypes()" style="width:200px"><option value="">Kaynak secin...</option></select><button class="btn-export" onclick="exportXLS(document.getElementById('types-source').value, event)" style="margin-left:8px">XLS Indir</button><button class="btn-export" style="background:var(--danger);margin-left:4px" onclick="exportPDF(document.getElementById('types-source').value, event)">PDF Indir</button></div>
     </div>
     <div class="chart-grid">
         <div class="chart-box"><h4>Uzanti Dagilimi (Boyut)</h4><canvas id="types-pie-chart"></canvas></div>
@@ -451,7 +460,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 <div class="page" id="page-sizes">
     <div class="page-header">
         <div><h2>Boyut Dagilimi</h2><div class="desc">Dosya boyutu kategorileri</div></div>
-        <div class="actions"><select id="sizes-source" onchange="loadSizes()" style="width:200px"><option value="">Kaynak secin...</option></select><button class="btn-export" onclick="exportXLS(document.getElementById('sizes-source').value)" style="margin-left:8px">XLS Indir</button><button class="btn-export" style="background:var(--danger);margin-left:4px" onclick="exportPDF(document.getElementById('sizes-source').value)">PDF Indir</button></div>
+        <div class="actions"><select id="sizes-source" onchange="loadSizes()" style="width:200px"><option value="">Kaynak secin...</option></select><button class="btn-export" onclick="exportXLS(document.getElementById('sizes-source').value, event)" style="margin-left:8px">XLS Indir</button><button class="btn-export" style="background:var(--danger);margin-left:4px" onclick="exportPDF(document.getElementById('sizes-source').value, event)">PDF Indir</button></div>
     </div>
     <div class="cards" id="sizes-cards"></div>
     <div class="chart-grid">
@@ -541,7 +550,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div class="page-header">
         <div><h2>Arsiv Gecmisi</h2><div class="desc">Tum arsiv ve geri yukleme islemlerinin detayli kaydi</div></div>
         <div class="actions">
-            <button class="btn btn-outline" onclick="exportArchiveHistory()">XLS Export</button>
+            <button class="btn btn-outline" onclick="exportArchiveHistory(event)">XLS Export</button>
         </div>
     </div>
     <!-- Filtreler -->
@@ -578,7 +587,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <select id="dup-source" onchange="loadDuplicates()" style="width:200px">
                 <option value="">Kaynak secin...</option>
             </select>
-            <button id="dup-export-btn" class="btn-export" style="display:none" onclick="exportDuplicatesCSV()">Excel Export</button>
+            <button id="dup-export-btn" class="btn-export" style="display:none" onclick="exportDuplicatesCSV(event)">Excel Export</button>
         </div>
     </div>
     <!-- Ozet kartlar -->
@@ -630,7 +639,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <select id="naming-source" onchange="loadNaming()" style="width:200px">
                 <option value="">Kaynak secin...</option>
             </select>
-            <button class="btn btn-outline" onclick="exportNamingReport()" id="naming-export-btn" style="display:none">Excel Export</button>
+            <button class="btn btn-outline" onclick="exportNamingReport(event)" id="naming-export-btn" style="display:none">Excel Export</button>
         </div>
     </div>
     <!-- Skor ve ozet kartlar -->
@@ -896,6 +905,46 @@ function notify(msg, type='info') {
     setTimeout(() => el.remove(), 5000);
 }
 
+// Bug 3 fix (Issue #82): wrapper that adds loading spinner, disabled state,
+// timeout via AbortController, and uniform error toast for export/download buttons.
+async function withButtonLoading(button, fn, timeoutMs = 60000) {
+    if (!button || button.disabled) return;
+    const original = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span> Hazirlaniyor...';
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        await fn(ctrl.signal);
+    } catch (e) {
+        if (e && e.name === 'AbortError') {
+            notify('Islem zaman asimina ugradi (' + (timeoutMs/1000) + 'sn). Sunucu yogun olabilir.', 'error');
+        } else {
+            notify('Hata: ' + (e && e.message ? e.message : e), 'error');
+        }
+    } finally {
+        clearTimeout(timer);
+        button.disabled = false;
+        button.innerHTML = original;
+    }
+}
+
+// Bug 3 fix: shared helper that fetches a URL as blob with abort signal,
+// extracts filename from Content-Disposition, and triggers a download anchor.
+async function fetchAndDownload(url, signal, fallbackName) {
+    const resp = await fetch(url, { signal });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^";]+)"?/);
+    const filename = m ? m[1] : fallbackName;
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl; a.download = filename;
+    document.body.appendChild(a); a.click();
+    a.remove(); URL.revokeObjectURL(objUrl);
+}
+
 function formatSize(bytes) {
     if (!bytes || bytes === 0) return '0 B';
     const u = ['B','KB','MB','GB','TB'];
@@ -988,11 +1037,11 @@ function renderSources() {
             <div class="source-card-actions">
                 <button class="btn btn-sm btn-primary" onclick="startScan(${s.id})">🔍 Tara</button>
                 <button class="btn btn-sm btn-outline" onclick="testSource(${s.id})">🔌 Test</button>
-                <button class="btn btn-sm btn-outline" onclick="exportReport(${s.id})">📄 Rapor</button>
+                <button class="btn btn-sm btn-outline" onclick="exportReport(${s.id}, event)">📄 Rapor</button>
                 <button class="btn btn-sm btn-success" onclick="startWatcher(${s.id})">▶ Izle</button>
                 <button class="btn btn-sm btn-outline" onclick="stopWatcher(${s.id})">⏹ Durdur</button>
-                <button class="btn-export" onclick="exportXLS(${s.id})">XLS</button>
-                <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(${s.id})">PDF</button>
+                <button class="btn-export" onclick="exportXLS(${s.id}, event)">XLS</button>
+                <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(${s.id}, event)">PDF</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteSource(${s.id})">🗑️ Sil</button>
             </div>
         </div>
@@ -1028,8 +1077,12 @@ async function testSource(id) {
     notify(r.message, r.success ? 'success' : 'error');
 }
 
-async function exportReport(id) {
-    downloadFile(`${API}/reports/export/${id}`);
+async function exportReport(id, event) {
+    if (!id) { notify('Onceeerce kaynak secin', 'warning'); return; }
+    const btn = event?.currentTarget;
+    await withButtonLoading(btn, async (signal) => {
+        await fetchAndDownload(`${API}/reports/export/${id}`, signal, `report_${id}.pdf`);
+    });
 }
 
 // ═══════════════════════════════════════════════════
@@ -2375,12 +2428,15 @@ async function archiveDrilldown() {
     } catch(e) { notify(e.message, 'error'); }
 }
 
-async function downloadDrilldownXLS() {
-    const sep = ddCurrentUrl.includes('?') ? '&' : '?';
+async function downloadDrilldownXLS(event) {
     // Use the URL to determine source_id
     const parts = ddCurrentUrl.split('/');
     const sid = parts[parts.length - 1].split('?')[0];
-    downloadFile(`/api/export/xls/${sid}`);
+    if (!sid) { notify('Kaynak bulunamadi', 'warning'); return; }
+    const btn = event?.currentTarget;
+    await withButtonLoading(btn, async (signal) => {
+        await fetchAndDownload(`/api/export/xls/${sid}`, signal, `drilldown_${sid}.xlsx`);
+    });
 }
 
 function drilldownOwner(owner, sourceId) {
@@ -2395,11 +2451,19 @@ function drilldownOwner(owner, sourceId) {
 // ═══════════════════════════════════════════════════
 // EXPORT HELPERS (Arka plan XLS sistemi)
 // ═══════════════════════════════════════════════════
-function exportXLS(sourceId) {
-    startBackgroundExport('full', sourceId);
+async function exportXLS(sourceId, event) {
+    if (!sourceId) { notify('Onceeerce kaynak secin', 'warning'); return; }
+    const btn = event?.currentTarget;
+    await withButtonLoading(btn, async (signal) => {
+        await fetchAndDownload(`/api/export/xls/${sourceId}`, signal, `report_${sourceId}.xlsx`);
+    });
 }
-function exportPDF(sourceId) {
-    downloadFile(`/api/export/pdf/${sourceId}`);
+async function exportPDF(sourceId, event) {
+    if (!sourceId) { notify('Onceeerce kaynak secin', 'warning'); return; }
+    const btn = event?.currentTarget;
+    await withButtonLoading(btn, async (signal) => {
+        await fetchAndDownload(`/api/export/pdf/${sourceId}`, signal, `report_${sourceId}.pdf`);
+    });
 }
 
 async function startBackgroundExport(reportType, sourceId) {
@@ -2655,7 +2719,7 @@ async function showNamingFiles(code, sourceId) {
                 ${data.total > 200 ? `<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:11px">Ilk 200 dosya gosteriliyor (toplam ${data.total}). Tum liste icin Excel Export kullanin.</div>` : ''}
                 <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
                     <button class="btn btn-outline" onclick="closeModal('modal-naming-files')">Kapat</button>
-                    <button class="btn btn-primary" onclick="exportNamingReport()">Tum Ihlalleri Excel Export</button>
+                    <button class="btn btn-primary" onclick="exportNamingReport(event)">Tum Ihlalleri Excel Export</button>
                 </div>
             </div>
         `;
@@ -2674,11 +2738,17 @@ async function showNamingFiles(code, sourceId) {
     } catch(e) { notify('Dosya listesi yuklenemedi: ' + e.message, 'error'); }
 }
 
-function exportNamingReport() {
+async function exportNamingReport(event) {
     const sourceId = document.getElementById('naming-source')?.value;
     if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
-    startBackgroundExport('mit_naming', sourceId);
-    notify('Excel raporu indiriliyor...', 'info');
+    const btn = event?.currentTarget;
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch(`/api/export/start?report_type=mit_naming&source_id=${sourceId}`, { method: 'POST', signal });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        notify('Excel raporu arka planda hazirlaniyor...', 'info');
+        if (data && data.job_id) pollExportStatus(data.job_id);
+    });
 }
 
 function openFolder(path) {
@@ -2920,11 +2990,14 @@ async function showOperationFiles(opId) {
     } catch(e) { notify('Dosya detaylari yuklenemedi', 'error'); }
 }
 
-async function exportArchiveHistory() {
-    notify('XLS export hazirlaniyor...', 'info');
-    // Tum gecmisi cek ve CSV olarak indir
-    try {
-        const data = await api('/archive/history?page=1&page_size=10000');
+async function exportArchiveHistory(event) {
+    const btn = event?.currentTarget;
+    await withButtonLoading(btn, async (signal) => {
+        notify('XLS export hazirlaniyor...', 'info');
+        // Tum gecmisi cek ve CSV olarak indir
+        const resp = await fetch(API + '/archive/history?page=1&page_size=10000', { signal });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
         const ops = data.operations || [];
         if (!ops.length) { notify('Export edilecek veri yok', 'warning'); return; }
         let csv = 'ID,Tarih,Tur,Tetikleyen,Detay,Dosya Sayisi,Toplam Boyut,Durum\n';
@@ -2935,9 +3008,10 @@ async function exportArchiveHistory() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url; a.download = `arsiv_gecmisi_${new Date().toISOString().split('T')[0]}.csv`;
-        a.click(); URL.revokeObjectURL(url);
+        document.body.appendChild(a); a.click();
+        a.remove(); URL.revokeObjectURL(url);
         notify('Export tamamlandi', 'success');
-    } catch(e) { notify('Export hatasi', 'error'); }
+    });
 }
 
 // ═══════════════════════════════════════════════════
@@ -3076,10 +3150,17 @@ async function archiveSelectedDuplicates() {
     } catch(e) { notify('Arsivleme hatasi: ' + e.message, 'error'); }
 }
 
-function exportDuplicatesCSV() {
+async function exportDuplicatesCSV(event) {
     const sourceId = document.getElementById('dup-source')?.value;
     if (!sourceId) { notify('Lutfen kaynak secin', 'warning'); return; }
-    startBackgroundExport('duplicates', sourceId);
+    const btn = event?.currentTarget;
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch(`/api/export/start?report_type=duplicates&source_id=${sourceId}`, { method: 'POST', signal });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const data = await r.json();
+        notify('Excel raporu arka planda hazirlaniyor...', 'info');
+        if (data && data.job_id) pollExportStatus(data.job_id);
+    });
 }
 
 // ═══════════════════════════════════════════════════
@@ -3483,7 +3564,7 @@ async function sqlqRun() {
         <div class="drilldown-header">
             <h3 id="dd-title">Dosya Listesi</h3>
             <div class="dd-actions">
-                <button class="btn-export" onclick="downloadDrilldownXLS()">XLS Indir</button>
+                <button class="btn-export" onclick="downloadDrilldownXLS(event)">XLS Indir</button>
                 <button id="dd-archive-btn" class="btn btn-sm btn-danger" onclick="archiveDrilldown()" style="display:none">Grubu Arsivle</button>
                 <button class="btn btn-sm btn-outline" onclick="closeDrilldown()">Kapat</button>
             </div>
