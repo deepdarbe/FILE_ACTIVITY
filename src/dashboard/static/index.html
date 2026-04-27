@@ -7,6 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script src="/static/components/entity-list.js"></script>
+<script src="/static/components/view-toggle.js"></script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>📊</text></svg>">
 <style>
 :root {
@@ -316,6 +317,28 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     0%   { background-position: 200% 0; }
     100% { background-position: -200% 0; }
 }
+
+/* === VIEW-TOGGLE (issue #84 — Gorsel | Profesyonel) === */
+.view-toggle { display: inline-flex; gap: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-light); flex-shrink: 0; }
+.view-toggle .vt-btn {
+    padding: 6px 12px;
+    font-size: 12px; font-weight: 600;
+    background: transparent; color: var(--text-secondary);
+    border: none; border-right: 1px solid var(--border-light);
+    cursor: pointer; transition: var(--transition);
+    font-family: inherit; line-height: 1;
+}
+.view-toggle .vt-btn:last-child { border-right: none; }
+.view-toggle .vt-btn:hover:not(.active) { background: var(--bg-hover); color: var(--text-primary); }
+.view-toggle .vt-btn.active { background: var(--accent); color: white; cursor: default; }
+.view-toggle .vt-btn:focus { outline: none; box-shadow: inset 0 0 0 2px rgba(59,130,246,0.4); }
+
+/* === VIEW-MODE: GRID (Profesyonel) entity-list mounts =================== */
+/* The host container for the entity-list grid; pages create one inline. */
+.view-grid-host { display: block; }
+@media (max-width: 700px) {
+    .view-grid-host { overflow-x: auto; }
+}
 </style>
 </head>
 <body>
@@ -537,11 +560,16 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(document.getElementById('freq-source').value, event)">PDF Indir</button>
         </div>
     </div>
-    <div class="cards" id="freq-cards"></div>
-    <div class="chart-grid">
-        <div class="chart-box chart-full"><h4>Erisim Sikligi Dagilimi</h4><canvas id="freq-chart"></canvas></div>
+    <!-- Gorsel mod (issue #84) -->
+    <div id="freq-visual-host">
+        <div class="cards" id="freq-cards"></div>
+        <div class="chart-grid">
+            <div class="chart-box chart-full"><h4>Erisim Sikligi Dagilimi</h4><canvas id="freq-chart"></canvas></div>
+        </div>
+        <div class="table-wrap" id="freq-table-wrap" style="display:none"><table id="freq-table"></table></div>
     </div>
-    <div class="table-wrap" id="freq-table-wrap" style="display:none"><table id="freq-table"></table></div>
+    <!-- Profesyonel mod (issue #84): entity-list of files with last_access_time -->
+    <div id="freq-grid-host" class="view-grid-host" style="display:none"></div>
 </div>
 
 <!-- ============ TYPES ============ -->
@@ -672,12 +700,17 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <button class="btn btn-primary" onclick="loadArchiveHistory()">Filtrele</button>
         </div>
     </div>
-    <!-- Ozet kartlar -->
-    <div class="cards" id="ah-summary-cards"></div>
-    <!-- Tablo -->
-    <div class="table-wrap"><table id="ah-table"></table></div>
-    <!-- Sayfalama -->
-    <div id="ah-pagination" style="display:flex;justify-content:center;gap:8px;margin-top:16px"></div>
+    <!-- Gorsel mod (issue #84) -->
+    <div id="ah-visual-host">
+        <!-- Ozet kartlar -->
+        <div class="cards" id="ah-summary-cards"></div>
+        <!-- Tablo -->
+        <div class="table-wrap"><table id="ah-table"></table></div>
+        <!-- Sayfalama -->
+        <div id="ah-pagination" style="display:flex;justify-content:center;gap:8px;margin-top:16px"></div>
+    </div>
+    <!-- Profesyonel mod (issue #84): entity-list of operations -->
+    <div id="ah-grid-host" class="view-grid-host" style="display:none"></div>
 </div>
 
 <!-- ============ KOPYA DOSYALAR ============ -->
@@ -691,17 +724,22 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <button id="dup-export-btn" class="btn-export" style="display:none" onclick="exportDuplicatesCSV(event)">Excel Export</button>
         </div>
     </div>
-    <!-- Ozet kartlar -->
-    <div class="cards" id="dup-summary-cards"></div>
-    <!-- Duplike gruplar tablosu -->
-    <div class="table-wrap"><table id="dup-table"></table></div>
-    <!-- Sayfalama -->
-    <div id="dup-pagination" style="display:flex;justify-content:center;gap:8px;margin-top:16px"></div>
-    <!-- Toplu islem butonlari -->
-    <div id="dup-actions" style="display:none;margin-top:16px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);display:flex;justify-content:space-between;align-items:center">
-        <span id="dup-selected-info" style="font-size:13px;color:var(--text-secondary)">0 dosya secildi</span>
-        <button class="btn btn-primary" onclick="archiveSelectedDuplicates()">Secilenleri Arsivle</button>
+    <!-- Gorsel mod (issue #84) -->
+    <div id="dup-visual-host">
+        <!-- Ozet kartlar -->
+        <div class="cards" id="dup-summary-cards"></div>
+        <!-- Duplike gruplar tablosu -->
+        <div class="table-wrap"><table id="dup-table"></table></div>
+        <!-- Sayfalama -->
+        <div id="dup-pagination" style="display:flex;justify-content:center;gap:8px;margin-top:16px"></div>
+        <!-- Toplu islem butonlari -->
+        <div id="dup-actions" style="display:none;margin-top:16px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);justify-content:space-between;align-items:center">
+            <span id="dup-selected-info" style="font-size:13px;color:var(--text-secondary)">0 dosya secildi</span>
+            <button class="btn btn-primary" onclick="archiveSelectedDuplicates()">Secilenleri Arsivle</button>
+        </div>
     </div>
+    <!-- Profesyonel mod (issue #84): entity-list of files -->
+    <div id="dup-grid-host" class="view-grid-host" style="display:none"></div>
 </div>
 
 <!-- ============ BUYUME ANALIZI ============ -->
@@ -743,6 +781,8 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <button class="btn btn-outline" onclick="exportNamingReport(event)" id="naming-export-btn" style="display:none">Excel Export</button>
         </div>
     </div>
+    <!-- Gorsel mod (issue #84) -->
+    <div id="naming-visual-host">
     <!-- Skor ve ozet kartlar -->
     <div class="cards" id="naming-summary-cards"></div>
 
@@ -794,15 +834,19 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <h3 class="panel-title" style="color:var(--warning)">En Iyi Uygulama Sapmalari (Best Practices)</h3>
         <div class="table-wrap"><table id="naming-bp-table"></table></div>
     </div>
+    </div><!-- /naming-visual-host -->
 
-    <!-- ============ Issue #80: Reusable entity-list (toplu islemler) ============ -->
-    <div class="panel" style="margin-top:20px">
-        <h3 class="panel-title">Ihlal Eden Dosyalar (Toplu Islemler)</h3>
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
-            Asagidaki tabloda en cok ihlal alan ilk dosyalar listelenir. XLSX export
-            tum ihlalleri (file × rule) dosyaya yazar.
+    <!-- Profesyonel mod (issue #84): entity-list (Gorsel modunda gizli) -->
+    <div id="naming-grid-host" class="view-grid-host" style="display:none">
+        <!-- ============ Issue #80: Reusable entity-list (toplu islemler) ============ -->
+        <div class="panel" style="margin-top:20px">
+            <h3 class="panel-title">Ihlal Eden Dosyalar (Toplu Islemler)</h3>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
+                Asagidaki tabloda en cok ihlal alan ilk dosyalar listelenir. XLSX export
+                tum ihlalleri (file × rule) dosyaya yazar.
+            </div>
+            <div id="mit-naming-container"></div>
         </div>
-        <div id="mit-naming-container"></div>
     </div>
 </div>
 
@@ -2253,6 +2297,84 @@ async function loadFrequency() {
             return `<tr class="clickable-row" onclick="showDrilldown('${f.label}', '/drilldown/frequency/${sid}?min_days=${minD}${maxParam}', {source_id:${sid}, filter_type:'frequency', min_days:${minD}${maxD?`, max_days:${maxD}`:''}})"><td>${f.label}</td><td>${staleBadge(minD)}</td><td>${formatNum(f.file_count)}</td><td>${f.total_size_formatted}</td><td>${total ? (f.file_count/total*100).toFixed(1)+'%' : '-'}</td></tr>`;
         }).join('')}</tbody>
     `;
+
+    // Issue #84 — wire view toggle (visual = histogram above; grid = file list).
+    window.__freqLastSourceId = sid;
+    _attachFrequencyViewToggle();
+}
+
+// Issue #84 — Gorsel ↔ Profesyonel mod toggle for Erisim Sikligi.
+function _renderFrequencyVisual() {
+    const v = document.getElementById('freq-visual-host');
+    const g = document.getElementById('freq-grid-host');
+    if (v) v.style.display = '';
+    if (g) g.style.display = 'none';
+}
+
+async function _renderFrequencyGrid() {
+    const v = document.getElementById('freq-visual-host');
+    const host = document.getElementById('freq-grid-host');
+    if (v) v.style.display = 'none';
+    host.style.display = '';
+    const sid = window.__freqLastSourceId
+        || document.getElementById('freq-source')?.value;
+    if (!sid) {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>';
+        return;
+    }
+    if (typeof renderEntityList !== 'function') {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">entity-list yuklenmedi</div>';
+        return;
+    }
+    host.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:12px">Dosyalar yukleniyor...</div>';
+    try {
+        // Pull a generous slice of files (any age >= 0 days) so the grid covers
+        // every band the chart shows. The drilldown endpoint already paginates
+        // server-side; entity-list re-paginates client-side.
+        const data = await api(`/drilldown/frequency/${sid}?min_days=0&page=1&limit=500`,
+            { silent: true });
+        const files = data.files || [];
+        const rows = files.map(f => ({
+            id: f.id,
+            file_path: f.file_path,
+            file_name: f.file_name || '',
+            file_size: f.file_size || 0,
+            file_size_formatted: f.file_size_formatted || formatSize(f.file_size || 0),
+            owner: f.owner || '',
+            last_access_time: (f.last_access_time || '').substring(0, 19),
+            last_modify_time: (f.last_modify_time || '').substring(0, 19),
+        }));
+        renderEntityList(host, {
+            rows: rows,
+            rowKey: 'id',
+            pageSize: 50,
+            searchKeys: ['file_path', 'file_name', 'owner'],
+            columns: [
+                {key: 'file_path', label: 'Dosya Yolu'},
+                {key: 'file_name', label: 'Dosya Adi'},
+                {key: 'file_size', label: 'Boyut',
+                 render: (v, row) => row.file_size_formatted || formatSize(v || 0)},
+                {key: 'last_access_time', label: 'Son Erisim'},
+                {key: 'last_modify_time', label: 'Son Degisiklik'},
+                {key: 'owner', label: 'Sahip'},
+            ],
+            emptyMessage: 'Dosya bulunamadi',
+        });
+    } catch (e) {
+        host.innerHTML = '<div style="padding:20px;color:var(--danger);font-size:12px">Liste yuklenemedi: ' +
+            (e && e.message ? e.message : e) + '</div>';
+    }
+}
+
+function _attachFrequencyViewToggle() {
+    const page = document.getElementById('page-frequency');
+    if (!page || typeof attachViewToggle !== 'function') return;
+    attachViewToggle(page, {
+        pageKey: 'frequency',
+        renderVisual: _renderFrequencyVisual,
+        renderGrid: _renderFrequencyGrid,
+        defaultMode: 'visual',
+    });
 }
 
 // ═══════════════════════════════════════════════════
@@ -3243,6 +3365,8 @@ async function loadNaming() {
     const sourceId = document.getElementById('naming-source')?.value;
     if (!sourceId) {
         document.getElementById('naming-summary-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>';
+        // Attach the toggle even without data so the user can switch modes.
+        _attachNamingViewToggle();
         return;
     }
 
@@ -3333,7 +3457,41 @@ async function loadNaming() {
 
         // Issue #80: reusable entity-list ile ihlal eden dosyalari listele
         renderMitNamingEntityList(sourceId, data);
+        _attachNamingViewToggle();
     } catch(e) { console.error('MIT naming load error:', e); }
+}
+
+// Issue #84 — Gorsel ↔ Profesyonel mod toggle for Adlandirma Uyumu.
+function _renderNamingVisual() {
+    const v = document.getElementById('naming-visual-host');
+    const g = document.getElementById('naming-grid-host');
+    if (v) v.style.display = '';
+    if (g) g.style.display = 'none';
+}
+
+function _renderNamingGrid() {
+    const v = document.getElementById('naming-visual-host');
+    const g = document.getElementById('naming-grid-host');
+    if (v) v.style.display = 'none';
+    if (g) g.style.display = '';
+    // entity-list itself is rendered by renderMitNamingEntityList() during
+    // loadNaming(); nothing else to do here. If the container is empty (e.g.
+    // user toggled before selecting a source), show a hint.
+    const host = document.getElementById('mit-naming-container');
+    if (host && !host.innerHTML.trim()) {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>';
+    }
+}
+
+function _attachNamingViewToggle() {
+    const page = document.getElementById('page-naming');
+    if (!page || typeof attachViewToggle !== 'function') return;
+    attachViewToggle(page, {
+        pageKey: 'naming',
+        renderVisual: _renderNamingVisual,
+        renderGrid: _renderNamingGrid,
+        defaultMode: 'visual',
+    });
 }
 
 // Issue #80 — entity-list component'ini mit-naming sayfasina baglar.
@@ -3736,6 +3894,9 @@ async function loadArchiveHistory(page) {
         const data = await api(url);
         const ops = data.operations || [];
 
+        // Cache for grid mode (issue #84).
+        window.__ahLastReport = { url: url, data: data };
+
         // Ozet kartlar
         const totalOps = data.total || 0;
         const archiveOps = ops.filter(o => o.operation_type === 'archive').length;
@@ -3788,7 +3949,73 @@ async function loadArchiveHistory(page) {
         } else {
             pag.innerHTML = '';
         }
+        _attachArchiveHistoryViewToggle();
     } catch(e) { console.error('Archive history error:', e); }
+}
+
+// Issue #84 — Gorsel ↔ Profesyonel mod toggle for Arsiv Gecmisi.
+function _renderArchiveHistoryVisual() {
+    const v = document.getElementById('ah-visual-host');
+    const g = document.getElementById('ah-grid-host');
+    if (v) v.style.display = '';
+    if (g) { g.style.display = 'none'; g.innerHTML = ''; }
+}
+
+function _renderArchiveHistoryGrid() {
+    const v = document.getElementById('ah-visual-host');
+    const host = document.getElementById('ah-grid-host');
+    if (v) v.style.display = 'none';
+    host.style.display = '';
+    if (typeof renderEntityList !== 'function') {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">entity-list yuklenmedi</div>';
+        return;
+    }
+    const cached = window.__ahLastReport;
+    const ops = (cached && cached.data) ? (cached.data.operations || []) : [];
+    if (!ops.length) {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Filtrelere uygun islem bulunamadi</div>';
+        return;
+    }
+    const rows = ops.map(o => ({
+        id: o.id,
+        started_at: (o.started_at || '').substring(0, 19),
+        operation_type: o.operation_type || '',
+        trigger_type: o.trigger_type || '',
+        trigger_detail: o.trigger_detail || '',
+        total_files: o.total_files || 0,
+        total_size: o.total_size || 0,
+        total_size_formatted: o.total_size_formatted || formatSize(o.total_size || 0),
+        status: o.status || '',
+    }));
+    renderEntityList(host, {
+        rows: rows,
+        rowKey: 'id',
+        pageSize: 50,
+        searchKeys: ['operation_type', 'trigger_type', 'trigger_detail', 'status'],
+        columns: [
+            {key: 'id', label: 'ID'},
+            {key: 'started_at', label: 'Tarih'},
+            {key: 'operation_type', label: 'Tur'},
+            {key: 'trigger_type', label: 'Tetikleyen'},
+            {key: 'trigger_detail', label: 'Detay'},
+            {key: 'total_files', label: 'Dosya'},
+            {key: 'total_size', label: 'Boyut',
+             render: (v, row) => row.total_size_formatted || formatSize(v || 0)},
+            {key: 'status', label: 'Durum'},
+        ],
+        emptyMessage: 'Islem bulunamadi',
+    });
+}
+
+function _attachArchiveHistoryViewToggle() {
+    const page = document.getElementById('page-archive-history');
+    if (!page || typeof attachViewToggle !== 'function') return;
+    attachViewToggle(page, {
+        pageKey: 'archive-history',
+        renderVisual: _renderArchiveHistoryVisual,
+        renderGrid: _renderArchiveHistoryGrid,
+        defaultMode: 'visual',
+    });
 }
 
 async function showOperationFiles(opId) {
@@ -3871,12 +4098,16 @@ async function loadDuplicates(page) {
     if (!sourceId) {
         document.getElementById('dup-summary-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>';
         document.getElementById('dup-table').innerHTML = '';
+        // Still attach the toggle so it appears even without a source.
+        _attachDuplicatesViewToggle();
         return;
     }
 
     try {
         const data = await api(`/reports/duplicates/${sourceId}?page=${dupCurrentPage}&page_size=50`);
         const groups = data.groups || [];
+        // Cache for grid mode (avoid re-fetching when user toggles view).
+        window.__dupLastReport = { sourceId: sourceId, page: dupCurrentPage, data: data };
 
         // Export butonu goster
         const expBtn = document.getElementById('dup-export-btn');
@@ -3942,7 +4173,74 @@ async function loadDuplicates(page) {
 
         dupSelectedFiles.clear();
         updateDupSelection();
+        _attachDuplicatesViewToggle();
     } catch(e) { console.error('Duplicates load error:', e); }
+}
+
+// Issue #84 — Gorsel ↔ Profesyonel mod toggle for Kopya Dosyalar.
+function _renderDuplicatesVisual() {
+    document.getElementById('dup-visual-host').style.display = '';
+    document.getElementById('dup-grid-host').style.display = 'none';
+    document.getElementById('dup-grid-host').innerHTML = '';
+}
+
+function _renderDuplicatesGrid() {
+    const host = document.getElementById('dup-grid-host');
+    document.getElementById('dup-visual-host').style.display = 'none';
+    host.style.display = '';
+    if (typeof renderEntityList !== 'function') {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">entity-list yuklenmedi</div>';
+        return;
+    }
+    const cached = window.__dupLastReport;
+    if (!cached || !cached.data) {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>';
+        return;
+    }
+    const groups = cached.data.groups || [];
+    // Flatten group → file rows; expose dup_group_id and last_modify on the row.
+    const rows = [];
+    groups.forEach((g, gi) => {
+        (g.files || []).forEach(f => {
+            rows.push({
+                id: f.id,
+                file_path: f.file_path,
+                file_name: f.file_name || g.file_name,
+                size: g.file_size,
+                size_formatted: g.file_size_formatted || formatSize(g.file_size || 0),
+                dup_group_id: gi + 1,
+                last_modify: (f.last_modify_time || '').substring(0, 19),
+                owner: f.owner || '',
+            });
+        });
+    });
+    renderEntityList(host, {
+        rows: rows,
+        rowKey: 'id',
+        pageSize: 50,
+        searchKeys: ['file_path', 'file_name', 'owner'],
+        columns: [
+            {key: 'file_path', label: 'Dosya Yolu'},
+            {key: 'file_name', label: 'Dosya Adi'},
+            {key: 'size', label: 'Boyut',
+             render: (v, row) => row.size_formatted || formatSize(v || 0)},
+            {key: 'dup_group_id', label: 'Grup'},
+            {key: 'last_modify', label: 'Son Degisiklik'},
+            {key: 'owner', label: 'Sahip'},
+        ],
+        emptyMessage: 'Kopya dosya bulunamadi',
+    });
+}
+
+function _attachDuplicatesViewToggle() {
+    const page = document.getElementById('page-duplicates');
+    if (!page || typeof attachViewToggle !== 'function') return;
+    attachViewToggle(page, {
+        pageKey: 'duplicates',
+        renderVisual: _renderDuplicatesVisual,
+        renderGrid: _renderDuplicatesGrid,
+        defaultMode: 'visual',
+    });
 }
 
 function toggleDupGroup(idx) {
