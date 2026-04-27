@@ -774,6 +774,42 @@ class Database:
             "ON quarantine_log(original_path)"
         )
 
+        # Two-person approval framework (issue #112). Generic queue for
+        # high-impact admin operations (snapshot restore, archive_bulk,
+        # purge_bulk, retention_apply). Phase 1 wires snapshot_restore as
+        # the pilot; other ops follow in subsequent PRs. payload_json
+        # holds the operation-specific arguments. Self-approval is
+        # refused server-side via approve(): the row records both the
+        # requested_by and approved_by users so the executor can verify
+        # they differ.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS pending_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                requested_by TEXT NOT NULL,
+                requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                approved_by TEXT,
+                approved_at TIMESTAMP,
+                rejected_by TEXT,
+                rejected_at TIMESTAMP,
+                rejection_reason TEXT,
+                expires_at TIMESTAMP NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','approved','rejected','expired','executed')),
+                executed_at TIMESTAMP,
+                executed_result_json TEXT
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pa_status "
+            "ON pending_approvals(status, expires_at)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pa_type "
+            "ON pending_approvals(operation_type)"
+        )
+
         # FTS5 full-text search (arsivlenmis dosyalar icin)
         cur.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS archived_files_fts USING fts5(
