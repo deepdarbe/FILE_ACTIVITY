@@ -605,6 +605,51 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             logger.warning("OperationsRegistry init failed: %s", e)
             app.state.operations = None
 
+    # Issue #132 — shared helper for endpoints that need to return a
+    # "scan in progress" placeholder when no cached summary exists yet.
+    # The shape is fixed: {has_data, scan_in_progress, scan_id,
+    # progress_pct, message, reason}. progress_pct comes from the
+    # in-memory scan progress dict (file_count vs. an estimate); when
+    # we have no estimate the bar is rendered as indeterminate by the
+    # frontend.
+    def _scan_in_progress_response(source_id: int, running_scan_id: int,
+                                   reason: str = "scan_in_progress") -> dict:
+        from src.scanner.file_scanner import get_scan_progress
+        progress = get_scan_progress(source_id) or {}
+        if not isinstance(progress, dict):
+            progress = {}
+        # Heuristic %: file_count vs. last-known total from previous scan
+        # if any. Falls back to None (frontend renders indeterminate).
+        file_count = int(progress.get("file_count", 0) or 0)
+        pct: Optional[int] = None
+        try:
+            with db.get_read_cursor() as cur:
+                cur.execute(
+                    "SELECT total_files FROM scan_runs "
+                    "WHERE source_id = ? AND status = 'completed' "
+                    "ORDER BY completed_at DESC LIMIT 1",
+                    (source_id,),
+                )
+                row = cur.fetchone()
+                last_total = int(row["total_files"]) if row and row.get("total_files") else 0
+                if last_total > 0 and file_count > 0:
+                    pct = max(0, min(99, int(file_count * 100 / last_total)))
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("progress pct calc failed: %s", e)
+        if pct is None:
+            message = "Tarama devam ediyor"
+        else:
+            message = f"Tarama devam ediyor, %{pct} tamamlandi"
+        return {
+            "has_data": False,
+            "scan_in_progress": True,
+            "scan_id": running_scan_id,
+            "progress_pct": pct,
+            "file_count": file_count,
+            "message": message,
+            "reason": reason,
+        }
+
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -727,15 +772,29 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     _scan_threads = {}  # source_id -> thread
     _scan_results = {}  # source_id -> result
 
+    # Issue #131 — keep a process-local handle to the active FileScanner
+    # per source so the stop endpoint can flip its cancel_event without
+    # racing with the worker thread's local references.
+    _active_scanners: dict[int, "object"] = {}
+
     @app.post("/api/scan/{source_id}")
     async def run_scan(source_id: int):
-        from src.scanner.file_scanner import FileScanner
+        from src.scanner.file_scanner import (
+            FileScanner,
+            get_or_create_cancel_event,
+            reset_cancel_event,
+        )
 
         # Zaten tarama yapiliyor mu?
         if source_id in _scan_threads and _scan_threads[source_id].is_alive():
             return {"status": "already_running", "message": "Bu kaynak zaten taraniyor"}
 
         src = _get_source(db, source_id)
+
+        # Fresh cancel_event for this scan (clears any stale ``set()`` left
+        # over from a previous run that completed without a stop).
+        reset_cancel_event(source_id)
+        cancel_event = get_or_create_cancel_event(source_id)
 
         def _scan_worker():
             # Issue #125: register the scan in the operations tracker so the
@@ -754,9 +813,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 logger.debug("ops.start(scan) failed: %s", e)
             try:
                 scanner = FileScanner(db, config)
+                # Wire the shared cancel_event so /api/scan/{id}/stop can
+                # break out of the main scan loop at the next batch.
+                scanner.cancel_event = cancel_event
+                _active_scanners[source_id] = scanner
                 result = scanner.scan_source(src.id, src.name, src.unc_path)
                 _scan_results[source_id] = result
             finally:
+                _active_scanners.pop(source_id, None)
                 try:
                     if registry is not None and op_id:
                         registry.finish(op_id)
@@ -769,6 +833,133 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         t.start()
 
         return {"status": "started", "message": f"Tarama baslatildi: {src.name}"}
+
+    @app.post("/api/scan/{source_id}/stop")
+    async def stop_scan(source_id: int):
+        """Issue #131 — kullanici tetikli iptal.
+
+        Resolves the active scan_run for ``source_id``, sets the shared
+        cancel_event, waits up to 30s for the worker thread to exit
+        cleanly, and otherwise force-marks the scan_run as
+        ``status='cancelled'``. Always returns 200 with a JSON body
+        describing the outcome (cancelled, partial_files, scan_id).
+
+        - 200 with cancelled=False if no scan was running.
+        - 200 with cancelled=True if cancel succeeded (clean or forced).
+
+        Audit: writes a single ``scan_cancelled`` audit event so admins
+        can later trace user-initiated stops in the chain. Failures to
+        write audit are non-fatal (best-effort).
+        """
+        from src.scanner.file_scanner import (
+            get_or_create_cancel_event,
+            get_scan_progress,
+        )
+
+        thread = _scan_threads.get(source_id)
+        is_running = thread is not None and thread.is_alive()
+
+        # Look up the active scan_run id (status='running').
+        active_scan_id: Optional[int] = None
+        try:
+            incomplete = db.get_incomplete_scan(source_id)
+            if incomplete:
+                active_scan_id = incomplete.get("scan_id")
+        except Exception as e:
+            logger.warning("stop_scan: get_incomplete_scan failed: %s", e)
+
+        if not is_running and active_scan_id is None:
+            return {
+                "cancelled": False,
+                "scan_id": None,
+                "partial_files": 0,
+                "reason": "no_active_scan",
+            }
+
+        # Capture partial file count from progress before the worker exits.
+        progress = get_scan_progress(source_id) or {}
+        partial_before = int(progress.get("file_count", 0) or 0) \
+            if isinstance(progress, dict) else 0
+
+        # Signal cancellation. Shared event — worker thread checks at
+        # every batch boundary (default 1000 files).
+        cancel_event = get_or_create_cancel_event(source_id)
+        cancel_event.set()
+
+        # Wait up to 30s for the worker to exit on its own. The scan
+        # thread flushes pending rows, marks the scan_run as cancelled,
+        # and returns; we don't want to block the request indefinitely.
+        if is_running and thread is not None:
+            thread.join(timeout=30.0)
+
+        forced = False
+        if is_running and thread is not None and thread.is_alive():
+            # Worker still running after 30s — log + force the DB row to
+            # ``cancelled`` so the dashboard doesn't keep showing a
+            # 'running' scan that's actually a zombie. The thread will
+            # eventually finish on its own (or the process restarts).
+            logger.warning(
+                "stop_scan: thread still alive after 30s for source_id=%d, "
+                "force-marking scan_run as cancelled",
+                source_id,
+            )
+            forced = True
+            if active_scan_id is not None:
+                try:
+                    db.complete_scan_run(
+                        active_scan_id,
+                        partial_before,
+                        int(progress.get("total_size", 0) or 0)
+                            if isinstance(progress, dict) else 0,
+                        int(progress.get("errors", 0) or 0)
+                            if isinstance(progress, dict) else 0,
+                        "cancelled",
+                    )
+                except Exception as e:
+                    logger.warning("stop_scan: force-mark cancelled failed: %s", e)
+
+        # Final partial count: prefer the worker's post-exit progress,
+        # which reflects the last flushed batch.
+        progress_after = get_scan_progress(source_id) or {}
+        partial_after = int(progress_after.get("file_count", 0) or 0) \
+            if isinstance(progress_after, dict) else partial_before
+
+        # Issue #129 ops registry: best-effort cleanup if worker didn't
+        # exit cleanly (the worker's finally-block normally calls
+        # finish; this is a safety net for the forced path).
+        if forced:
+            registry = getattr(app.state, "operations", None)
+            if registry is not None:
+                try:
+                    for op in list(registry.list_active()):
+                        if op.type == "scan" and \
+                                op.metadata.get("source_id") == source_id:
+                            registry.finish(op.op_id)
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.debug("ops registry cleanup failed: %s", e)
+
+        # Audit (best-effort).
+        try:
+            db.insert_audit_event_simple(
+                source_id=source_id,
+                event_type="scan_cancelled",
+                username="admin",
+                file_path=None,
+                details=(
+                    f"scan_id={active_scan_id};partial_files={partial_after};"
+                    f"forced={forced}"
+                ),
+                detected_by="dashboard",
+            )
+        except Exception as e:  # pragma: no cover - audit best-effort
+            logger.warning("scan_cancelled audit yazilamadi: %s", e)
+
+        return {
+            "cancelled": True,
+            "scan_id": active_scan_id,
+            "partial_files": partial_after,
+            "forced": forced,
+        }
 
     @app.get("/api/scan/progress/{source_id}")
     async def scan_progress(source_id: int):
@@ -919,8 +1110,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/full/{source_id}")
     async def report_full(source_id: int):
+        """Issue #132: when no completed scan AND a scan is running,
+        return the scan-in-progress banner shape rather than forcing
+        ReportGenerator to compute over an empty/partial table.
+        """
         from src.analyzer.report_generator import ReportGenerator
         src = _get_source(db, source_id)
+        completed_scan_id = db.get_latest_scan_id(src.id, include_running=False)
+        if completed_scan_id is None:
+            running_scan_id = db.is_scan_running(src.id)
+            if running_scan_id is not None:
+                return _scan_in_progress_response(src.id, running_scan_id,
+                                                  reason="no_completed_scan")
         with _track_op(
             "analysis",
             f"Tam rapor: {src.name}",
@@ -1525,6 +1726,10 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         refresh=true ile yeniden hesaplamayi force ederek cache'i tazeler.
         Cache'te yoksa ilk cagri agir; sonraki cagrilar anlik.
+
+        Issue #132: when no cache and a scan is running, return the
+        scan-in-progress banner shape instead of forcing a heavy
+        InsightsEngine compute that would contend with the writer.
         """
         from src.analyzer.ai_insights import InsightsEngine
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
@@ -1533,6 +1738,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             if cached:
                 cached["from_cache"] = True
                 return cached
+
+        # No cache. If a scan is running, return the banner instead of
+        # blocking on a heavy compute that fights the writer.
+        if not refresh:
+            running_scan_id = db.is_scan_running(source_id)
+            if running_scan_id is not None:
+                return _scan_in_progress_response(source_id, running_scan_id,
+                                                  reason="insights_not_cached")
 
         engine = InsightsEngine(db)
         result = engine.generate_insights(source_id)
@@ -1890,15 +2103,28 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         Summary henuz hesaplanmamissa (ornek: scan calisiyor, eski scan)
         frontend kendi fallback'ine duser (has_data=false).
+
+        Issue #132: when no cached summary exists AND a scan is currently
+        running, return ``{has_data: false, scan_in_progress: true, ...}``
+        so the frontend can render a banner ("Tarama devam ediyor, %35
+        tamamlandi") inside the page instead of an empty state.
         """
         from src.utils.size_formatter import format_size
         _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if not scan_id:
+            running_scan_id = db.is_scan_running(source_id)
+            if running_scan_id is not None:
+                return _scan_in_progress_response(source_id, running_scan_id,
+                                                  reason="no_completed_scan")
             return {"has_data": False, "reason": "no_completed_scan"}
 
         kpi = db.get_scan_summary(scan_id)
         if not kpi:
+            running_scan_id = db.is_scan_running(source_id)
+            if running_scan_id is not None:
+                return _scan_in_progress_response(source_id, running_scan_id,
+                                                  reason="summary_not_computed")
             return {"has_data": False, "scan_id": scan_id,
                     "reason": "summary_not_computed"}
 
@@ -3154,9 +3380,42 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return db.get_db_stats()
 
     @app.post("/api/db/cleanup")
-    async def db_cleanup(keep_last: int = Query(default=5, ge=1, le=50)):
-        """Eski tarama verilerini temizle. Son N taramayi korur."""
-        result = db.cleanup_old_scans(keep_last_n=keep_last)
+    async def db_cleanup(
+        keep_last: Optional[int] = Query(
+            default=None, ge=0, le=100,
+            description="Son N taramayi koru. 0 = hepsini sil.",
+        ),
+        keep_last_n_scans: Optional[int] = Query(
+            default=None, ge=0, le=100,
+            description="Alias of keep_last (config naming).",
+        ),
+    ):
+        """Eski tarama verilerini temizle. Son N taramayi korur.
+
+        Issue #133: customer hit ``?keep_last=0`` and got 422 because
+        the previous handler used ``ge=1``. The endpoint now accepts:
+
+        - ``keep_last`` (default 5, range 0..100) — original shape.
+        - ``keep_last_n_scans`` — alias matching the config / DB
+          method parameter name. If both are passed,
+          ``keep_last_n_scans`` wins (it's the newer, more explicit
+          spelling).
+
+        ``keep_last=0`` is a valid request: it deletes every scan_run
+        for every source. The audit chain and orphan cleanup branches
+        in :py:meth:`Database.cleanup_old_scans` cope with N=0 because
+        they use ``OFFSET ?`` which yields the full set when N=0.
+        """
+        # Resolve which alias to use. Newer name wins when both given.
+        effective: int
+        if keep_last_n_scans is not None:
+            effective = int(keep_last_n_scans)
+        elif keep_last is not None:
+            effective = int(keep_last)
+        else:
+            effective = 5  # legacy default
+
+        result = db.cleanup_old_scans(keep_last_n=effective)
         return result
 
     @app.post("/api/db/optimize")

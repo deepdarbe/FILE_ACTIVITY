@@ -6,11 +6,14 @@ Hem UNC hem lokal yollari destekler.
 Tarama sirasinda ilerleme bilgisi loglar.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import time
 import fnmatch
 import logging
+import threading
 import unicodedata
 from datetime import datetime
 
@@ -457,12 +460,48 @@ logger = logging.getLogger("file_activity.scanner")
 # Global scan progress tracking (for dashboard API)
 _scan_progress = {}
 
+# Issue #131 — process-local registry of cancellation events keyed by
+# source_id. The dashboard ``POST /api/scan/{id}/stop`` endpoint sets the
+# event; the scan loop checks ``is_set()`` after each batch and exits
+# cleanly. The registry is held in a module-level dict so the stop
+# endpoint can find the event without holding a Scanner reference (the
+# scan thread owns the FileScanner; the request thread does not).
+_cancel_events: dict[int, threading.Event] = {}
+_cancel_events_lock = threading.Lock()
+
 
 def get_scan_progress(source_id: int = None) -> dict:
     """Tarama ilerleme durumunu dondur (dashboard icin)."""
     if source_id and source_id in _scan_progress:
         return _scan_progress[source_id]
     return _scan_progress
+
+
+def get_or_create_cancel_event(source_id: int) -> threading.Event:
+    """Return (creating if needed) the ``threading.Event`` for ``source_id``.
+
+    A single event is shared between the scan worker and the stop
+    endpoint. Calling :py:meth:`Event.set` causes the scan loop to break
+    on its next batch boundary.
+    """
+    with _cancel_events_lock:
+        ev = _cancel_events.get(source_id)
+        if ev is None:
+            ev = threading.Event()
+            _cancel_events[source_id] = ev
+        return ev
+
+
+def get_cancel_event(source_id: int) -> threading.Event | None:
+    """Lookup-only — return the event for ``source_id`` or None."""
+    with _cancel_events_lock:
+        return _cancel_events.get(source_id)
+
+
+def reset_cancel_event(source_id: int) -> None:
+    """Drop the cancel event for ``source_id`` (next scan starts fresh)."""
+    with _cancel_events_lock:
+        _cancel_events.pop(source_id, None)
 
 
 class FileScanner:
@@ -479,6 +518,12 @@ class FileScanner:
         self._ntfs_access_checked = False
         # Keep the full config dict around so backends can read their own keys.
         self._full_config = config if isinstance(config, dict) else {"scanner": self.config}
+        # Issue #131 — cancellation. ``cancel_event`` is checked at every
+        # batch boundary inside scan_source; setting it from another
+        # thread causes the loop to break and the partial scan_run row
+        # to be marked ``status='cancelled'``. Default-constructed (not
+        # set) so the very first scan runs to completion.
+        self.cancel_event: threading.Event = threading.Event()
 
     def _select_backend(self, path: str) -> ScannerBackend:
         """Return the walk backend to use for ``path``.
@@ -579,6 +624,10 @@ class FileScanner:
         # any failure the stager silently falls back to bulk_insert.
         stager = ParquetStager(self.db, self._full_config)
 
+        # Initialise loop-exit status now so the cancel-break path inside
+        # the loop can override it before the try-block's final assignment.
+        status = "completed"
+
         try:
             backend = self._select_backend(path)
             for record in backend.walk(path):
@@ -635,6 +684,18 @@ class FileScanner:
                         # scan_runs'i guncelle (dashboard aninda gorsun)
                         if file_count % 5000 == 0:
                             self.db.update_scan_progress(scan_id, file_count, total_size)
+                        # Issue #131 — cancellation check at batch boundary.
+                        # Setting cancel_event from /api/scan/{id}/stop
+                        # causes us to break here; partial rows are
+                        # already flushed via stager.append above so
+                        # nothing is lost.
+                        if self.cancel_event.is_set():
+                            logger.info(
+                                "Tarama iptal istegi alindi (scan_id=%d, %d dosya)",
+                                scan_id, file_count,
+                            )
+                            status = "cancelled"
+                            break
 
                     # Ilerleme guncelle (her 500 dosyada veya 2 saniyede bir)
                     now = time.time()
@@ -674,7 +735,9 @@ class FileScanner:
             except Exception as e:
                 logger.warning("Stager final flush hatasi (kritik degil): %s", e)
 
-            status = "completed"
+            # Don't override "cancelled" set by the in-loop break above.
+            if status != "cancelled":
+                status = "completed"
 
         except Exception as e:
             status = "failed"

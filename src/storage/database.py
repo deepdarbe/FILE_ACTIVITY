@@ -4,6 +4,8 @@ Tum tablo olusturma, CRUD islemleri ve FTS5 arama bu modulde yapilir.
 Tek dosya, sifir bagimlilk - kurulum gerektirmez.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sqlite3
@@ -282,6 +284,102 @@ class Database:
                 yield cur
             finally:
                 cur.close()
+
+    # ──────────────────────────────────────────────
+    # Issue #132 — separate read-only connection for dashboards.
+    #
+    # Heavy reads (Overview, full Reports, Insights, frequency/type/size)
+    # were timing out during a scan because the scanner's writer holds
+    # the WAL writer lock and the thread-local pool was sharing one
+    # connection across the dashboard request and the scanner. SQLite
+    # supports a ``mode=ro`` URI connection that opens a *separate*
+    # read-only handle which can serve queries while the writer is
+    # active (WAL gives readers a consistent snapshot; ``ro`` skips
+    # the busy-handler retry loop the writer pool was burning).
+    #
+    # ``get_read_cursor`` is intentionally short-lived: it opens a fresh
+    # ``sqlite3.connect()`` per call, yields a cursor, and closes the
+    # connection on exit. Endpoints that need many reads in one request
+    # should call it once and reuse the cursor inside the with-block.
+    # Writers MUST keep using ``get_cursor`` — this connection will
+    # raise ``sqlite3.OperationalError: attempt to write a readonly
+    # database`` on any UPDATE/INSERT/DELETE.
+    # ──────────────────────────────────────────────
+
+    def _read_uri(self) -> str:
+        """Return the ``mode=ro`` URI for the current DB path.
+
+        Uses ``cache=shared`` so multiple in-flight read connections
+        coexist with the WAL writer cleanly. Path is URL-quoted so
+        paths with spaces / special chars work on Windows.
+        """
+        from urllib.parse import quote
+        # SQLite URI: file:<path>?mode=ro&cache=shared
+        # ``cache=shared`` lets repeated open()s reuse the same page
+        # cache; cuts cold-read latency on the 64MB cache PRAGMA.
+        # Use quote(safe='/:\\') so Windows drive letters survive
+        # (backslash assignment isolated from the f-string for py3.11).
+        safe_chars = "/:\\"
+        quoted = quote(self.db_path, safe=safe_chars)
+        return f"file:{quoted}?mode=ro&cache=shared"
+
+    @contextmanager
+    def get_read_cursor(self):
+        """Yield a cursor on a *separate* read-only connection.
+
+        - Opens via ``sqlite3.connect(uri, uri=True)`` with ``mode=ro``.
+        - Independent of the thread-local writer pool — does not
+          contend with the scanner's write lock.
+        - Connection is short-lived (per call) and always closed in the
+          ``finally`` branch, even if the cursor raises.
+
+        Read-only enforcement is the SQLite layer's job (it will refuse
+        any DML); callers don't need to remember the convention.
+        """
+        uri = self._read_uri()
+        conn = sqlite3.connect(uri, uri=True, timeout=30,
+                               check_same_thread=False)
+        conn.row_factory = dict_factory
+        try:
+            cur = conn.cursor()
+            try:
+                yield cur
+            finally:
+                cur.close()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    # ──────────────────────────────────────────────
+    # Issue #132 — scan-in-progress helper (#131 stop endpoint reuses
+    # ``get_incomplete_scan``; this is the read-side equivalent that
+    # endpoints call when their cache is empty to render a friendly
+    # banner instead of "no data" / 500).
+    # ──────────────────────────────────────────────
+
+    def is_scan_running(self, source_id: int) -> Optional[int]:
+        """Return the active scan_id for ``source_id`` or None.
+
+        Implementation note: uses :py:meth:`get_read_cursor` so this
+        check itself never contends with a running scan's writer
+        lock — recursion-free because the read cursor is independent
+        of the thread-local writer pool.
+        """
+        try:
+            with self.get_read_cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM scan_runs "
+                    "WHERE source_id = ? AND status = 'running' "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (source_id,),
+                )
+                row = cur.fetchone()
+                return row["id"] if row else None
+        except sqlite3.OperationalError as e:
+            logger.debug("is_scan_running read failed: %s", e)
+            return None
 
     # ──────────────────────────────────────────────
     # Tablo olusturma
