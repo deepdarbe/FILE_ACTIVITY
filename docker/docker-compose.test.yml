@@ -1,0 +1,27 @@
+# FILE_ACTIVITY — local test compose (issue #91, Phase 1).
+#
+# Single `pytest` service. Phases 2/4 will add `samba` and `e2e` services;
+# they are intentionally out of scope here.
+#
+# Run from the repo root via the wrapper:
+#     ./scripts/run-tests.sh
+# or directly:
+#     docker compose -f docker/docker-compose.test.yml run --rm --build pytest
+#
+# Notes:
+#   * `context: ..` so the build sees the entire repo (Dockerfile expects
+#     requirements*.txt at the root).
+#   * The bind mount makes source edits visible without rebuilding — useful
+#     for fast iteration. The wrapper script defaults to --build so CI-like
+#     "fresh image" runs are still one command.
+services:
+  pytest:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    image: fa-test:latest
+    volumes:
+      - ../:/app
+    working_dir: /app
+    # Override at the CLI: `... run --rm pytest <args>`.
+    command: ["--tb=short", "tests/", "--ignore=tests/bench"]

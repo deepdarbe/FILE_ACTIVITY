@@ -1,0 +1,44 @@
+# FILE_ACTIVITY — Docker build context exclusions (issue #91, Phase 1).
+#
+# Mirrors .gitignore plus a few extras the test image never needs. Keeping
+# the context small matters because docker-compose builds with `context: ..`
+# (i.e. the whole repo) and every byte gets streamed to the daemon.
+
+# ── from .gitignore ──────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.egg-info/
+.env
+.venv/
+venv/
+node_modules/
+.claude/
+*.zip
+*.exe
+temp_netwrix/
+bench_history.jsonl
+
+# ── extras ───────────────────────────────────────────────────────────────
+.git
+.github
+logs/
+reports/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Don't ship the docker assets back into the image — `COPY . .` would
+# otherwise nest docker/ inside /app which is harmless but noisy.
+docker/
+.dockerignore
