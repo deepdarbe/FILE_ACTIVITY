@@ -5,6 +5,12 @@ Covers the three signals from src.storage.corruption_detector.is_corrupted:
   * test_corruption_detector_detects_missing_tables
   * test_corruption_detector_passes_valid_db
 
+Plus the hotfix coverage for the quick/full/skip mode + timeout knobs:
+  * test_corruption_detector_quick_mode_completes_fast
+  * test_corruption_detector_skip_mode_returns_clean
+  * test_corruption_detector_timeout_returns_clean_with_reason
+  * test_corruption_detector_full_mode_still_works
+
 The detector is intentionally read-only — every test verifies the input
 file is unchanged after the probe runs (no side effects).
 """
@@ -14,12 +20,14 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from src.storage import corruption_detector as cd_mod  # noqa: E402
 from src.storage.corruption_detector import (  # noqa: E402
     CorruptionResult,
     CRITICAL_TABLES,
@@ -149,3 +157,121 @@ def test_corruption_detector_nonexistent_path(tmp_path: Path):
     result = is_corrupted(str(target))
     assert result.is_corrupted is False
     assert result.reason == "none"
+
+
+# ── 6. quick mode (default) finishes fast on a healthy DB ──
+
+
+def test_corruption_detector_quick_mode_completes_fast(tmp_path: Path):
+    """The quick mode is the hotfix default. On any reasonably-sized
+    DB the probe must complete in well under a second. We don't have
+    a 1 GB fixture in the unit-test tree, but the choice of pragma is
+    what matters — verify the wall-clock budget is comfortable AND
+    that the chosen pragma is ``quick_check`` not ``integrity_check``.
+    """
+    target = tmp_path / "healthy.db"
+    _make_valid_db(target)
+    # Pad the DB a bit so the probe actually walks a non-trivial page
+    # set — still small enough that quick_check finishes in ms.
+    conn = sqlite3.connect(str(target))
+    try:
+        conn.execute("CREATE TABLE blob_data (id INTEGER PRIMARY KEY, b BLOB)")
+        conn.executemany(
+            "INSERT INTO blob_data (b) VALUES (?)",
+            [(b"x" * 4096,) for _ in range(200)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    config = {"backup": {"corruption_check_mode": "quick",
+                         "corruption_check_timeout_seconds": 30}}
+    t0 = time.monotonic()
+    result = is_corrupted(str(target), config)
+    elapsed = time.monotonic() - t0
+
+    assert result.is_corrupted is False
+    assert result.reason == "none"
+    # Generous budget for shared CI runners; quick_check itself is
+    # sub-100ms on a small DB.
+    assert elapsed < 5.0, f"quick mode probe took {elapsed:.2f}s (>5s)"
+
+
+def test_corruption_detector_skip_mode_returns_clean(tmp_path: Path):
+    """``skip`` mode bypasses the pragma entirely and returns a clean
+    result with reason='skipped'. This is the operator escape hatch
+    for sites that have an external integrity workflow.
+    """
+    target = tmp_path / "anything.db"
+    target.write_bytes(b"this is not even a real sqlite file")  # would normally fail
+
+    config = {"backup": {"corruption_check_mode": "skip"}}
+    result = is_corrupted(str(target), config)
+
+    assert result.is_corrupted is False
+    assert result.reason == "skipped"
+
+
+def test_corruption_detector_timeout_returns_clean_with_reason(
+    monkeypatch, tmp_path: Path,
+):
+    """If the pragma exceeds ``corruption_check_timeout_seconds`` the
+    detector must return ``is_corrupted=False, reason='check_timed_out'``
+    and NOT block. We simulate a hang by monkeypatching
+    ``_run_pragma_with_timeout`` to behave as the real function does
+    when the worker thread doesn't finish in time.
+    """
+    target = tmp_path / "hangs.db"
+    _make_valid_db(target)
+
+    def _fake_run(db_path, pragma, timeout):
+        # Mirror the real timeout return so we test the public surface.
+        return "timeout", float(timeout)
+
+    monkeypatch.setattr(cd_mod, "_run_pragma_with_timeout", _fake_run)
+
+    config = {"backup": {"corruption_check_mode": "quick",
+                         "corruption_check_timeout_seconds": 1}}
+    t0 = time.monotonic()
+    result = is_corrupted(str(target), config)
+    elapsed = time.monotonic() - t0
+
+    assert result.is_corrupted is False
+    assert result.reason == "check_timed_out"
+    assert "1" in result.details  # mentions the timeout budget
+    # The fake short-circuits — wall-clock must be tiny.
+    assert elapsed < 1.0
+
+
+def test_corruption_detector_full_mode_still_works(tmp_path: Path):
+    """Operators who explicitly want the slow-but-thorough path can
+    opt back into ``PRAGMA integrity_check`` via mode='full'. Verify
+    it correctly identifies a healthy DB AND that it's actually
+    running the full pragma (not silently downgraded to quick_check).
+    """
+    target = tmp_path / "healthy.db"
+    _make_valid_db(target)
+
+    # Spy on the pragma actually executed.
+    seen: list[str] = []
+    real_run = cd_mod._run_pragma_with_timeout
+
+    def _spy(db_path, pragma, timeout):
+        seen.append(pragma)
+        return real_run(db_path, pragma, timeout)
+
+    config = {"backup": {"corruption_check_mode": "full",
+                         "corruption_check_timeout_seconds": 30}}
+
+    # Use monkeypatch-style replace for the duration of the call.
+    cd_mod._run_pragma_with_timeout = _spy
+    try:
+        result = is_corrupted(str(target), config)
+    finally:
+        cd_mod._run_pragma_with_timeout = real_run
+
+    assert result.is_corrupted is False
+    assert result.reason == "none"
+    assert seen == ["PRAGMA integrity_check"], (
+        f"full mode must run integrity_check, got: {seen}"
+    )

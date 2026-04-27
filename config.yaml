@@ -23,6 +23,19 @@ backup:
   # and replaced from the latest snapshot. Default false — opt-in only;
   # operators should review and consciously enable.
   auto_restore_on_corruption: false
+  # Hotfix: which pragma the bootstrap corruption probe runs.
+  #   "quick" (default) — PRAGMA quick_check, ~100x faster than
+  #     integrity_check on multi-GB DBs (skips index reconciliation);
+  #     still catches malformed pages / bad headers / disk image errors.
+  #   "full"            — PRAGMA integrity_check, slow on big DBs but
+  #     also reconciles every index. Use when ops suspect corruption.
+  #   "skip"            — disable the probe entirely (NOT recommended
+  #     unless you have an external integrity workflow).
+  corruption_check_mode: "quick"
+  # Hard cap on the probe (seconds). If the pragma doesn't return in
+  # this budget the probe aborts and assumes healthy + logs a WARNING.
+  # Prevents a slow/locked DB from hanging dashboard startup forever.
+  corruption_check_timeout_seconds: 30
 
 database:
   path: "data/file_activity.db"    # SQLite veritabani dosyasi
