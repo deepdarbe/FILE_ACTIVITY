@@ -1459,6 +1459,26 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 </div>
 </div>
 
+<!-- Folder Browser Modal (Issue #82 Bug 4 / Issue #105) -->
+<div class="modal-overlay" id="modal-folder-browser">
+<div class="modal" style="max-width:760px;width:90%">
+    <h3>📁 Klasor Sec</h3>
+    <div class="folder-path" style="border-radius:6px;border:1px solid var(--border);margin-bottom:10px">
+        <input id="fb-path-input" placeholder="Yol girin (orn: C:\\ veya \\\\sunucu\\paylasim)" onkeydown="if(event.key==='Enter'){event.preventDefault();folderBrowserGo();}">
+        <button class="btn btn-sm btn-outline" onclick="folderBrowserUp()" title="Ust dizin">⬆</button>
+        <button class="btn btn-sm btn-outline" onclick="folderBrowserGo()">Git</button>
+    </div>
+    <div id="fb-error" style="display:none;background:#7f1d1d;color:#fca5a5;border:1px solid #ef4444;padding:10px 12px;border-radius:6px;margin-bottom:10px;font-size:12px"></div>
+    <div class="folder-browser" id="fb-list" style="min-height:300px;max-height:420px">
+        <div style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</div>
+    </div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-folder-browser')">Iptal</button>
+        <button class="btn btn-primary" onclick="folderBrowserConfirm()">Sec</button>
+    </div>
+</div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════════
 // GLOBAL STATE
@@ -2008,6 +2028,178 @@ function browsePath() {
 function selectBrowsePath(path) {
     document.getElementById('src-path').value = path;
     document.getElementById('folder-browser-wrap').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════
+// FOLDER BROWSER MODAL (Issue #82 Bug 4 / #105)
+// ─── Generic folder picker backed by /api/system/list-dir.
+// Opens #modal-folder-browser, lets the user click into directories,
+// returns the chosen path to the original input (default: src-path).
+// Localhost-only on the backend; remote callers see a friendly message.
+// ═══════════════════════════════════════════════════
+let folderBrowserState = {
+    targetInputId: 'src-path',
+    currentPath: '',
+};
+
+function loadFolderBrowser(targetInputId) {
+    folderBrowserState.targetInputId = targetInputId || 'src-path';
+    folderBrowserState.currentPath = '';
+    // Seed the path input with whatever's already in the target field, if
+    // any — saves the user navigating from "/" when they're refining a
+    // path they typed earlier.
+    const target = document.getElementById(folderBrowserState.targetInputId);
+    const seed = (target && target.value) ? target.value.trim() : '';
+    document.getElementById('fb-path-input').value = seed;
+    folderBrowserHideError();
+    openModal('modal-folder-browser');
+    folderBrowserLoad(seed);
+}
+
+function folderBrowserHideError() {
+    const err = document.getElementById('fb-error');
+    err.style.display = 'none';
+    err.textContent = '';
+}
+
+function folderBrowserShowError(msg) {
+    const err = document.getElementById('fb-error');
+    err.textContent = msg;
+    err.style.display = 'block';
+    document.getElementById('fb-list').innerHTML =
+        '<div style="padding:20px;text-align:center;color:var(--text-muted)">—</div>';
+}
+
+async function folderBrowserLoad(path) {
+    folderBrowserHideError();
+    const list = document.getElementById('fb-list');
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor...</div>';
+    let resp;
+    try {
+        resp = await fetch(`${API}/system/list-dir?path=${encodeURIComponent(path || '')}`);
+    } catch (e) {
+        folderBrowserShowError('Ag hatasi: ' + (e && e.message ? e.message : e));
+        return;
+    }
+    if (resp.status === 403) {
+        folderBrowserShowError(
+            'Klasor tarayici sadece sunucudan calisirken kullanilabilir. Yolu manuel girin.'
+        );
+        return;
+    }
+    if (resp.status === 404) {
+        folderBrowserShowError('Yol bulunamadi');
+        return;
+    }
+    if (!resp.ok) {
+        folderBrowserShowError('Hata: HTTP ' + resp.status);
+        return;
+    }
+    const data = await resp.json();
+    folderBrowserState.currentPath = data.path || '';
+    document.getElementById('fb-path-input').value = data.path || '';
+    folderBrowserRender(data);
+}
+
+function folderBrowserRender(data) {
+    const list = document.getElementById('fb-list');
+    const rows = [];
+    // Up-one-level row when we're not at the logical roots.
+    if (data.parent !== null && data.parent !== undefined) {
+        const parentArg = JSON.stringify(data.parent);
+        rows.push(
+            `<div class="folder-item" onclick='folderBrowserLoad(${parentArg})'>`
+            + `<span class="icon">⬆</span><span class="name">.. (Ust dizin)</span></div>`
+        );
+    }
+    if (!data.entries || data.entries.length === 0) {
+        rows.push(
+            '<div style="padding:20px;text-align:center;color:var(--text-muted)">(Bos dizin)</div>'
+        );
+    } else {
+        for (const e of data.entries) {
+            const name = (e.name || '').replace(/[<>&"']/g, c => ({
+                '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+            if (e.type === 'dir') {
+                // Compose absolute path. Empty data.path means "we're at
+                // the logical roots view" so the entry name IS the path.
+                const childPath = data.path
+                    ? joinPathForBrowser(data.path, e.name)
+                    : e.name;
+                const arg = JSON.stringify(childPath);
+                rows.push(
+                    `<div class="folder-item" onclick='folderBrowserLoad(${arg})'>`
+                    + `<span class="icon">📁</span><span class="name">${name}</span></div>`
+                );
+            } else {
+                const sizeStr = (e.size != null) ? formatBrowserSize(e.size) : '';
+                rows.push(
+                    `<div class="folder-item" style="cursor:default;opacity:0.65">`
+                    + `<span class="icon">📄</span><span class="name">${name}</span>`
+                    + `<span class="size">${sizeStr}</span></div>`
+                );
+            }
+        }
+    }
+    if (data.truncated) {
+        rows.push(
+            `<div style="padding:10px;text-align:center;color:var(--warning,#f59e0b);font-size:12px">`
+            + `Liste ${data.max_entries} girise kirpildi.</div>`
+        );
+    }
+    list.innerHTML = rows.join('');
+}
+
+function joinPathForBrowser(parent, child) {
+    // Pick the right separator. Backslash if the parent already uses it
+    // (Windows / UNC), forward slash otherwise. We avoid os-style joins
+    // here — the server will normalise on the next list-dir round trip.
+    if (parent.indexOf('\\') >= 0) {
+        return parent.endsWith('\\') ? parent + child : parent + '\\' + child;
+    }
+    return parent.endsWith('/') ? parent + child : parent + '/' + child;
+}
+
+function formatBrowserSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function folderBrowserGo() {
+    const v = document.getElementById('fb-path-input').value.trim();
+    folderBrowserLoad(v);
+}
+
+function folderBrowserUp() {
+    const cur = folderBrowserState.currentPath;
+    if (!cur) return;  // already at logical roots
+    // Strip trailing separator(s), then drop the last segment.
+    let p = cur.replace(/[\\/]+$/, '');
+    const lastBack = p.lastIndexOf('\\');
+    const lastFwd = p.lastIndexOf('/');
+    const cut = Math.max(lastBack, lastFwd);
+    if (cut <= 0) {
+        folderBrowserLoad('');
+    } else {
+        folderBrowserLoad(p.substring(0, cut));
+    }
+}
+
+function folderBrowserConfirm() {
+    // Prefer the (possibly hand-edited) path input over currentPath so a
+    // power user can paste a UNC and just hit Sec without browsing into it.
+    const chosen = document.getElementById('fb-path-input').value.trim()
+        || folderBrowserState.currentPath;
+    if (!chosen) {
+        folderBrowserShowError('Lutfen bir yol secin veya girin.');
+        return;
+    }
+    const target = document.getElementById(folderBrowserState.targetInputId);
+    if (target) target.value = chosen;
+    closeModal('modal-folder-browser');
 }
 
 // ═══════════════════════════════════════════════════
