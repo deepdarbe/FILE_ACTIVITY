@@ -3314,6 +3314,204 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         return {"sent": True}
 
     # ─────────────────────────────────────────────────────────────────
+    # MCP Server discovery (#67) — read-only doc page
+    # ─────────────────────────────────────────────────────────────────
+
+    @app.get("/api/system/mcp/info")
+    async def mcp_info():
+        """Read-only MCP server discovery info for the dashboard.
+
+        The MCP server is a separate process (``python -m src.mcp_server``);
+        this endpoint just exposes its tool list + recommended install
+        command so operators can wire it into Claude Desktop / Code without
+        leaving the dashboard. We import the tool registry lazily so the
+        dashboard process does not pull ``httpx`` etc. at startup if the
+        operator never opens this page.
+        """
+        tools_info: list[dict] = []
+        configured = False
+        try:
+            from src.mcp_server.tools import TOOLS  # type: ignore
+            for t in TOOLS:
+                tools_info.append({
+                    "name": t.name,
+                    "description": t.description,
+                    "is_write": bool(getattr(t, "is_write", False)),
+                })
+            configured = True
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("mcp_info: TOOLS import failed: %s", e)
+            # Hardcoded fallback (the 15 names from PR #67) so the page
+            # still renders something useful even if the optional MCP
+            # extras aren't installed.
+            for name, desc in [
+                ("scan_list_sources", "List configured file-share sources."),
+                ("scan_run", "Start a background scan (write — confirm required)."),
+                ("scan_status", "Live scan progress for a source."),
+                ("report_summary", "Latest-scan KPI summary."),
+                ("report_duplicates", "Paged list of duplicate-content groups."),
+                ("report_orphan_sids", "Owner SIDs that no longer resolve in AD."),
+                ("pii_list_findings", "Browse persisted PII findings."),
+                ("pii_subject_export", "GDPR subject export."),
+                ("archive_dry_run", "Preview archive candidates."),
+                ("archive_run", "Run archive workflow (write — confirm required)."),
+                ("hold_list_active", "List active legal holds."),
+                ("hold_add", "Create a legal hold (write — confirm required)."),
+                ("hold_release", "Release a legal hold (write — confirm required)."),
+                ("audit_query", "Query the tamper-evident audit log."),
+                ("audit_verify_chain", "Verify the SHA-256 hash chain."),
+            ]:
+                tools_info.append({"name": name, "description": desc,
+                                   "is_write": name.endswith("_run")
+                                   or name in {"hold_add", "hold_release"}})
+        return {
+            "configured": configured,
+            "tools_count": len(tools_info),
+            "tools": tools_info,
+            "transports": ["stdio"],
+            "install_command":
+                "claude mcp add file-activity -- python -m src.mcp_server",
+        }
+
+    # ─────────────────────────────────────────────────────────────────
+    # System backups (#77) — read + manual snapshot + restore
+    # ─────────────────────────────────────────────────────────────────
+
+    def _get_backup_manager():
+        existing = getattr(app.state, "backup_manager", None)
+        if existing is not None:
+            return existing
+        from src.storage.backup_manager import BackupManager
+        db_path = ((config or {}).get("database") or {}).get("path") \
+            or "data/file_activity.db"
+        mgr = BackupManager(db_path, config or {})
+        app.state.backup_manager = mgr
+        return mgr
+
+    @app.get("/api/system/backups")
+    async def list_backups():
+        """List snapshot metadata rows from the manifest.
+
+        Always returns a 200 with ``rows: []`` even when the backup feature
+        is disabled — the frontend draws a feature-flag banner from
+        ``enabled``/``configured`` so we don't want to 4xx here.
+        """
+        try:
+            mgr = _get_backup_manager()
+        except Exception as e:  # pragma: no cover - defensive
+            return {"enabled": False, "configured": False,
+                    "reason": f"manager_init_failed: {e}", "rows": []}
+        rows = [m.to_dict() for m in mgr.list_snapshots()]
+        return {
+            "enabled": bool(mgr.enabled),
+            "configured": True,
+            "backup_dir": mgr.backup_dir,
+            "keep_last_n": mgr.keep_last_n,
+            "keep_weekly": mgr.keep_weekly,
+            "rows": rows,
+        }
+
+    @app.post("/api/system/backups/snapshot")
+    async def create_snapshot(body: dict):
+        """Take a manual snapshot. Body: ``{"reason": "manual", "confirm": true}``."""
+        body = body or {}
+        if not bool(body.get("confirm", False)):
+            raise HTTPException(400, "confirm: true required")
+        reason = (body.get("reason") or "manual").strip() or "manual"
+        try:
+            mgr = _get_backup_manager()
+        except Exception as e:
+            raise HTTPException(500, f"manager_init_failed: {e}")
+        if not mgr.enabled:
+            raise HTTPException(400, "backup feature disabled in config.yaml")
+        try:
+            meta = mgr.snapshot(reason=reason)
+        except Exception as e:
+            logger.error("snapshot failed: %s", e)
+            raise HTTPException(500, f"snapshot_failed: {e}")
+        return {"ok": True, **meta.to_dict()}
+
+    @app.post("/api/system/backups/restore/{snapshot_id}")
+    async def restore_snapshot(snapshot_id: str, body: dict):
+        """Restore the live DB from ``snapshot_id``. Refuses if a live
+        connection holds the DB lock — the caller must stop the dashboard
+        first. Body must include ``confirm: true``.
+        """
+        body = body or {}
+        if not bool(body.get("confirm", False)):
+            raise HTTPException(400, "confirm: true required")
+        try:
+            mgr = _get_backup_manager()
+        except Exception as e:
+            raise HTTPException(500, f"manager_init_failed: {e}")
+        if not mgr.enabled:
+            raise HTTPException(400, "backup feature disabled in config.yaml")
+        try:
+            mgr.restore(snapshot_id)
+        except KeyError:
+            raise HTTPException(404, f"unknown snapshot id: {snapshot_id}")
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+        except RuntimeError as e:
+            # Live-connection refusal or sha mismatch — surface to UI.
+            raise HTTPException(409, str(e))
+        except Exception as e:
+            logger.error("restore failed: %s", e)
+            raise HTTPException(500, f"restore_failed: {e}")
+        return {"ok": True, "restored": snapshot_id}
+
+    @app.get("/api/system/backups/export")
+    async def export_backups_xlsx():
+        """Export the snapshot manifest as XLSX (uses openpyxl if
+        available, else CSV fallback). Mirrors the pattern other dashboard
+        pages use — the frontend just hits this URL and saves the blob."""
+        try:
+            mgr = _get_backup_manager()
+            rows = [m.to_dict() for m in mgr.list_snapshots()]
+        except Exception as e:
+            raise HTTPException(500, f"manager_init_failed: {e}")
+        headers = ["id", "created_at", "reason", "size_bytes",
+                   "sha256", "path"]
+        try:
+            import io
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Backups"
+            ws.append(headers)
+            for r in rows:
+                ws.append([r.get(h, "") for h in headers])
+            buf = io.BytesIO()
+            wb.save(buf)
+            buf.seek(0)
+            from fastapi.responses import Response
+            filename = f"backups_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            return Response(
+                content=buf.getvalue(),
+                media_type=("application/vnd.openxmlformats-officedocument."
+                            "spreadsheetml.sheet"),
+                headers={"Content-Disposition":
+                         f"attachment; filename={filename}"},
+            )
+        except ImportError:
+            # CSV fallback — no openpyxl available.
+            import io
+            import csv
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(headers)
+            for r in rows:
+                w.writerow([r.get(h, "") for h in headers])
+            from fastapi.responses import Response
+            filename = f"backups_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            return Response(
+                content=buf.getvalue(),
+                media_type="text/csv",
+                headers={"Content-Disposition":
+                         f"attachment; filename={filename}"},
+            )
+
+    # ─────────────────────────────────────────────────────────────────
     # GDPR PII detection + retention engine (#58)
     # ─────────────────────────────────────────────────────────────────
 
