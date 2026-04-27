@@ -1356,6 +1356,100 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 </div>
 </div>
 
+<!-- ============ COMPLIANCE MODALS (issue #82, Bug 4 follow-up) ============ -->
+
+<!-- Legal Hold: + Yeni Hold modal -->
+<div class="modal-overlay" id="modal-legal-hold">
+<div class="modal">
+    <h3>⚖️ Yeni Legal Hold</h3>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">
+        Eslesen yollar arsiv ve retention motorlarinda "donmus" sayilir. Pattern bir glob (ornek <code>/share/case-2024/**</code>) veya tam yol olabilir.
+    </div>
+    <div class="form-group"><label>Pattern (yol veya glob)</label><input id="lh-form-pattern" placeholder="/share/case-2024/**"></div>
+    <div class="form-group"><label>Sebep</label><input id="lh-form-reason" placeholder="Ornek: GDPR Article 17 itirazi"></div>
+    <div class="form-row">
+        <div class="form-group"><label>Dava / Vaka Referansi (istege bagli)</label><input id="lh-form-case-ref" placeholder="CASE-2024-007"></div>
+        <div class="form-group"><label>Olusturan</label><input id="lh-form-created-by" placeholder="ad.soyad" value="dashboard"></div>
+    </div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-legal-hold')">Iptal</button>
+        <button class="btn btn-primary" id="lh-form-submit-btn" onclick="submitLegalHoldForm(this)">Hold Olustur</button>
+    </div>
+</div>
+</div>
+
+<!-- PII Subject Export modal (GDPR Article 17 / 30) -->
+<div class="modal-overlay" id="modal-pii-subject">
+<div class="modal">
+    <h3>🛡️ GDPR Subject Export (Article 17 / 30)</h3>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">
+        Kisisel veri sahibinin (e-posta, TC, ad-soyad vb.) gectigi tum dosyalari listele.
+        CSV cikti olarak indirilir; yetkili paydaslar disinda paylasilmamalidir.
+    </div>
+    <div class="form-group">
+        <label>Arama Terimi</label>
+        <input id="pii-subject-term" placeholder="ornek@firma.com veya 12345678901" autocomplete="off">
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Tam veya kismi metin — snippet aramasi yapilir.</div>
+    </div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-pii-subject')">Iptal</button>
+        <button class="btn btn-primary" id="pii-subject-submit-btn" onclick="submitPiiSubjectForm(this)">CSV Indir</button>
+    </div>
+</div>
+</div>
+
+<!-- Retention: + Yeni Policy modal -->
+<div class="modal-overlay" id="modal-retention-policy">
+<div class="modal">
+    <h3>📋 Yeni Retention Policy</h3>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">
+        Eslesen dosyalara <code>retain_days</code> dolduktan sonra <code>action</code> uygulanir (arsiv veya silme).
+    </div>
+    <div class="form-group"><label>Politika Adi</label><input id="ret-form-name" placeholder="Ornek: gdpr_pii_2y"></div>
+    <div class="form-group"><label>Pattern (glob, istege bagli)</label><input id="ret-form-pattern" placeholder="/share/customers/**/*.csv"></div>
+    <div class="form-row">
+        <div class="form-group"><label>Saklama Suresi (gun)</label><input id="ret-form-retain-days" type="number" placeholder="730" min="1"></div>
+        <div class="form-group"><label>Eylem</label>
+            <select id="ret-form-action">
+                <option value="archive">Arsivle</option>
+                <option value="delete">Sil</option>
+            </select>
+        </div>
+    </div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-retention-policy')">Iptal</button>
+        <button class="btn btn-primary" id="ret-form-submit-btn" onclick="submitRetentionPolicyForm(this)">Politika Olustur</button>
+    </div>
+</div>
+</div>
+
+<!-- Retention: Attestation Raporu modal -->
+<div class="modal-overlay" id="modal-retention-attestation">
+<div class="modal" style="max-width:760px">
+    <h3>📊 Retention Attestation Raporu</h3>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.5">
+        Denetim icin: secilen pencerede uygulanan retention eylemleri (arsiv/silme), politika bazli kirilim ve olay listesi.
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-secondary)">Pencere (gun):</label>
+        <select id="ret-attest-since-days" onchange="loadRetentionAttestation()">
+            <option value="7">7</option>
+            <option value="30" selected>30</option>
+            <option value="90">90</option>
+            <option value="365">365</option>
+        </select>
+        <span id="ret-attest-summary" style="font-size:12px;color:var(--text-muted);margin-left:auto"></span>
+    </div>
+    <div id="ret-attest-body" style="max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--bg-secondary);font-size:12px">
+        <div style="color:var(--text-muted)">Yukleniyor...</div>
+    </div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-retention-attestation')">Kapat</button>
+        <button class="btn btn-primary" id="ret-attest-xlsx-btn" onclick="exportRetentionAttestationXlsx(this)">Excel Indir</button>
+    </div>
+</div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════════
 // GLOBAL STATE
@@ -4459,32 +4553,333 @@ async function loadGrowth() {
 }
 
 // ═══════════════════════════════════════════════════
-// LEGAL HOLDS (issue #59)
+// LEGAL HOLDS (issue #59 + Bug 4 follow-up)
 // ═══════════════════════════════════════════════════
+function _lhEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function _renderLhTable(container, rows, opts) {
+    const showRelease = !!(opts && opts.showRelease);
+    if (!rows.length) {
+        container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-muted)">' + (opts && opts.empty || 'Kayit yok') + '</div>';
+        return;
+    }
+    const head = `
+        <tr>
+            <th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">#</th>
+            <th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">Pattern</th>
+            <th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">Sebep</th>
+            <th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">Vaka</th>
+            <th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">Olusturan</th>
+            <th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">Olusturma</th>
+            ${showRelease ? '<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">Islem</th>' : '<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-secondary)">Birakilma</th>'}
+        </tr>`;
+    const body = rows.map(h => `
+        <tr>
+            <td style="padding:10px;border-bottom:1px solid var(--border)">#${_lhEsc(h.id)}</td>
+            <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${_lhEsc(h.path_pattern)}</code></td>
+            <td style="padding:10px;border-bottom:1px solid var(--border)">${_lhEsc(h.reason)}</td>
+            <td style="padding:10px;border-bottom:1px solid var(--border)">${_lhEsc(h.case_reference || '-')}</td>
+            <td style="padding:10px;border-bottom:1px solid var(--border)">${_lhEsc(h.created_by)}</td>
+            <td style="padding:10px;border-bottom:1px solid var(--border)">${_lhEsc(h.created_at)}</td>
+            ${showRelease
+                ? `<td style="padding:10px;border-bottom:1px solid var(--border)"><button class="btn btn-sm btn-outline" onclick="releaseLegalHold(${h.id})">Birak</button></td>`
+                : `<td style="padding:10px;border-bottom:1px solid var(--border)">${_lhEsc(h.released_at || '-')}</td>`}
+        </tr>`).join('');
+    container.innerHTML = `<table style="width:100%;border-collapse:collapse"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
 async function loadLegalHolds() {
+    const container = document.getElementById('lh-active-container');
+    if (!container) return;
+    container.innerHTML = '<div style="padding:14px;color:var(--text-muted)">Yukleniyor...</div>';
     try {
         const r = await fetch('/api/compliance/legal-holds/active');
         const d = r.ok ? await r.json() : { holds: [] };
-        const tbody = document.getElementById('legal-holds-tbody');
-        if (!tbody) return;
-        const holds = d.holds || [];
-        if (!holds.length) {
-            tbody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text-muted)">Aktif legal hold yok</td></tr>';
-            return;
-        }
-        const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-        tbody.innerHTML = holds.map(h => `
-            <tr>
-                <td style="padding:10px;border-bottom:1px solid var(--border)">#${esc(h.id)}</td>
-                <td style="padding:10px;border-bottom:1px solid var(--border)"><code>${esc(h.path_pattern)}</code></td>
-                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.reason)}</td>
-                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.case_reference || '-')}</td>
-                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.created_by)}</td>
-                <td style="padding:10px;border-bottom:1px solid var(--border)">${esc(h.created_at)}</td>
-            </tr>`).join('');
+        _renderLhTable(container, d.holds || [], { showRelease: true, empty: 'Aktif legal hold yok' });
     } catch (e) {
         console.error('loadLegalHolds error:', e);
+        container.innerHTML = '<div style="padding:14px;color:var(--danger)">Hata: ' + _lhEsc(e.message || e) + '</div>';
     }
+}
+
+async function loadLegalHoldHistory() {
+    const container = document.getElementById('lh-history-container');
+    if (!container) return;
+    container.innerHTML = '<div style="padding:14px;color:var(--text-muted)">Yukleniyor...</div>';
+    try {
+        const r = await fetch('/api/compliance/legal-holds/history?page=1&page_size=100');
+        const d = r.ok ? await r.json() : { items: [] };
+        const items = d.items || d.holds || [];
+        _renderLhTable(container, items, { showRelease: false, empty: 'Gecmis kaydi yok' });
+    } catch (e) {
+        console.error('loadLegalHoldHistory error:', e);
+        container.innerHTML = '<div style="padding:14px;color:var(--danger)">Hata: ' + _lhEsc(e.message || e) + '</div>';
+    }
+}
+
+// Tab switcher between "Aktif" and "Gecmis" panes on the Legal Holds page.
+// Toggles display + active styling, and lazy-loads history data on first
+// switch into the Gecmis tab.
+function lhSwitchTab(tabName) {
+    const tabs = { active: 'lh-tab-active', history: 'lh-tab-history' };
+    const panes = { active: 'lh-active-pane', history: 'lh-history-pane' };
+    Object.keys(tabs).forEach(k => {
+        const tabEl = document.getElementById(tabs[k]);
+        const paneEl = document.getElementById(panes[k]);
+        const isActive = (k === tabName);
+        if (paneEl) paneEl.style.display = isActive ? '' : 'none';
+        if (tabEl) {
+            tabEl.style.borderBottom = '2px solid ' + (isActive ? 'var(--accent)' : 'transparent');
+            tabEl.style.color = isActive ? 'var(--accent)' : 'var(--text-muted)';
+            tabEl.style.fontWeight = isActive ? '600' : '';
+        }
+    });
+    if (tabName === 'history') {
+        loadLegalHoldHistory();
+    } else if (tabName === 'active') {
+        loadLegalHolds();
+    }
+}
+
+// Path-check: small input + "Path Check" button on Legal Holds page.
+// Calls GET /api/compliance/legal-holds/check?path=X and renders a green
+// "Hold altinda" or red "Hold yok" badge inline.
+async function lhPathCheck() {
+    const input = document.getElementById('lh-check-path');
+    const result = document.getElementById('lh-check-result');
+    const path = (input && input.value || '').trim();
+    if (!path) { notify('Once kontrol edilecek yolu girin', 'warning'); return; }
+    if (result) {
+        result.style.display = 'inline-block';
+        result.style.background = 'var(--bg-secondary)';
+        result.style.color = 'var(--text-muted)';
+        result.textContent = 'Kontrol ediliyor...';
+    }
+    try {
+        const r = await fetch('/api/compliance/legal-holds/check?path=' + encodeURIComponent(path));
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const d = await r.json();
+        if (!result) return;
+        if (d.is_held) {
+            result.style.background = 'rgba(34,197,94,0.15)';
+            result.style.color = 'var(--success,#22c55e)';
+            const hold = d.hold || {};
+            const ref = hold.case_reference ? ' (' + _lhEsc(hold.case_reference) + ')' : '';
+            result.innerHTML = '✓ Hold altinda' + ref;
+        } else {
+            result.style.background = 'rgba(220,38,38,0.15)';
+            result.style.color = 'var(--danger,#dc2626)';
+            result.textContent = '✗ Hold yok';
+        }
+    } catch (e) {
+        if (result) {
+            result.style.background = 'rgba(220,38,38,0.15)';
+            result.style.color = 'var(--danger,#dc2626)';
+            result.textContent = 'Hata: ' + (e.message || e);
+        }
+    }
+}
+
+// Open the "+ Yeni Hold" modal — clears all fields except created_by which
+// defaults to "dashboard" so the audit log records something readable.
+function openLegalHoldModal() {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+    set('lh-form-pattern', '');
+    set('lh-form-reason', '');
+    set('lh-form-case-ref', '');
+    set('lh-form-created-by', 'dashboard');
+    openModal('modal-legal-hold');
+}
+
+async function submitLegalHoldForm(btn) {
+    const pattern = (document.getElementById('lh-form-pattern')?.value || '').trim();
+    const reason = (document.getElementById('lh-form-reason')?.value || '').trim();
+    const caseRef = (document.getElementById('lh-form-case-ref')?.value || '').trim();
+    const createdBy = (document.getElementById('lh-form-created-by')?.value || '').trim() || 'dashboard';
+    if (!pattern || !reason) {
+        notify('Pattern ve sebep zorunlu', 'warning');
+        return;
+    }
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch('/api/compliance/legal-holds', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pattern, reason, case_ref: caseRef || null, created_by: createdBy }),
+            signal,
+        });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || ('HTTP ' + r.status));
+        }
+        const d = await r.json().catch(() => ({}));
+        notify('Legal hold olusturuldu: #' + (d.id ?? '?'), 'success');
+        closeModal('modal-legal-hold');
+        loadLegalHolds();
+    });
+}
+
+async function releaseLegalHold(holdId) {
+    if (!confirm('Bu hold birakilsin mi? Eslesen yollar yeniden retention/arsiv kapsamina girer.')) return;
+    try {
+        const r = await fetch('/api/compliance/legal-holds/' + holdId + '/release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ released_by: 'dashboard' }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (d.ok) {
+            notify('Hold birakildi', 'success');
+        } else {
+            notify('Birakilamadi: ' + (d.reason || 'bilinmeyen'), 'warning');
+        }
+        loadLegalHolds();
+    } catch (e) {
+        notify('Hata: ' + (e.message || e), 'error');
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// PII SUBJECT EXPORT (GDPR Article 17 / 30)
+// ═══════════════════════════════════════════════════
+function openPiiSubjectModal() {
+    const inp = document.getElementById('pii-subject-term');
+    if (inp) inp.value = '';
+    openModal('modal-pii-subject');
+    setTimeout(() => { try { inp && inp.focus(); } catch(_){} }, 50);
+}
+
+async function submitPiiSubjectForm(btn) {
+    const term = (document.getElementById('pii-subject-term')?.value || '').trim();
+    if (!term) { notify('Arama terimi zorunlu', 'warning'); return; }
+    await withButtonLoading(btn, async (signal) => {
+        const url = '/api/compliance/pii/subject?format=csv&term=' + encodeURIComponent(term);
+        await fetchAndDownload(url, signal, 'pii_subject_' + term.replace(/[^A-Za-z0-9]/g, '_').slice(0, 40) + '.csv');
+        notify('Subject export indirildi', 'success');
+        closeModal('modal-pii-subject');
+    });
+}
+
+// ═══════════════════════════════════════════════════
+// RETENTION POLICIES — modals (issue #82, Bug 4)
+// ═══════════════════════════════════════════════════
+function openRetentionPolicyModal() {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+    set('ret-form-name', '');
+    set('ret-form-pattern', '');
+    set('ret-form-retain-days', '');
+    set('ret-form-action', 'archive');
+    openModal('modal-retention-policy');
+}
+
+async function submitRetentionPolicyForm(btn) {
+    const name = (document.getElementById('ret-form-name')?.value || '').trim();
+    const pattern = (document.getElementById('ret-form-pattern')?.value || '').trim();
+    const retainDaysRaw = (document.getElementById('ret-form-retain-days')?.value || '').trim();
+    const action = (document.getElementById('ret-form-action')?.value || '').trim();
+    if (!name || !retainDaysRaw || !action) {
+        notify('Ad, gun ve eylem zorunlu', 'warning');
+        return;
+    }
+    const retainDays = parseInt(retainDaysRaw, 10);
+    if (!Number.isFinite(retainDays) || retainDays < 1) {
+        notify('Saklama suresi pozitif tam sayi olmali', 'warning');
+        return;
+    }
+    await withButtonLoading(btn, async (signal) => {
+        const r = await fetch('/api/compliance/retention/policies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, pattern_match: pattern || '', retain_days: retainDays, action }),
+            signal,
+        });
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || ('HTTP ' + r.status));
+        }
+        notify('Retention policy olusturuldu: ' + name, 'success');
+        closeModal('modal-retention-policy');
+        if (typeof loadRetention === 'function') loadRetention();
+    });
+}
+
+function openRetentionAttestationModal() {
+    const sel = document.getElementById('ret-attest-since-days');
+    if (sel) sel.value = '30';
+    const body = document.getElementById('ret-attest-body');
+    if (body) body.innerHTML = '<div style="color:var(--text-muted)">Yukleniyor...</div>';
+    const summary = document.getElementById('ret-attest-summary');
+    if (summary) summary.textContent = '';
+    openModal('modal-retention-attestation');
+    loadRetentionAttestation();
+}
+
+async function loadRetentionAttestation() {
+    const since = (document.getElementById('ret-attest-since-days')?.value || '30');
+    const body = document.getElementById('ret-attest-body');
+    const summary = document.getElementById('ret-attest-summary');
+    if (body) body.innerHTML = '<div style="color:var(--text-muted)">Yukleniyor...</div>';
+    try {
+        const r = await fetch('/api/compliance/retention/attestation?since_days=' + encodeURIComponent(since));
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const d = await r.json();
+        const totals = d.totals || {};
+        const archive = totals.archive || 0;
+        const del = totals.delete || 0;
+        if (summary) summary.textContent = 'Arsiv: ' + archive + ' · Silme: ' + del + ' · Olusturuldu: ' + (d.generated_at || '-');
+        const byPolicy = d.by_policy || [];
+        const events = d.events || [];
+        const policyRows = byPolicy.length
+            ? byPolicy.map(p => `
+                <tr>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${_lhEsc(p.policy)}</td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${_lhEsc(p.action)}</td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border);text-align:right">${_lhEsc(p.count)}</td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${_lhEsc(p.first_event || '-')}</td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${_lhEsc(p.last_event || '-')}</td>
+                </tr>`).join('')
+            : '<tr><td colspan="5" style="padding:10px;color:var(--text-muted)">Bu pencerede politika eylemi yok</td></tr>';
+        const eventRows = events.length
+            ? events.slice(0, 200).map(ev => `
+                <tr>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border)">#${_lhEsc(ev.id)}</td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${_lhEsc(ev.event_time)}</td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${_lhEsc(ev.event_type)}</td>
+                    <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-family:Consolas,monospace;font-size:11px">${_lhEsc(ev.file_path)}</td>
+                </tr>`).join('')
+            : '<tr><td colspan="4" style="padding:10px;color:var(--text-muted)">Olay yok</td></tr>';
+        if (body) body.innerHTML = `
+            <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Politika Bazli</div>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:14px">
+                <thead><tr>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Politika</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Eylem</th>
+                    <th style="text-align:right;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Adet</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Ilk olay</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Son olay</th>
+                </tr></thead>
+                <tbody>${policyRows}</tbody>
+            </table>
+            <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Olaylar (ilk 200)</div>
+            <table style="width:100%;border-collapse:collapse">
+                <thead><tr>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">#</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Zaman</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Tur</th>
+                    <th style="text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-muted)">Dosya</th>
+                </tr></thead>
+                <tbody>${eventRows}</tbody>
+            </table>`;
+    } catch (e) {
+        if (body) body.innerHTML = '<div style="color:var(--danger)">Hata: ' + _lhEsc(e.message || e) + '</div>';
+    }
+}
+
+async function exportRetentionAttestationXlsx(btn) {
+    const since = (document.getElementById('ret-attest-since-days')?.value || '30');
+    await withButtonLoading(btn, async (signal) => {
+        const url = '/api/compliance/retention/attestation/export.xlsx?since_days=' + encodeURIComponent(since);
+        await fetchAndDownload(url, signal, 'retention_attestation.xlsx');
+    });
 }
 
 // ═══════════════════════════════════════════════════

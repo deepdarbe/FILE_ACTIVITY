@@ -53,13 +53,9 @@ MIN_HANDLERS = 150
 # the audit infrastructure on fixing the underlying features. New orphans
 # (anything not in this set) MUST fail the test.
 KNOWN_ORPHAN_BASELINE: frozenset[str] = frozenset({
-    "lhPathCheck",
-    "lhSwitchTab",
+    # loadFolderBrowser is the only remaining placeholder — separate scope
+    # (generic folder picker for source / archive destination dialogs).
     "loadFolderBrowser",
-    "openLegalHoldModal",
-    "openPiiSubjectModal",
-    "openRetentionAttestationModal",
-    "openRetentionPolicyModal",
 })
 
 
