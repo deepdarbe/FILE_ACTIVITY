@@ -52,11 +52,13 @@ MIN_HANDLERS = 150
 # entry is a known-broken handler the test tolerates so we don't block
 # the audit infrastructure on fixing the underlying features. New orphans
 # (anything not in this set) MUST fail the test.
-KNOWN_ORPHAN_BASELINE: frozenset[str] = frozenset({
-    # loadFolderBrowser is the only remaining placeholder — separate scope
-    # (generic folder picker for source / archive destination dialogs).
-    "loadFolderBrowser",
-})
+#
+# As of issue #82 (Bug 4) / issue #105 the baseline is empty: every onclick
+# in index.html resolves to a real top-level function. The last placeholder
+# (``loadFolderBrowser``) shipped alongside ``/api/system/list-dir``. Keep
+# this set EMPTY going forward — any new orphan should be implemented or
+# spelled correctly, not added back to the baseline.
+KNOWN_ORPHAN_BASELINE: frozenset[str] = frozenset()
 
 
 # ---------------------------------------------------------------------------

@@ -90,6 +90,185 @@ def open_folder_impl(body: dict, client_host: str, popen=None):
     return {"success": True, "mode": "native", "path": folder}
 
 
+# --- Issue #82 (Bug 4) / Issue #105: /api/system/list-dir folder browser ---
+#
+# Powers the "loadFolderBrowser" modal in the dashboard so admins can pick a
+# source / archive destination by clicking through the server's filesystem
+# instead of typing UNC paths from memory. Localhost-only (mirrors the
+# /api/system/open-folder pattern from PR #85): a remote client must NEVER be
+# able to enumerate the file server's contents, so we return HTTP 403 in
+# that case rather than leaking the directory structure.
+#
+# Performance / safety:
+#   * scandir for one-syscall-per-entry traversal,
+#   * 5000-entry cap (LIST_DIR_MAX_ENTRIES) to bound response size,
+#   * hidden / system files filtered unless ?show_hidden=true,
+#   * sort: directories first (alphabetical), then files (alphabetical),
+#   * realpath + normpath path resolution to defeat symlink/junction tricks,
+#   * empty `path` returns the logical roots (drives on Windows, "/" on Unix)
+#     so the UI can boot the browser without knowing the platform.
+
+LIST_DIR_MAX_ENTRIES = 5000
+
+
+def _list_dir_logical_roots() -> list[dict]:
+    """Return the platform-appropriate logical roots for the browser.
+
+    On Windows we enumerate fixed drive letters that actually have a
+    filesystem mounted (so we don't include phantom A:/B: floppy entries).
+    On POSIX we return a single "/" root, which is enough for admins to
+    navigate to /mnt, /media, /srv, etc.
+    """
+    import string
+
+    roots: list[dict] = []
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if os.path.isdir(drive):
+                roots.append({
+                    "name": drive,
+                    "type": "dir",
+                    "size": None,
+                    "mtime": None,
+                })
+    else:
+        roots.append({
+            "name": "/",
+            "type": "dir",
+            "size": None,
+            "mtime": None,
+        })
+    return roots
+
+
+def _list_dir_is_hidden(name: str, full_path: str) -> bool:
+    """Best-effort hidden / system flag detection.
+
+    POSIX: dotfile convention.
+    Windows: FILE_ATTRIBUTE_HIDDEN / FILE_ATTRIBUTE_SYSTEM via GetFileAttributesW
+    when available; we do not raise on failure — a stat error simply means
+    the entry is included (better to show it than hide it silently).
+    """
+    if name.startswith("."):
+        return True
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(full_path)
+            if attrs != -1:
+                # FILE_ATTRIBUTE_HIDDEN = 0x2, FILE_ATTRIBUTE_SYSTEM = 0x4
+                if attrs & 0x2 or attrs & 0x4:
+                    return True
+        except Exception:  # pragma: no cover - kernel32 absent / sandbox
+            pass
+    return False
+
+
+def list_dir_impl(
+    path: str,
+    client_host: str,
+    show_hidden: bool = False,
+    max_entries: int = LIST_DIR_MAX_ENTRIES,
+):
+    """Pure helper backing the /api/system/list-dir endpoint.
+
+    Returns ``{path, parent, entries}``; raises HTTPException(403) for a
+    remote client and HTTPException(404) for a path that doesn't exist
+    or isn't a directory.
+    """
+    if client_host not in _LOCAL_CLIENT_HOSTS:
+        raise HTTPException(
+            403,
+            "Klasor tarayici sadece sunucudan calisirken kullanilabilir. "
+            "Yolu manuel girin.",
+        )
+
+    # Empty path -> logical roots (drives on Windows, "/" on POSIX). We
+    # surface ``parent=None`` so the UI hides the "up one level" affordance.
+    if not path:
+        return {
+            "path": "",
+            "parent": None,
+            "entries": _list_dir_logical_roots(),
+        }
+
+    # Path resolution: normpath to collapse ``..``, then realpath to defeat
+    # symlink/junction escape attempts. We don't bind to a specific allow-
+    # list of roots because the operator legitimately needs to pick any
+    # local or mounted UNC path; the localhost-only check above is what
+    # keeps remote clients from walking the filesystem.
+    resolved = os.path.realpath(os.path.normpath(path))
+    if not os.path.isdir(resolved):
+        raise HTTPException(404, f"Yol bulunamadi: {resolved}")
+
+    entries: list[dict] = []
+    truncated = False
+    try:
+        with os.scandir(resolved) as it:
+            for entry in it:
+                if not show_hidden and _list_dir_is_hidden(
+                    entry.name, entry.path
+                ):
+                    continue
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    is_dir = False
+                size: int | None = None
+                mtime: float | None = None
+                if not is_dir:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                        size = st.st_size
+                        mtime = st.st_mtime
+                    except OSError:
+                        size = None
+                        mtime = None
+                else:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                        mtime = st.st_mtime
+                    except OSError:
+                        mtime = None
+                entries.append({
+                    "name": entry.name,
+                    "type": "dir" if is_dir else "file",
+                    "size": size,
+                    "mtime": mtime,
+                })
+                if len(entries) >= max_entries:
+                    truncated = True
+                    break
+    except PermissionError:
+        raise HTTPException(403, f"Erisim engellendi: {resolved}")
+    except OSError as e:  # pragma: no cover - rare FS errors
+        raise HTTPException(500, f"Dizin okunamadi: {e}")
+
+    # Sort: dirs first (alphabetical, case-insensitive), then files.
+    entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+
+    # Compute parent. For a drive root ("C:\\") os.path.dirname returns
+    # itself, so we surface ``parent=""`` to mean "go back to the logical
+    # roots list". Same for POSIX "/".
+    parent_raw = os.path.dirname(resolved.rstrip(os.sep) or resolved)
+    if parent_raw == resolved or not parent_raw:
+        parent: str | None = ""
+    else:
+        parent = parent_raw
+
+    out = {
+        "path": resolved,
+        "parent": parent,
+        "entries": entries,
+    }
+    if truncated:
+        out["truncated"] = True
+        out["max_entries"] = max_entries
+    return out
+
+
 # --- Pydantic Models ---
 
 class SourceCreate(BaseModel):
@@ -2197,6 +2376,21 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         body = await request.json()
         client_host = (request.client.host if request.client else "")
         return open_folder_impl(body, client_host)
+
+    @app.get("/api/system/list-dir")
+    async def list_dir(
+        request: Request,
+        path: str = "",
+        show_hidden: bool = False,
+    ):
+        """Klasor tarayici icin dizin icerigini listele (sadece localhost).
+
+        Bos ``path`` -> mantiksal kokleri dondurur (Windows surucu harfleri
+        veya POSIX "/"). 5000 girisle sinirlanmis, 'dir'>'file' siralanmis.
+        Uzaktan istemci icin 403; var olmayan yol icin 404.
+        """
+        client_host = (request.client.host if request.client else "")
+        return list_dir_impl(path, client_host, show_hidden=show_hidden)
 
     @app.get("/api/system/health")
     async def health():
