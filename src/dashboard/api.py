@@ -505,6 +505,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         else None
     )
 
+    # Issue #114 Phase 1 — pluggable storage backend abstraction.
+    # The manager holds the active backend (sqlite today, elasticsearch
+    # in Phase 2). Endpoints continue to talk to ``db`` directly until
+    # Phase 3 rewires the query layer; landing the abstraction now means
+    # Phase 2 can drop in without churn here.
+    from src.storage.backends.manager import StorageManager
+    app.state.storage = StorageManager(db, config)
+
     # Ransomware detector (#37) — watcher pushes events here. Construction is
     # cheap; safe to do unconditionally. The detector pulls its own config
     # block out of `config["security"]["ransomware"]`.

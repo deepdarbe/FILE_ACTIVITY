@@ -48,6 +48,14 @@ database:
     auto_cleanup_on_startup: true
     keep_last_n_scans: 3
 
+# Issue #114 — pluggable storage backend.
+# Phase 1 lands the SqliteBackend wrapper + StorageManager factory but
+# does NOT change dashboard query behaviour. Phase 2 will add the
+# 'elasticsearch' option (ElasticsearchBackend); Phase 3 rewires the
+# dashboard query layer to call backend methods instead of raw SQL.
+storage:
+  backend: "sqlite"   # phase 1: only sqlite. phase 2: add 'elasticsearch'.
+
 analytics:
   # DuckDB tabanli analitik motor. SQLite dosyasini salt-okunur ATTACH eder,
   # agir aggregate sorgulari (duplicate raporu, buyume, db_stats) icin kullanir.
