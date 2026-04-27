@@ -2493,10 +2493,11 @@ function renderSources() {
             </div>
             <div class="source-card-actions">
                 <button class="btn btn-sm btn-primary" onclick="startScan(${s.id})">🔍 Tara</button>
+                <button class="btn btn-sm btn-outline" onclick="stopScan(${s.id})">⏹ Taramayi Durdur</button>
                 <button class="btn btn-sm btn-outline" onclick="testSource(${s.id})">🔌 Test</button>
                 <button class="btn btn-sm btn-outline" onclick="exportReport(${s.id}, event)">📄 Rapor</button>
                 <button class="btn btn-sm btn-success" onclick="startWatcher(${s.id})">▶ Izle</button>
-                <button class="btn btn-sm btn-outline" onclick="stopWatcher(${s.id})">⏹ Durdur</button>
+                <button class="btn btn-sm btn-outline" onclick="stopWatcher(${s.id})">⏹ Izlemeyi Durdur</button>
                 <button class="btn-export" onclick="exportXLS(${s.id}, event)">XLS</button>
                 <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(${s.id}, event)">PDF</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteSource(${s.id})">🗑️ Sil</button>
@@ -2579,6 +2580,23 @@ async function startScan(sourceId) {
     // Start polling progress (her saniye)
     if (scanPollingInterval) clearInterval(scanPollingInterval);
     scanPollingInterval = setInterval(() => pollScanProgress(sourceId), 3000);
+}
+
+// Issue #131 — kullanici tetikli tarama iptali. /api/scan/{id}/stop
+// endpoint'i cancel_event'i ate eder, scan_run'i 'cancelled' olarak isaretler.
+async function stopScan(sourceId) {
+    if (!confirm('Aktif taramayi durdurmak istediginize emin misiniz? Kismi sonuclar kaydedilir.')) return;
+    try {
+        const result = await api(`/scan/${sourceId}/stop`, { method: 'POST' });
+        if (result.cancelled) {
+            const forced = result.forced ? ' (zorla)' : '';
+            notify(`Tarama durduruldu${forced}: ${result.partial_files || 0} dosya kaydedildi`, 'info');
+        } else {
+            notify('Aktif tarama yok.', 'warning');
+        }
+    } catch(e) {
+        notify(`Tarama durdurulamadi: ${e.message}`, 'error');
+    }
 }
 
 async function pollScanProgress(sourceId) {
