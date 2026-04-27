@@ -3365,27 +3365,44 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
 
     @app.get("/api/compliance/pii/findings")
     async def pii_findings(pattern: Optional[str] = None,
+                           source_id: Optional[int] = None,
                            page: int = Query(1, ge=1),
                            page_size: int = Query(50, ge=1, le=1000)):
-        """Browse persisted pii_findings rows. Optional ?pattern= filter."""
+        """Browse persisted pii_findings rows.
+
+        Optional filters:
+        * ``pattern``    — exact ``pattern_name`` match (e.g. ``email``)
+        * ``source_id``  — restrict to scans belonging to a single source
+
+        Issue #81: ``source_id`` filter joins through ``scan_runs`` so
+        the dashboard's "Compliance > PII Findings" page can scope rows
+        to the source the operator picked in the source selector.
+        """
         _get_pii_engine()  # ensure engine constructable / config sane
         offset = (page - 1) * page_size
         params: list = []
-        where = ""
+        clauses: list = []
         if pattern:
-            where = "WHERE pattern_name = ?"
+            clauses.append("p.pattern_name = ?")
             params.append(pattern)
+        if source_id is not None:
+            # ``pii_findings.scan_id`` -> ``scan_runs.source_id``.
+            clauses.append(
+                "p.scan_id IN (SELECT id FROM scan_runs WHERE source_id = ?)"
+            )
+            params.append(int(source_id))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with db.get_cursor() as cur:
             cur.execute(
-                f"SELECT COUNT(*) AS cnt FROM pii_findings {where}",
+                f"SELECT COUNT(*) AS cnt FROM pii_findings p {where}",
                 params,
             )
             total = cur.fetchone()["cnt"]
             cur.execute(
-                f"""SELECT id, scan_id, file_path, pattern_name,
-                           hit_count, sample_snippet, detected_at
-                    FROM pii_findings {where}
-                    ORDER BY detected_at DESC, id DESC
+                f"""SELECT p.id, p.scan_id, p.file_path, p.pattern_name,
+                           p.hit_count, p.sample_snippet, p.detected_at
+                    FROM pii_findings p {where}
+                    ORDER BY p.detected_at DESC, p.id DESC
                     LIMIT ? OFFSET ?""",
                 params + [page_size, offset],
             )
@@ -3396,6 +3413,124 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             "page_size": page_size,
             "findings": rows,
         }
+
+    @app.get("/api/compliance/pii/patterns")
+    async def pii_patterns():
+        """Return the active pattern dictionary (built-ins + operator
+        overrides), so the dashboard can populate a filter dropdown
+        without hardcoding pattern names. Issue #81.
+        """
+        engine = _get_pii_engine()
+        # Engine.patterns may be empty when the Hyperscan backend is
+        # in use; merge from DEFAULT_PATTERNS + user overrides instead.
+        from src.compliance.pii_engine import PiiEngine as _PE
+        merged = dict(_PE.DEFAULT_PATTERNS)
+        cfg = ((config or {}).get("compliance", {}) or {}).get("pii", {}) or {}
+        user_patterns = cfg.get("patterns") or {}
+        if isinstance(user_patterns, dict):
+            for name in user_patterns:
+                if name:
+                    merged[str(name)] = "<custom>"
+        return {
+            "patterns": sorted(merged.keys()),
+            "backend": engine.engine_name,
+        }
+
+    @app.get("/api/compliance/pii/findings/export.xlsx")
+    async def pii_findings_export_xlsx(
+        pattern: Optional[str] = None,
+        source_id: Optional[int] = None,
+        ids: Optional[str] = Query(
+            None,
+            description="Comma-separated pii_findings.id values; empty = all matching rows",
+        ),
+    ):
+        """Export persisted PII findings as XLSX (issue #81).
+
+        Mirrors the mit-naming export pattern: optional ``ids`` filter
+        scopes the workbook to a subset selected in the dashboard's
+        entity-list. ``pattern`` and ``source_id`` honour the same
+        filters as the JSON listing endpoint.
+        """
+        from fastapi.responses import StreamingResponse
+        import io
+        from datetime import datetime
+
+        try:
+            from openpyxl import Workbook
+        except ImportError as e:  # pragma: no cover - in requirements.txt
+            raise HTTPException(
+                500,
+                "openpyxl is not installed; add openpyxl>=3.1.0 to requirements.txt",
+            ) from e
+
+        _get_pii_engine()
+
+        params: list = []
+        clauses: list = []
+        if pattern:
+            clauses.append("p.pattern_name = ?")
+            params.append(pattern)
+        if source_id is not None:
+            clauses.append(
+                "p.scan_id IN (SELECT id FROM scan_runs WHERE source_id = ?)"
+            )
+            params.append(int(source_id))
+
+        id_filter: Optional[set] = None
+        if ids:
+            id_filter = set()
+            for tok in ids.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    id_filter.add(int(tok))
+                except ValueError:
+                    continue
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with db.get_cursor() as cur:
+            cur.execute(
+                f"""SELECT p.id, p.scan_id, p.file_path, p.pattern_name,
+                           p.hit_count, p.sample_snippet, p.detected_at
+                    FROM pii_findings p {where}
+                    ORDER BY p.detected_at DESC, p.id DESC""",
+                params,
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+        if id_filter is not None:
+            rows = [r for r in rows if r["id"] in id_filter]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "PII Findings"
+        headers = [
+            "id", "scan_id", "file_path", "pattern_name",
+            "hit_count", "sample_snippet", "detected_at",
+        ]
+        ws.append(headers)
+        for row in rows:
+            ws.append([row.get(h, "") for h in headers])
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = (
+            f"pii_findings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        return StreamingResponse(
+            buf,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "X-Total-Rows": str(len(rows)),
+            },
+        )
 
     @app.get("/api/compliance/pii/subject")
     async def pii_subject(term: str = Query(..., min_length=1),
@@ -3526,6 +3661,88 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     async def retention_attestation(since_days: int = Query(30, ge=1, le=3650)):
         engine = _get_retention_engine()
         return engine.attestation_report(since_days=since_days)
+
+    @app.get("/api/compliance/retention/attestation/export.xlsx")
+    async def retention_attestation_xlsx(
+        since_days: int = Query(30, ge=1, le=3650),
+    ):
+        """Attestation report as XLSX (issue #81).
+
+        Two sheets: ``By Policy`` (one row per policy/action group) and
+        ``Events`` (one row per audit event in the window). Mirrors the
+        mit-naming export pattern.
+        """
+        from fastapi.responses import StreamingResponse
+        import io
+        from datetime import datetime
+
+        try:
+            from openpyxl import Workbook
+        except ImportError as e:  # pragma: no cover - in requirements.txt
+            raise HTTPException(
+                500,
+                "openpyxl is not installed; add openpyxl>=3.1.0 to requirements.txt",
+            ) from e
+
+        engine = _get_retention_engine()
+        report = engine.attestation_report(since_days=since_days)
+
+        wb = Workbook()
+        ws1 = wb.active
+        ws1.title = "By Policy"
+        by_policy_headers = [
+            "policy", "action", "count", "first_event", "last_event",
+        ]
+        ws1.append(by_policy_headers)
+        for r in (report.get("by_policy") or []):
+            ws1.append([r.get(h, "") for h in by_policy_headers])
+
+        ws2 = wb.create_sheet(title="Events")
+        event_headers = ["id", "event_time", "event_type", "file_path", "details"]
+        ws2.append(event_headers)
+        for ev in (report.get("events") or []):
+            ws2.append([ev.get(h, "") for h in event_headers])
+
+        # Summary cell on a separate sheet for auditors.
+        ws3 = wb.create_sheet(title="Summary")
+        ws3.append(["since_days", report.get("since_days")])
+        ws3.append(["generated_at", report.get("generated_at")])
+        totals = report.get("totals") or {}
+        ws3.append(["total_archive", totals.get("archive", 0)])
+        ws3.append(["total_delete", totals.get("delete", 0)])
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = (
+            f"retention_attestation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
+        return StreamingResponse(
+            buf,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+            },
+        )
+
+    @app.get("/api/compliance/config")
+    async def compliance_config():
+        """Expose the three compliance feature flags so the dashboard
+        can render a "feature disabled" banner without hardcoding the
+        config path. Issue #81.
+        """
+        cfg = (config or {}).get("compliance") or {}
+        pii_cfg = cfg.get("pii") or {}
+        retention_cfg = cfg.get("retention") or {}
+        legal_hold_cfg = cfg.get("legal_hold") or {}
+        return {
+            "pii": {"enabled": bool(pii_cfg.get("enabled", False))},
+            "retention": {"enabled": bool(retention_cfg.get("enabled", False))},
+            "legal_hold": {"enabled": bool(legal_hold_cfg.get("enabled", True))},
+        }
 
     # ──────────────────────────────────────────────
     # Compliance — Legal Hold Registry (issue #59)
