@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Button Audit Report — FILE ACTIVITY</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --warning: #f59e0b;
+      --danger: #dc2626;
+      --success: #10b981;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+    }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    p.lede { color: var(--muted); margin: 0 0 24px; max-width: 720px; }
+    .toolbar {
+      display: flex; gap: 12px; align-items: center;
+      margin-bottom: 16px; flex-wrap: wrap;
+    }
+    button {
+      background: var(--accent); color: white; border: 0;
+      padding: 8px 14px; border-radius: 6px; cursor: pointer;
+      font-size: 13px; font-weight: 600;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    input[type="search"] {
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 12px; font-size: 13px; min-width: 240px;
+    }
+    .kpis { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+    .kpi {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 16px; min-width: 140px;
+    }
+    .kpi-label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    .kpi-value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .kpi.warn .kpi-value { color: var(--warning); }
+    .kpi.bad  .kpi-value { color: var(--danger); }
+    .kpi.ok   .kpi-value { color: var(--success); }
+    table {
+      width: 100%; border-collapse: collapse;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left; padding: 8px 12px; font-size: 13px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { background: rgba(255,255,255,0.04); color: var(--muted); font-weight: 600; }
+    tr:last-child td { border-bottom: 0; }
+    code {
+      background: rgba(255,255,255,0.06); padding: 1px 6px;
+      border-radius: 4px; font-size: 12px;
+    }
+    .row-orphan { background: rgba(220, 38, 38, 0.08); }
+    .row-builtin { color: var(--muted); }
+    .badge {
+      display: inline-block; font-size: 10px; font-weight: 700;
+      padding: 2px 6px; border-radius: 4px; margin-left: 6px;
+      text-transform: uppercase;
+    }
+    .badge.orphan { background: var(--danger); color: white; }
+    .badge.app { background: var(--accent); color: white; }
+    .badge.builtin { background: var(--border); color: var(--muted); }
+    #status { color: var(--muted); font-size: 12px; margin-left: 8px; }
+    #orphans-block, #typos-block { margin-top: 24px; }
+    h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <h1>Button Audit Report</h1>
+  <p class="lede">
+    Static analysis of every <code>onclick=</code> handler in
+    <code>src/dashboard/static/index.html</code>. Powered by
+    <code>scripts/audit_buttons.py</code> (Issue #82, Bug 4).
+  </p>
+
+  <div class="toolbar">
+    <button id="run-btn">Run audit</button>
+    <input type="search" id="filter" placeholder="Filter by function or args...">
+    <span id="status">Click "Run audit" to load the latest <code>audit-report.json</code></span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div id="orphans-block" hidden>
+    <h2>Orphan onclicks (function not defined)</h2>
+    <ul id="orphans"></ul>
+  </div>
+
+  <div id="typos-block" hidden>
+    <h2>Attribute-name typos detected</h2>
+    <ul id="typos"></ul>
+  </div>
+
+  <h2 style="margin-top:24px">All onclick handlers</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:80px">Line</th>
+        <th>Function</th>
+        <th>Args</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+<script>
+// audit-report.html — companion to scripts/audit_buttons.py.
+//
+// The page expects a JSON file at /static/audit-report.json (or alongside
+// this file when served standalone). To regenerate:
+//
+//   python scripts/audit_buttons.py > src/dashboard/static/audit-report.json
+//
+// We deliberately do NOT add a backend route to compute the audit on
+// demand — the audit is a *test-time* tool, not a runtime feature, and
+// shipping a route that scans static HTML is needless surface area.
+
+const REPORT_URL = './audit-report.json';
+
+const $ = (id) => document.getElementById(id);
+let lastReport = null;
+
+function kpi(label, value, cls) {
+  return `<div class="kpi ${cls||''}"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div></div>`;
+}
+
+function render(report) {
+  lastReport = report;
+
+  const orphans = (report.missing_functions || []);
+  const typos = (report.typos || []);
+  const dups = (report.duplicate_definitions || []);
+
+  $('kpis').innerHTML = [
+    kpi('Handlers',     report.handlers_count,            'ok'),
+    kpi('Unique fns',   report.unique_functions_count,    'ok'),
+    kpi('Definitions',  report.function_definitions_count,'ok'),
+    kpi('Orphans',      orphans.length, orphans.length ? 'bad' : 'ok'),
+    kpi('Typos',        typos.length,   typos.length   ? 'bad' : 'ok'),
+    kpi('Dup defs',     dups.length,    dups.length    ? 'warn' : 'ok'),
+  ].join('');
+
+  if (orphans.length) {
+    $('orphans-block').hidden = false;
+    $('orphans').innerHTML = orphans
+      .map(n => `<li><code>${n}</code></li>`).join('');
+  } else {
+    $('orphans-block').hidden = true;
+  }
+
+  if (typos.length) {
+    $('typos-block').hidden = false;
+    $('typos').innerHTML = typos
+      .map(t => `<li>line ${t.line}: <code>${(t.snippet||'').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c])}</code></li>`).join('');
+  } else {
+    $('typos-block').hidden = true;
+  }
+
+  applyFilter();
+}
+
+function applyFilter() {
+  if (!lastReport) return;
+  const q = ($('filter').value || '').toLowerCase().trim();
+  const orphanSet = new Set(lastReport.missing_functions || []);
+
+  const rows = (lastReport.button_audit || [])
+    .filter(r => {
+      if (!q) return true;
+      const hay = `${r.function||''} ${r.args||''} ${r.raw||''}`.toLowerCase();
+      return hay.indexOf(q) >= 0;
+    })
+    .map(r => {
+      const fn = r.function || '<expression>';
+      let badge = '';
+      if (!r.function) {
+        badge = '<span class="badge builtin">expr</span>';
+      } else if (orphanSet.has(r.function)) {
+        badge = '<span class="badge orphan">orphan</span>';
+      } else if (r.is_app_function) {
+        badge = '<span class="badge app">app</span>';
+      } else {
+        badge = '<span class="badge builtin">builtin</span>';
+      }
+      const cls = orphanSet.has(r.function) ? 'row-orphan'
+                : (!r.is_app_function ? 'row-builtin' : '');
+      const args = (r.args||'').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
+      return `<tr class="${cls}"><td>${r.line}</td><td><code>${fn}</code>${badge}</td><td><code>${args}</code></td></tr>`;
+    })
+    .join('');
+  $('rows').innerHTML = rows || '<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:24px">No matches</td></tr>';
+}
+
+async function runAudit() {
+  $('run-btn').disabled = true;
+  $('status').textContent = 'Loading...';
+  try {
+    const r = await fetch(REPORT_URL + '?_=' + Date.now());
+    if (!r.ok) {
+      throw new Error(`HTTP ${r.status} — generate it with: python scripts/audit_buttons.py > src/dashboard/static/audit-report.json`);
+    }
+    const data = await r.json();
+    render(data);
+    $('status').textContent = `Loaded ${data.handlers_count} handlers`;
+  } catch (e) {
+    $('status').innerHTML = `<span style="color:var(--danger)">${e.message}</span>`;
+  } finally {
+    $('run-btn').disabled = false;
+  }
+}
+
+$('run-btn').addEventListener('click', runAudit);
+$('filter').addEventListener('input', applyFilter);
+
+// Auto-load on first paint if the JSON is already there.
+runAudit();
+</script>
+</body>
+</html>
