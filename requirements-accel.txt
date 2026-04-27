@@ -20,4 +20,4 @@
 # stdlib `re` on text-heavy file shares. Linux x86_64 wheels ship via
 # PyPI; on Windows install via vcpkg or use the stdlib fallback (which
 # is what `compliance.pii.engine: "auto"` selects automatically).
-hyperscan>=0.7
+hyperscan>=0.8.2
