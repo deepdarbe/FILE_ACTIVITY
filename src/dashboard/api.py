@@ -49,6 +49,30 @@ logger = logging.getLogger("file_activity.dashboard")
 _LOCAL_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
+# Issue #135 — coarse % estimate per scan phase. The MFT walk has no notion
+# of "how much is left", so we fake a curve that conveys "we're moving"
+# without misleading the user. Frontend uses this only as a visual hint;
+# absolute KPI numbers (file_count, total_size) stay the source of truth.
+def _phase_progress_pct(phase: str, file_count: int) -> int:
+    """Map (phase, file_count) -> 0..100. Cheap, deterministic, no I/O."""
+    if not phase:
+        return 0
+    if phase == "completed":
+        return 100
+    if phase in ("failed", "cancelled"):
+        return 0
+    if phase == "enumeration":
+        # MFT walk: linear ramp up to 30% over the first 1M records, then
+        # asymptote (we don't know total — pretend we're 30% of the way).
+        return min(30, int(file_count / 33333))
+    if phase == "insert":
+        # Insert: 30..85%. Stretch over 5M records.
+        return min(85, 30 + int(file_count / 100000))
+    if phase == "analysis":
+        return 95
+    return 0
+
+
 def open_folder_impl(body: dict, client_host: str, popen=None):
     """Run the open-folder decision logic.
 
@@ -816,6 +840,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 # Wire the shared cancel_event so /api/scan/{id}/stop can
                 # break out of the main scan loop at the next batch.
                 scanner.cancel_event = cancel_event
+                # Issue #135 — give the scanner a handle to the operations
+                # registry + the op_id we just opened. The MFT backend
+                # uses this to emit incremental progress every 50k records
+                # during enumeration so the dashboard banner doesn't sit
+                # at 0 for the entire MFT walk.
+                scanner.ops_registry = registry
+                scanner.op_id = op_id
                 _active_scanners[source_id] = scanner
                 result = scanner.scan_source(src.id, src.name, src.unc_path)
                 _scan_results[source_id] = result
@@ -963,6 +994,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/scan/progress/{source_id}")
     async def scan_progress(source_id: int):
+        # Issue #135 — endpoint now exposes ``phase``,
+        # ``phase_pct`` (best-effort), ``scan_id`` and ``total_size_bytes``
+        # so the frontend can render a granular label
+        # ("MFT okunuyor" / "DB'ye yaziliyor" / "Analiz calisiyor").
+        # Falls back to scan_runs.current_phase when the in-memory
+        # progress dict is missing (e.g. dashboard load mid-scan).
         from src.scanner.file_scanner import get_scan_progress
         progress = get_scan_progress(source_id)
 
@@ -972,12 +1009,47 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         if result and not is_running:
             # Tarama bitti, sonucu dondur
-            return {**result, "status": "completed", "finished": True}
+            payload = {
+                **result,
+                "status": "completed",
+                "phase": "completed",
+                "phase_pct": 100,
+                "finished": True,
+            }
+            if "total_size" in result and "total_size_bytes" not in payload:
+                payload["total_size_bytes"] = result.get("total_size")
+            return payload
 
         if progress:
-            return {**progress, "finished": False}
+            phase = progress.get("phase") or "enumeration"
+            phase_pct = _phase_progress_pct(phase, progress.get("file_count", 0))
+            scan_id = None
+            try:
+                # Pull live scan_id from the incomplete-scan helper so the
+                # frontend can deep-link if it wants to.
+                inc = db.get_incomplete_scan(source_id)
+                if inc:
+                    scan_id = inc.get("scan_id")
+            except Exception:
+                pass
+            return {
+                **progress,
+                "phase": phase,
+                "phase_pct": phase_pct,
+                "scan_id": scan_id,
+                "total_size_bytes": progress.get("total_size", 0),
+                "finished": False,
+            }
 
-        return {"status": "idle", "file_count": 0, "total_size": 0, "finished": False}
+        return {
+            "status": "idle",
+            "phase": None,
+            "phase_pct": 0,
+            "file_count": 0,
+            "total_size": 0,
+            "total_size_bytes": 0,
+            "finished": False,
+        }
 
     # --- COMPATIBILITY REPORT API ---
 

@@ -524,6 +524,12 @@ class FileScanner:
         # to be marked ``status='cancelled'``. Default-constructed (not
         # set) so the very first scan runs to completion.
         self.cancel_event: threading.Event = threading.Event()
+        # Issue #135 — operations-tracker handle for incremental progress
+        # during MFT enumeration. Set by /api/scan/{source_id} after the
+        # tracker call returns. Either may be None; the backend handles
+        # that defensively.
+        self.ops_registry: object | None = None
+        self.op_id: str | None = None
 
     def _select_backend(self, path: str) -> ScannerBackend:
         """Return the walk backend to use for ``path``.
@@ -540,8 +546,15 @@ class FileScanner:
         is_unc = path.startswith("\\\\")
 
         # Try NTFS MFT first (fastest, requires local NTFS + admin).
+        # Issue #135 — pass the ops_registry + op_id through so the MFT
+        # backend can emit incremental progress every 50k records during
+        # enumeration. Both may be None; the backend handles that.
         try:
-            mft = NtfsMftBackend(self._full_config)
+            mft = NtfsMftBackend(
+                self._full_config,
+                ops_registry=self.ops_registry,
+                op_id=self.op_id,
+            )
             if mft.is_supported(path):
                 logger.debug("Scanner backend: ntfs_mft for %s", path)
                 return mft
@@ -566,10 +579,13 @@ class FileScanner:
         logger.info("Tarama basladi: %s (%s)", source_name, path)
 
         # Ilerleme durumu baslat
+        # Issue #135 — ``phase`` enumere edilmis tarama yasam dongusunu
+        # frontend'e tasir: enumeration -> insert -> analysis -> completed.
         progress = {
             "source_id": source_id,
             "source_name": source_name,
             "status": "connecting",
+            "phase": "enumeration",
             "file_count": 0,
             "total_size": 0,
             "total_size_formatted": "0 B",
@@ -618,6 +634,21 @@ class FileScanner:
         name_analyzer = FileNameAnalyzer()
         mit_analyzer = MITNamingAnalyzer()
 
+        # Issue #135 — throttle ``scan_runs`` UPDATE to "every 10 seconds OR
+        # every 100k records, whichever comes first". A short single-row
+        # UPDATE plays nicely with the bulk INSERT writer lock; a long
+        # transaction wrapping more would starve the dashboard reader.
+        last_db_update_ts: float = start_time
+        last_db_update_count: int = 0
+        DB_UPDATE_EVERY_SECONDS = 10.0
+        DB_UPDATE_EVERY_RECORDS = 100_000
+
+        # Issue #135 — initial phase = enumeration (MFT walk in progress).
+        try:
+            self.db.update_scan_phase(scan_id, "enumeration")
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.debug("update_scan_phase('enumeration') failed: %s", e)
+
         # Parquet staging path: when pyarrow + DuckDB are available, scan
         # rows are buffered to a Parquet file and bulk-INSERTed via DuckDB
         # (10-50x faster on 100k+ row scans). Construct once per scan; on
@@ -627,6 +658,12 @@ class FileScanner:
         # Initialise loop-exit status now so the cancel-break path inside
         # the loop can override it before the try-block's final assignment.
         status = "completed"
+
+        # Issue #135 — track whether we already moved past the enumeration
+        # phase. The first record from the backend means the MFT walk has
+        # produced rows we can stage; from that point on the dashboard
+        # label should read "DB'ye yaziliyor" rather than "MFT okunuyor".
+        phase_transitioned_to_insert = False
 
         try:
             backend = self._select_backend(path)
@@ -638,6 +675,18 @@ class FileScanner:
                 # Resume: skip already scanned files
                 if scanned_paths and file_path in scanned_paths:
                     continue
+
+                # Issue #135 — first usable record => transition phase to
+                # ``insert``. Frontend banner switches from "MFT okunuyor"
+                # to "DB'ye yaziliyor". We update DB once and the in-memory
+                # progress dict so /api/scan/progress reflects it instantly.
+                if not phase_transitioned_to_insert:
+                    phase_transitioned_to_insert = True
+                    progress["phase"] = "insert"
+                    try:
+                        self.db.update_scan_phase(scan_id, "insert")
+                    except Exception as e:  # pragma: no cover - defensive only
+                        logger.debug("update_scan_phase('insert') failed: %s", e)
 
                 try:
                     file_name = record.get("file_name") or os.path.basename(file_path)
@@ -681,9 +730,32 @@ class FileScanner:
                     if len(batch) >= self.batch_size:
                         stager.append(batch)
                         batch = []
-                        # scan_runs'i guncelle (dashboard aninda gorsun)
-                        if file_count % 5000 == 0:
-                            self.db.update_scan_progress(scan_id, file_count, total_size)
+                        # Issue #135 — throttled scan_runs progress UPDATE:
+                        # fire when EITHER 10 seconds have elapsed since the
+                        # last write OR 100k records have accumulated. Old
+                        # behaviour wrote every 5k records which still left
+                        # the dashboard at 0 during the MFT enum phase
+                        # (records weren't flushed yet) and over-wrote on
+                        # tight scans. ``last_db_update_*`` trackers keep
+                        # the cost off the per-record path.
+                        now_db = time.time()
+                        if (
+                            (file_count - last_db_update_count)
+                            >= DB_UPDATE_EVERY_RECORDS
+                            or (now_db - last_db_update_ts)
+                            >= DB_UPDATE_EVERY_SECONDS
+                        ):
+                            try:
+                                self.db.update_scan_progress(
+                                    scan_id, file_count, total_size,
+                                )
+                            except Exception as e:
+                                # Never break a scan over a progress write.
+                                logger.debug(
+                                    "update_scan_progress failed: %s", e,
+                                )
+                            last_db_update_ts = now_db
+                            last_db_update_count = file_count
                         # Issue #131 — cancellation check at batch boundary.
                         # Setting cancel_event from /api/scan/{id}/stop
                         # causes us to break here; partial rows are
@@ -769,7 +841,14 @@ class FileScanner:
 
         # KPI summary + AI insights cache — Dashboard Overview + AI Onerileri
         # paneli bu JSON'lari okur, scanned_files tablosunu taramaz.
+        # Issue #135 — entering the analysis phase. ``complete_scan_run``
+        # above flipped scan_runs.status to ``completed``, so phase rows
+        # filtered by ``status='running'`` now hit zero matches; we emit
+        # the analysis label only via the in-memory progress dict (the
+        # dashboard's /api/scan/progress endpoint reads this dict before
+        # falling back to scan_runs).
         if status == "completed" and file_count > 0:
+            progress["phase"] = "analysis"
             try:
                 t0 = time.time()
                 self.db.compute_scan_summary(scan_id)
@@ -794,8 +873,14 @@ class FileScanner:
                 logger.warning("AI insights hesaplanamadi (scan_id=%d): %s", scan_id, e)
 
         # Son ilerleme durumunu guncelle
+        # Issue #135 — phase artik ``completed`` (veya cancelled/failed). Bu
+        # alan /api/scan/progress yanitinda kullanilir; in-memory progress
+        # dict bittikten 30s sonra silinir, ondan once frontend "Tamamlandi"
+        # state'ine gecer.
+        final_phase = "completed" if status == "completed" else status
         progress.update({
             "status": status,
+            "phase": final_phase,
             "file_count": file_count,
             "total_size": total_size,
             "total_size_formatted": format_size(total_size),

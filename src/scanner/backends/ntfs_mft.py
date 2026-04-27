@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Iterator
+from typing import Iterator, Optional
 
 from src.scanner.backends._ntfs_records import (
     FILE_ATTRIBUTE_DIRECTORY,
@@ -47,6 +47,12 @@ from src.scanner.backends._ntfs_records import (
 )
 
 logger = logging.getLogger("file_activity.scanner.backends.ntfs_mft")
+
+
+# Issue #135 — granularity for in-loop progress callbacks. Set high enough
+# (50k records ≈ a few seconds of MFT enumeration) that the modulo check
+# stays O(1) and we never serialize a tracker call per record.
+_PROGRESS_EVERY_N_RECORDS = 50_000
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +146,54 @@ class NtfsMftBackend:
     config:
         Project configuration dictionary. Currently unused beyond storage —
         accepted for protocol compatibility with other backends.
+    ops_registry:
+        Optional :class:`OperationsRegistry` (issue #125). When provided
+        together with ``op_id``, the backend emits incremental progress
+        every :data:`_PROGRESS_EVERY_N_RECORDS` records during the MFT
+        enumeration loop so the dashboard banner reflects activity even
+        before the scan_run row is updated. Issue #135 — the dashboard's
+        "Tarama Devam Ediyor" card showed 0 progress for the entire MFT
+        walk because nothing was emitted until enumeration finished.
+    op_id:
+        Optional operations-tracker handle (the value returned from
+        ``OperationsRegistry.start``). If absent, all tracker calls
+        no-op. Tracker failures are swallowed — they MUST NOT break the
+        scan.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(
+        self,
+        config: dict,
+        ops_registry: Optional[object] = None,
+        op_id: Optional[str] = None,
+    ) -> None:
         self.config = config or {}
+        # Tracker handle is optional. Stored as plain attributes so callers
+        # can set them after construction (e.g. when the registry is created
+        # later in the FileScanner lifecycle).
+        self.ops_registry = ops_registry
+        self.op_id = op_id
+
+    # ------------------------------------------------------------------
+    # Operations-tracker progress helper
+    # ------------------------------------------------------------------
+
+    def _emit_progress(self, processed_count: int) -> None:
+        """Emit incremental MFT-enumeration progress to the ops registry.
+
+        Best-effort: if the registry is None, the op_id is unset, or the
+        call raises, we swallow the error. The scan must continue.
+        """
+        registry = self.ops_registry
+        op_id = self.op_id
+        if registry is None or not op_id:
+            return
+        try:
+            label = f"MFT okuma: {processed_count:,} kayit"
+            registry.progress(op_id, label=label)
+        except Exception:  # pragma: no cover - defensive only
+            # Never break the scan on tracker failure.
+            pass
 
     # ------------------------------------------------------------------
     # Capability check
@@ -283,6 +333,10 @@ class NtfsMftBackend:
                 "attributes": rec["attributes"],
             }
             emitted += 1
+            # Issue #135 — yield-loop progress so the dashboard banner keeps
+            # ticking while the orchestrator drains records into the DB.
+            if emitted % _PROGRESS_EVERY_N_RECORDS == 0:
+                self._emit_progress(emitted)
 
         logger.info("MFT taramasi tamamlandi: %d dosya yayildi", emitted)
 
@@ -336,8 +390,18 @@ class NtfsMftBackend:
                 break
 
             raw = bytes(out_buf.raw[:n])
+            prev_count = len(records)
             for rec in parse_usn_records(raw, offset=8):
                 records[rec["frn"]] = rec
+
+            # Issue #135 — emit incremental progress every N records during
+            # enumeration. Modulo check is O(1); a tracker call only fires
+            # when crossing a 50k boundary so the inner loop stays cheap.
+            new_count = len(records)
+            if (new_count // _PROGRESS_EVERY_N_RECORDS) > (
+                prev_count // _PROGRESS_EVERY_N_RECORDS
+            ):
+                self._emit_progress(new_count)
 
             # The first 8 bytes of the output buffer are the next-FRN to
             # resume enumeration from.

@@ -208,6 +208,44 @@ class ParquetStager:
                 self._safe_unlink(path)
             return len(buffer)
 
+    # ------------------------------------------------------------------
+    # Issue #135 — thin shims for callers that want to stream MFT records
+    # one at a time. ``append`` already auto-flushes when the buffer hits
+    # ``flush_rows`` (default 50k), but the streaming MFT loop in
+    # NtfsMftBackend wants a "did we just cross the threshold" predicate
+    # so it can emit a progress UPDATE in lockstep with the flush. These
+    # methods exist purely so the call site reads naturally; both delegate
+    # to existing behaviour.
+    # ------------------------------------------------------------------
+
+    def should_flush(self) -> bool:
+        """Return True if the buffer has hit ``flush_rows`` or ``flush_seconds``.
+
+        Cheap O(1) check — does not lock more than necessary. Callers can
+        use this to interleave a progress UPDATE before draining the
+        buffer to disk.
+        """
+        with self._lock:
+            buffered = len(self._buffer)
+            age = time.monotonic() - self._last_flush
+            return buffered >= self.flush_rows or (
+                buffered > 0 and age >= self.flush_seconds
+            )
+
+    def flush_to_db(self, db=None, scan_id: int = None) -> int:
+        """Force-flush the buffer to SQLite. Alias of :meth:`flush`.
+
+        ``db`` and ``scan_id`` are accepted for callsite ergonomics
+        (matches the issue #135 streaming pattern) but are ignored
+        because the stager already holds a reference to the database
+        and the rows carry their own scan_id field.
+        """
+        # Touch the unused params so static analysers don't flag dead
+        # arguments — and so we silently accept the issue #135 signature
+        # without breaking older callers.
+        del db, scan_id
+        return self.flush()
+
     def replay_orphans(self) -> int:
         """Ingest leftover ``.parquet`` files in the staging dir (crash recovery)."""
         if not self.available:

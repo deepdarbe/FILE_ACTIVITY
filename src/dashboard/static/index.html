@@ -2645,9 +2645,34 @@ async function pollScanProgress(sourceId) {
             document.getElementById('scan-elapsed').textContent = p.elapsed || '';
             const dir = p.current_dir || '';
             document.getElementById('sp-dir').textContent = dir.length > 60 ? '...' + dir.slice(-57) : dir;
-            // Animated progress (indeterminate since we don't know total)
+            // Issue #135 — phase label (MFT okunuyor / DB'ye yaziliyor /
+            // Analiz calisiyor / Tamamlandi). Falls back to the previous
+            // "Tarama Devam Ediyor" header when phase is missing.
+            const titleEl = document.querySelector('#scan-progress .progress-header .title');
+            if (titleEl) {
+                let phaseLabel = 'Tarama Devam Ediyor';
+                if (p.phase === 'enumeration') {
+                    phaseLabel = 'MFT okunuyor (' + formatNum(p.file_count || 0) + ' kayit)';
+                } else if (p.phase === 'insert') {
+                    phaseLabel = "DB'ye yaziliyor (" + formatNum(p.file_count || 0) + ' dosya)';
+                } else if (p.phase === 'analysis') {
+                    phaseLabel = 'Analiz calisiyor';
+                } else if (p.phase === 'completed') {
+                    phaseLabel = 'Tamamlandi';
+                }
+                titleEl.innerHTML = '<span class="spinner"></span> ' + phaseLabel;
+            }
+            // Animated progress: prefer server-side phase_pct when available
+            // so the bar reflects the lifecycle (enumeration -> insert ->
+            // analysis -> completed) instead of climbing only with file
+            // count. Old indeterminate fallback kept for backwards compat.
             const bar = document.getElementById('scan-progress-bar');
-            const w = Math.min(90, 5 + (p.file_count / 100));
+            let w;
+            if (typeof p.phase_pct === 'number' && p.phase_pct > 0) {
+                w = Math.max(5, Math.min(95, p.phase_pct));
+            } else {
+                w = Math.min(90, 5 + (p.file_count / 100));
+            }
             bar.style.width = w + '%';
 
             // Global mini progress (sidebar'da her sayfada gorunur)
