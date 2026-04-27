@@ -39,6 +39,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -523,9 +524,41 @@ class BackupManager:
         traceback summarised in ``details``.
         """
         # Local import to avoid circular import at module load time.
-        from src.storage.corruption_detector import is_corrupted
+        from src.storage.corruption_detector import (
+            DEFAULT_CHECK_MODE,
+            DEFAULT_CHECK_TIMEOUT_SECONDS,
+            is_corrupted,
+        )
 
-        probe = is_corrupted(self.db_path)
+        # Pull the same knobs the detector reads — purely so we can log
+        # them BEFORE the probe runs. Next time someone hits a startup
+        # hang the log shows exactly which pragma+timeout was active.
+        backup_cfg = (self.config.get("backup") or {}) if isinstance(self.config, dict) else {}
+        log_mode = str(
+            backup_cfg.get("corruption_check_mode", DEFAULT_CHECK_MODE)
+            or DEFAULT_CHECK_MODE
+        )
+        try:
+            log_timeout = float(backup_cfg.get(
+                "corruption_check_timeout_seconds",
+                DEFAULT_CHECK_TIMEOUT_SECONDS,
+            ))
+        except (TypeError, ValueError):
+            log_timeout = float(DEFAULT_CHECK_TIMEOUT_SECONDS)
+
+        logger.info(
+            "auto-restore probe: starting corruption check (mode=%s, "
+            "timeout=%ds)",
+            log_mode, int(log_timeout),
+        )
+        t0 = time.monotonic()
+        probe = is_corrupted(self.db_path, self.config)
+        elapsed = time.monotonic() - t0
+        logger.info(
+            "auto-restore probe: corruption check completed "
+            "(result=%s, took=%.2fs)",
+            probe.reason, elapsed,
+        )
         if not probe.is_corrupted:
             return RestoreResult(
                 restored=False,
