@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 
@@ -565,6 +565,42 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     except Exception as e:  # pragma: no cover - defensive only
         logger.warning("SyslogForwarder init failed: %s", e)
         app.state.syslog = None
+
+    # ─────────────────────────────────────────────────────────────────
+    # Issue #118 Phase 1 — auto error reporter (GitHub Issues).
+    # Constructed unconditionally; with the shipped default
+    # (``telemetry.enabled: false``) every capture() call short-circuits
+    # before touching the network. The exception_handler is wired in so
+    # operators only need to flip the config flag + provide a token to
+    # opt in.
+    # ─────────────────────────────────────────────────────────────────
+    try:
+        from src.telemetry.error_reporter import ErrorReporter
+        app.state.error_reporter = ErrorReporter(config, APP_VERSION)
+    except Exception as e:  # pragma: no cover - defensive only
+        logger.warning("ErrorReporter init failed: %s", e)
+        app.state.error_reporter = None
+
+    @app.exception_handler(Exception)
+    async def _telemetry_exception_handler(request, exc):
+        reporter = getattr(app.state, "error_reporter", None)
+        if reporter is not None:
+            try:
+                reporter.capture(exc, {
+                    "path": str(request.url.path),
+                    "method": request.method,
+                })
+            except Exception:
+                # Telemetry failures must never break the response path.
+                pass
+        # FastAPI exception handlers must *return* a Response — re-
+        # raising does not propagate to the default 500 handler. Mirror
+        # the framework's default JSON shape so existing clients see no
+        # behavioural change.
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal Server Error"},
+        )
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
