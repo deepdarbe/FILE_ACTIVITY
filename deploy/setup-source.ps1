@@ -299,7 +299,8 @@ $updateCmd = @"
 @echo off
 echo FILE ACTIVITY guncelleniyor (master branch)...
 echo  - Pre-update SQLite snapshot aliniyor...
-"%LOCALAPPDATA%\FileActivity\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update" 2>NUL
+cd /d "$InstallDir"
+"$InstallDir\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update"
 if errorlevel 1 (
     echo  [!] Snapshot basarisiz - update yine de devam ediyor
 )
