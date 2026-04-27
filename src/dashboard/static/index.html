@@ -1368,7 +1368,7 @@ async function loadOverview() {
                             <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${i.description}</div>
                         </div>
                         ${i.impact_size ? `<span style="font-size:12px;color:var(--text-muted);flex-shrink:0">${formatSize(i.impact_size)}</span>` : ''}
-                        <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'temp_files','duplicates':'duplicates','security':'temp_files','growth':'stale_180','recommendation':'large_files','audit':'stale_1year'}[i.category] || 'all_files')}', ${sid})" style="flex-shrink:0">Incele</button>
+                        <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${i.category||''}', '${i.insight_type||''}', ${sid})" style="flex-shrink:0">Incele</button>
                         ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
                     </div>
                 `).join('');
@@ -2521,7 +2521,7 @@ async function loadInsights() {
                     ${i.impact_size ? `<div style="font-size:12px;color:var(--text-muted);margin-top:6px">${formatSize(i.impact_size)}</div>` : ''}
                     ${i.file_count ? `<div style="font-size:11px;color:var(--text-muted)">${formatNum(i.file_count)} dosya</div>` : ''}
                     <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
-                        <button class="btn btn-sm btn-accent" onclick="showInsightFiles('${i.insight_type || ({'stale':'stale_1year','storage':'temp_files','duplicates':'duplicates','security':'temp_files','growth':'stale_180','recommendation':'large_files','audit':'stale_1year'}[i.category] || 'all_files')}', ${sid})">Incele</button>
+                        <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${i.category||''}', '${i.insight_type||''}', ${sid})">Incele</button>
                         ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})">Uygula</button>` : ''}
                     </div>
                 </div>
@@ -2745,58 +2745,133 @@ function openFolder(path) {
 // AI INSIGHTS DOSYA LISTELEME
 // ═══════════════════════════════════════════════════
 
+// Insight category -> backend insight_type mapping. Centralized so callers
+// and showInsightFilesByCategory can warn on unknown categories instead of
+// silently falling back to 'all_files' (issue #82, Bug 2).
+const INSIGHT_CATEGORY_TO_TYPE = {
+    stale: 'stale_1year',
+    storage: 'temp_files',
+    duplicates: 'duplicates',
+    security: 'temp_files',
+    growth: 'stale_180',
+    recommendation: 'large_files',
+    audit: 'stale_1year'
+};
+
+// Resolve a (category, explicitInsightType) pair to a backend type string.
+// If we have to fall back to 'all_files' because the category isn't in the
+// map, warn loudly so unknown categories don't go unnoticed.
+function resolveInsightType(category, explicitInsightType) {
+    if (explicitInsightType) return explicitInsightType;
+    if (category && Object.prototype.hasOwnProperty.call(INSIGHT_CATEGORY_TO_TYPE, category)) {
+        return INSIGHT_CATEGORY_TO_TYPE[category];
+    }
+    // Mapping fell back: warn so the broken category surfaces to devs/users.
+    console.warn('Unknown insight category: %s -> falling back to all_files', category);
+    notify('Bilinmeyen insight kategorisi: ' + (category || '(bos)') + ' — tum dosyalar gosteriliyor', 'warning');
+    return 'all_files';
+}
+
+// Wrapper used from inline onclick handlers: takes the raw category +
+// optional explicit insight_type, resolves with warning on fallback, then
+// opens the modal. Kept separate from showInsightFiles so the latter can
+// still be called directly with a known-good type.
+function showInsightFilesByCategory(category, explicitInsightType, sourceId) {
+    showInsightFiles(resolveInsightType(category, explicitInsightType), sourceId);
+}
+
 async function showInsightFiles(insightType, sourceId) {
+    let data;
     try {
-        const data = await api(`/insights/${sourceId}/files?insight_type=${insightType}&page=1&page_size=200`);
-        const files = data.files || [];
-        const filesHtml = files.length ? files.map((f, i) => `
-            <tr>
-                <td>${i+1}</td>
-                <td style="max-width:200px;word-break:break-all;font-size:11px">${f.file_name}</td>
-                <td style="max-width:250px;word-break:break-all;font-size:11px" title="${f.file_path}">${f.file_path}</td>
-                <td>${f.file_size_formatted || formatSize(f.file_size)}</td>
-                <td>${f.owner || '-'}</td>
-                <td>${(f.last_access_time||'').substring(0,10)}</td>
-                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${(f.directory||'').replace(/\\/g,'\\\\\\\\')}')">Konuma Git</button></td>
-            </tr>
-        `).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
+        data = await api(
+            `/insights/${sourceId}/files?insight_type=${encodeURIComponent(insightType)}&page=1&page_size=200`,
+            { silent: true }
+        );
+    } catch (e) {
+        // 400 from backend (unknown insight_type) carries a useful detail
+        // message — show it inside the modal so the user understands why
+        // the list is empty (issue #82, Bug 2).
+        notify('Dosya listesi yuklenemedi: ' + e.message, 'error');
+        showInsightFilesError(insightType, e.message);
+        return;
+    }
 
-        const typeLabels = {
-            stale_1year: '1 Yildan Eski Dosyalar',
-            stale_3year: '3+ Yillik Eski Dosyalar',
-            large_files: 'Buyuk Dosyalar (>100MB)',
-            temp_files: 'Gecici/Yedek Dosyalar',
-            duplicates: 'Kopya Dosyalar'
-        };
+    const files = data.files || [];
+    const filesHtml = files.length ? files.map((f, i) => `
+        <tr>
+            <td>${i+1}</td>
+            <td style="max-width:200px;word-break:break-all;font-size:11px">${f.file_name}</td>
+            <td style="max-width:250px;word-break:break-all;font-size:11px" title="${f.file_path}">${f.file_path}</td>
+            <td>${f.file_size_formatted || formatSize(f.file_size)}</td>
+            <td>${f.owner || '-'}</td>
+            <td>${(f.last_access_time||'').substring(0,10)}</td>
+            <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${(f.directory||'').replace(/\\/g,'\\\\\\\\')}')">Konuma Git</button></td>
+        </tr>
+    `).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
 
-        const modalContent = `
-            <div style="padding:20px">
-                <h3 style="margin:0 0 16px 0">${typeLabels[insightType] || insightType} - ${data.total} Dosya</h3>
-                <div style="max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
-                    <table style="width:100%;font-size:12px">
-                        <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>#</th><th>Dosya Adi</th><th>Tam Yol</th><th>Boyut</th><th>Sahip</th><th>Son Erisim</th><th>Islem</th></tr></thead>
-                        <tbody>${filesHtml}</tbody>
-                    </table>
-                </div>
-                ${data.total > 200 ? `<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:11px">Ilk 200 dosya (toplam ${data.total})</div>` : ''}
-                <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
-                    <button class="btn btn-outline" onclick="closeModal('modal-insight-files')">Kapat</button>
-                </div>
+    const typeLabels = {
+        stale_1year: '1 Yildan Eski Dosyalar',
+        stale_3year: '3+ Yillik Eski Dosyalar',
+        large_files: 'Buyuk Dosyalar (>100MB)',
+        temp_files: 'Gecici/Yedek Dosyalar',
+        duplicates: 'Kopya Dosyalar'
+    };
+
+    const modalContent = `
+        <div style="padding:20px">
+            <h3 style="margin:0 0 16px 0">${typeLabels[insightType] || insightType} - ${data.total} Dosya</h3>
+            <div style="max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
+                <table style="width:100%;font-size:12px">
+                    <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>#</th><th>Dosya Adi</th><th>Tam Yol</th><th>Boyut</th><th>Sahip</th><th>Son Erisim</th><th>Islem</th></tr></thead>
+                    <tbody>${filesHtml}</tbody>
+                </table>
             </div>
-        `;
+            ${data.total > 200 ? `<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:11px">Ilk 200 dosya (toplam ${data.total})</div>` : ''}
+            <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
+                <button class="btn btn-outline" onclick="closeModal('modal-insight-files')">Kapat</button>
+            </div>
+        </div>
+    `;
 
-        let modal = document.getElementById('modal-insight-files');
-        if (!modal) {
-            modal = document.createElement('div');
-            modal.id = 'modal-insight-files';
-            modal.className = 'modal-overlay';
-            modal.onclick = (e) => { if(e.target===modal) modal.classList.remove('active'); };
-            modal.innerHTML = '<div class="modal" style="max-width:1100px;width:95%"></div>';
-            document.body.appendChild(modal);
-        }
-        modal.querySelector('.modal').innerHTML = modalContent;
-        modal.classList.add('active');
-    } catch(e) { notify('Dosya listesi yuklenemedi: ' + e.message, 'error'); }
+    _renderInsightFilesModal(modalContent);
+}
+
+// Render an error state inside the same modal we'd use for results, so the
+// user sees *why* the list is empty rather than a phantom "broken button".
+function showInsightFilesError(insightType, detail) {
+    const safeDetail = String(detail || 'Bilinmeyen hata')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeType = String(insightType || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const modalContent = `
+        <div style="padding:20px">
+            <h3 style="margin:0 0 12px 0;color:var(--danger,#dc2626)">Dosya listesi alinamadi</h3>
+            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">
+                Insight tipi: <code>${safeType}</code>
+            </div>
+            <div style="font-size:13px;color:var(--text-primary);background:var(--bg-secondary);padding:12px;border-radius:var(--radius);border:1px solid var(--border);white-space:pre-wrap;word-break:break-word">
+                ${safeDetail}
+            </div>
+            <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
+                <button class="btn btn-outline" onclick="closeModal('modal-insight-files')">Kapat</button>
+            </div>
+        </div>
+    `;
+    _renderInsightFilesModal(modalContent);
+}
+
+function _renderInsightFilesModal(html) {
+    let modal = document.getElementById('modal-insight-files');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modal-insight-files';
+        modal.className = 'modal-overlay';
+        modal.onclick = (e) => { if(e.target===modal) modal.classList.remove('active'); };
+        modal.innerHTML = '<div class="modal" style="max-width:1100px;width:95%"></div>';
+        document.body.appendChild(modal);
+    }
+    modal.querySelector('.modal').innerHTML = html;
+    modal.classList.add('active');
 }
 
 // ═══════════════════════════════════════════════════

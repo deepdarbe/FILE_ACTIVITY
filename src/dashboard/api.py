@@ -1300,7 +1300,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         if not scan_id:
             raise HTTPException(404, "Tarama bulunamadi")
 
-        files = get_insight_files(db, scan_id, insight_type)
+        # Bilinmeyen insight_type artik sessizce bos liste donmuyor —
+        # ValueError yukseliyor (issue #82, Bug 2). HTTP 400'e cevirip
+        # frontend'in mesaji modalda gostermesini sagliyoruz.
+        try:
+            files = get_insight_files(db, scan_id, insight_type)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         total = len(files)
         offset = (page - 1) * page_size
         page_files = files[offset:offset + page_size]
