@@ -318,6 +318,76 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     100% { background-position: -200% 0; }
 }
 
+/* === Issue #125: Page-level skeleton placeholders === */
+.skeleton-host { padding: 8px 0; }
+.skeleton-row, .skeleton-chart, .skeleton-card {
+    background: linear-gradient(90deg, var(--bg-hover) 0%, var(--border-light) 50%, var(--bg-hover) 100%);
+    background-size: 200% 100%;
+    animation: gp-shimmer 1.2s ease-in-out infinite;
+    border-radius: 6px;
+}
+.skeleton-row {
+    height: 36px;
+    margin: 6px 0;
+}
+.skeleton-chart {
+    width: 100%;
+    max-width: 400px;
+    height: 300px;
+    margin: 8px 0;
+}
+.skeleton-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.skeleton-card {
+    height: 90px;
+}
+
+/* === Issue #125: "Su an ne oluyor" status banner === */
+.ops-banner {
+    position: fixed; top: 4px; left: 0; right: 0;
+    z-index: 2999;
+    display: none;
+    pointer-events: none;
+    text-align: center;
+}
+.ops-banner.active { display: block; }
+.ops-banner-pill {
+    pointer-events: auto;
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--bg-card); color: var(--text-primary);
+    border: 1px solid var(--border-light); border-radius: 999px;
+    padding: 6px 14px; font-size: 12px; font-weight: 500;
+    box-shadow: var(--shadow);
+    cursor: pointer;
+    user-select: none;
+    max-width: calc(100% - 32px);
+}
+.ops-banner-pill:hover { border-color: var(--accent); }
+.ops-banner-spin {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--accent); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+}
+.ops-banner-dropdown {
+    pointer-events: auto;
+    display: none;
+    position: absolute; top: 36px; left: 50%; transform: translateX(-50%);
+    background: var(--bg-card); color: var(--text-primary);
+    border: 1px solid var(--border-light); border-radius: 8px;
+    padding: 8px 0; min-width: 280px; max-width: 480px;
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.25));
+    text-align: left;
+}
+.ops-banner.expanded .ops-banner-dropdown { display: block; }
+.ops-banner-row {
+    padding: 6px 14px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border-light);
+}
+.ops-banner-row:last-child { border-bottom: none; }
+.ops-banner-row .ops-row-label { font-weight: 500; }
+.ops-banner-row .ops-row-meta { color: var(--text-secondary); font-size: 11px; margin-top: 2px; }
+
 /* === VIEW-TOGGLE (issue #84 — Gorsel | Profesyonel) === */
 .view-toggle { display: inline-flex; gap: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-light); flex-shrink: 0; }
 .view-toggle .vt-btn {
@@ -455,6 +525,17 @@ body.sidebar-open { overflow: hidden; }
         <span class="gp-calls" id="gp-calls"></span>
         <button class="gp-retry" id="gp-retry" style="display:none" onclick="retryLastLoad()">Tekrar Dene</button>
     </div>
+</div>
+
+<!-- Issue #125: "Su an ne oluyor" — backend-driven status banner that
+     reflects scans, analyses, archive runs, snapshot/purge work etc.
+     Sits BELOW the #79 progress bar so the two never stack. -->
+<div class="ops-banner" id="ops-banner" role="status" aria-live="polite">
+    <div class="ops-banner-pill" id="ops-banner-pill" onclick="opsBannerToggle()">
+        <span class="ops-banner-spin" aria-hidden="true"></span>
+        <span id="ops-banner-text">...</span>
+    </div>
+    <div class="ops-banner-dropdown" id="ops-banner-dropdown"></div>
 </div>
 
 <!-- Issue #77 Phase 2: persistent banner shown when the dashboard
@@ -2054,7 +2135,10 @@ async function loadWithProgress(pageName, fn) {
        - Indeterminate on first call (<3 samples), percentage from p50 after.
        - On success: hide bar + record duration (cap last 10).
        - On error: keep bar visible in "error" state with Tekrar Dene retry.
-       - >30s: emit "Yavas yanit" toast once. */
+       - >30s: emit "Yavas yanit" toast once.
+       Issue #125: after 5s without resolve, drop a skeleton placeholder
+       into the page's main container so the user sees structure instead
+       of a blank rectangle. Skeleton MUST be cancellable on quick loads. */
     if (typeof fn !== 'function') return;
     _gpLastPage = pageName;
     _gpLastFn = fn;
@@ -2074,11 +2158,21 @@ async function loadWithProgress(pageName, fn) {
     if (_gpSlowTimer) clearTimeout(_gpSlowTimer);
     _gpSlowTimer = setTimeout(() => _gpMarkSlow(pageName, started), 30000);
 
+    // Issue #125: schedule a 5s skeleton fallback. If fn() resolves
+    // earlier we cancel via clearTimeout — never flashes for fast loads.
+    let _skelTimer = setTimeout(() => {
+        try {
+            const target = _findSkeletonContainer(pageName);
+            if (target) renderPageSkeleton(target.id, target.type);
+        } catch (_) { /* skeleton is purely visual — never escalate */ }
+    }, 5000);
+
     try {
         const result = await fn();
         const duration = performance.now() - started;
         _appendLoadDuration(pageName, duration);
         if (pageEl) pageEl.classList.remove('loading');
+        if (_skelTimer) { clearTimeout(_skelTimer); _skelTimer = null; }
         // Final flash to 100%
         const fill = _gpEl('gp-fill');
         const widget = _gpEl('global-progress');
@@ -2088,6 +2182,7 @@ async function loadWithProgress(pageName, fn) {
         return result;
     } catch (e) {
         if (pageEl) pageEl.classList.remove('loading');
+        if (_skelTimer) { clearTimeout(_skelTimer); _skelTimer = null; }
         const widget = _gpEl('global-progress');
         const status = _gpEl('gp-status');
         const retry = _gpEl('gp-retry');
@@ -2112,6 +2207,146 @@ function retryLastLoad() {
     } else {
         _gpHide();
     }
+}
+
+// ═══════════════════════════════════════════════════
+// Issue #125 — "Su an ne oluyor" status banner + page skeleton
+// ═══════════════════════════════════════════════════
+
+let _opsPollTimer = null;
+let _opsLastSig = '';
+const OPS_POLL_INTERVAL_MS = 5000;
+
+function _opsIcon(type) {
+    return '🔄';
+}
+
+function _opsLabelMin(eta_seconds) {
+    if (eta_seconds == null) return '';
+    const mins = Math.max(1, Math.round(eta_seconds / 60));
+    return ` · ~${mins} dk kaldi`;
+}
+
+function renderOpsBanner(operations) {
+    const banner = document.getElementById('ops-banner');
+    const text = document.getElementById('ops-banner-text');
+    const dropdown = document.getElementById('ops-banner-dropdown');
+    if (!banner || !text || !dropdown) return;
+
+    const list = Array.isArray(operations) ? operations : [];
+    if (list.length === 0) {
+        banner.classList.remove('active', 'expanded');
+        text.textContent = '';
+        dropdown.innerHTML = '';
+        return;
+    }
+    banner.classList.add('active');
+
+    if (list.length === 1) {
+        const op = list[0];
+        text.textContent = `${_opsIcon(op.type)} ${op.label}${_opsLabelMin(op.eta_seconds)}`;
+    } else {
+        text.textContent = `${_opsIcon('multi')} ${list.length} islem devam ediyor (tikla)`;
+    }
+
+    // Always rebuild the dropdown so a click while polling shows fresh data.
+    dropdown.innerHTML = list.map(op => {
+        const meta = [];
+        if (op.progress_pct != null) meta.push(`%${op.progress_pct}`);
+        if (op.eta_seconds != null) meta.push(`~${Math.max(1, Math.round(op.eta_seconds/60))} dk kaldi`);
+        if (op.metadata && op.metadata.source_id) meta.push(`source #${op.metadata.source_id}`);
+        const metaTxt = meta.join(' · ');
+        return `<div class="ops-banner-row">
+            <div class="ops-row-label">${_opsIcon(op.type)} ${_escapeHtml(op.label || op.type)}</div>
+            ${metaTxt ? `<div class="ops-row-meta">${_escapeHtml(metaTxt)}</div>` : ''}
+        </div>`;
+    }).join('');
+}
+
+function opsBannerToggle() {
+    const banner = document.getElementById('ops-banner');
+    if (!banner) return;
+    // Single-op pills don't expand — the label already says everything.
+    const dropdown = document.getElementById('ops-banner-dropdown');
+    if (!dropdown || dropdown.children.length <= 1) return;
+    banner.classList.toggle('expanded');
+}
+
+async function pollOperations() {
+    try {
+        const r = await fetch('/api/system/status', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        const ops = (j && Array.isArray(j.operations)) ? j.operations : [];
+        // Avoid re-rendering when the snapshot is unchanged — keeps the
+        // banner steady and avoids flicker. Cheap signature: type+id only.
+        const sig = ops.map(o => `${o.op_id || ''}|${o.label || ''}|${o.eta_seconds || ''}`).join(';');
+        if (sig === _opsLastSig) return;
+        _opsLastSig = sig;
+        renderOpsBanner(ops);
+    } catch (_) {
+        /* offline / 5xx — banner stays at last known state, no notify spam */
+    }
+}
+
+function startOperationsPolling() {
+    if (_opsPollTimer) return;
+    pollOperations();
+    _opsPollTimer = setInterval(pollOperations, OPS_POLL_INTERVAL_MS);
+}
+
+// ───────────────── Page skeleton ─────────────────
+
+function renderPageSkeleton(containerId, type = 'table') {
+    /* Inject placeholder shimmer markup into ``containerId``.
+       - 'table': 10 row placeholders (column count comes from DOM if any).
+       - 'chart': single 400x300 pulsing rectangle.
+       - 'cards': 4 KPI card shimmers.
+       Returns the host element so the caller can stash a reference. */
+    const host = document.getElementById(containerId);
+    if (!host) return null;
+    let html = '';
+    if (type === 'cards') {
+        html = '<div class="skeleton-host"><div class="skeleton-cards">' +
+            '<div class="skeleton-card"></div>'.repeat(4) +
+            '</div></div>';
+    } else if (type === 'chart') {
+        html = '<div class="skeleton-host"><div class="skeleton-chart"></div></div>';
+    } else {
+        html = '<div class="skeleton-host">' +
+            '<div class="skeleton-row"></div>'.repeat(10) +
+            '</div>';
+    }
+    host.setAttribute('data-skeleton', '1');
+    host.innerHTML = html;
+    return host;
+}
+
+function _findSkeletonContainer(pageName) {
+    /* Heuristic: find the main "data" container of a given page. We
+       prefer common id conventions (#<name>-table, #<name>-chart,
+       #page-<name> .table-host) and fall back to the page node itself. */
+    const candidates = [
+        `${pageName}-table`,
+        `${pageName}-list`,
+        `${pageName}-grid`,
+        `${pageName}-container`,
+        `${pageName}-content`,
+    ];
+    for (const id of candidates) {
+        if (document.getElementById(id)) return { id, type: 'table' };
+    }
+    // chart-only pages
+    const chartCandidates = [`${pageName}-chart`, `${pageName}-canvas`];
+    for (const id of chartCandidates) {
+        if (document.getElementById(id)) return { id, type: 'chart' };
+    }
+    // Fallback: page root
+    const pageEl = document.getElementById('page-' + pageName);
+    if (pageEl && !pageEl.id.startsWith('skeleton-')) {
+        return { id: pageEl.id, type: 'cards' };
+    }
+    return null;
 }
 
 // Bug 3 fix: shared helper that fetches a URL as blob with abort signal,
@@ -6487,6 +6722,11 @@ async function executeApproval(id, btn) {
         loadOverview();
         loadAnomalies();
     }
+
+    // Issue #125: start global "su an ne oluyor" polling once. The
+    // poller is page-agnostic and lives for the lifetime of the
+    // dashboard tab; offline / 5xx responses are swallowed silently.
+    try { startOperationsPolling(); } catch (_) { /* polling is non-critical */ }
 })();
 
 // ═══════════════════════════════════════════════════

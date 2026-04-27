@@ -80,9 +80,19 @@ class FileActivityService:
             except Exception as e:
                 logger.warning("EmailNotifier baslatilamadi: %s", e)
                 email_notifier = None
+            # Issue #125: shared operations registry. Created here so the
+            # scheduler (background jobs) and the dashboard (API + banner)
+            # see the same in-memory state.
+            try:
+                from src.storage.operations_tracker import OperationsRegistry
+                self.operations_registry = OperationsRegistry()
+            except Exception as e:
+                logger.warning("OperationsRegistry baslatilamadi: %s", e)
+                self.operations_registry = None
             self.scheduler = TaskScheduler(self.db, self.config,
                                            ad_lookup=ad_lookup,
-                                           email_notifier=email_notifier)
+                                           email_notifier=email_notifier,
+                                           operations_registry=self.operations_registry)
             self.scheduler.start()
             logger.info("Task scheduler started (ad=%s, smtp=%s)",
                         getattr(ad_lookup, "available", False),
@@ -103,7 +113,10 @@ class FileActivityService:
             import uvicorn
             from src.dashboard.api import create_app
             dash = self.config.get("dashboard", {})
-            app = create_app(self.db, self.config)
+            app = create_app(
+                self.db, self.config,
+                operations_registry=getattr(self, "operations_registry", None),
+            )
             uvicorn.run(app, host=dash.get("host", "0.0.0.0"), port=dash.get("port", 8085), log_level="warning")
         except Exception as e:
             logger.error("Dashboard failed: %s", e)
