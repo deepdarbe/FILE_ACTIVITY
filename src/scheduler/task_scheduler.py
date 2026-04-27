@@ -39,6 +39,10 @@ class TaskScheduler:
         # Issue #110 Phase 2: register the daily quarantine purge job.
         # Hard-deletes quarantine_log rows older than quarantine_days.
         self._register_daily_quarantine_purge_job()
+        # Issue #113: daily capacity-check job. No-op when
+        # forecast.enabled=false, smtp.enabled=false, or
+        # forecast.alarm_email is empty — all three independently disable.
+        self._register_capacity_check_job()
         self.scheduler.start()
         logger.info("TaskScheduler başlatıldı")
 
@@ -536,6 +540,200 @@ class TaskScheduler:
             logger.error(
                 "Failed to register daily_quarantine_purge: %s", e
             )
+
+    # ──────────────────────────────────────────────────────────────────
+    # Issue #113 — daily capacity-alarm digest
+    # ──────────────────────────────────────────────────────────────────
+
+    def _run_capacity_check(self):
+        """Daily capacity check (issue #113).
+
+        For every source with a completed scan history, run the linear
+        forecast. If ``capacity_alarm_at`` is set AND falls within
+        ``forecast.alarm_lead_days`` of today, batch the alert into a
+        single digest email to ``forecast.alarm_email``.
+
+        Returns a dict so the run-log is meaningful. Never raises —
+        scheduler retries tomorrow.
+        """
+        forecast_cfg = (self.config or {}).get("forecast") or {}
+        if not forecast_cfg.get("enabled", True):
+            return {"status": "skipped", "reason": "forecast.enabled=false"}
+        alarm_email = (forecast_cfg.get("alarm_email") or "").strip()
+        if not alarm_email:
+            return {"status": "skipped", "reason": "alarm_email empty"}
+        if self.email_notifier is None or not self.email_notifier.available:
+            return {"status": "skipped", "reason": "email_notifier unavailable"}
+
+        try:
+            lead_days = int(forecast_cfg.get("alarm_lead_days", 30))
+        except (TypeError, ValueError):
+            lead_days = 30
+        try:
+            pct = float(forecast_cfg.get("capacity_threshold_pct", 85))
+        except (TypeError, ValueError):
+            pct = 85.0
+        horizon_days = max(lead_days * 2, 90)  # always look further than the lead
+
+        # Disk total (best-effort) for the default threshold.
+        disk_total = 0
+        try:
+            import shutil as _shutil
+            import os as _os
+            target = _os.path.dirname(_os.path.abspath(self.db.db_path)) or "."
+            disk_total = int(_shutil.disk_usage(target).total)
+        except Exception:
+            disk_total = 0
+        threshold = int(disk_total * pct / 100.0) if disk_total > 0 else 0
+
+        try:
+            from src.reports.forecast import forecast_growth
+        except Exception as e:
+            logger.error("daily_capacity_check forecast import failed: %s", e)
+            return {"status": "error", "message": str(e)}
+
+        now = datetime.now()
+        alarmed: list = []
+        with self.db.get_cursor() as cur:
+            cur.execute("SELECT id, name FROM sources WHERE enabled = 1")
+            sources = [dict(r) for r in cur.fetchall()]
+        for src in sources:
+            sid = int(src["id"])
+            with self.db.get_cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT started_at, total_size, total_files
+                    FROM scan_runs
+                    WHERE source_id = ?
+                      AND status = 'completed'
+                      AND total_size IS NOT NULL
+                      AND total_size > 0
+                    ORDER BY started_at ASC
+                    """,
+                    (sid,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+            if not rows:
+                continue
+            try:
+                result = forecast_growth(
+                    rows, horizon_days=horizon_days,
+                    capacity_threshold_bytes=threshold or None,
+                    source_id=sid,
+                )
+            except Exception as e:
+                logger.warning("forecast failed for source %s: %s", sid, e)
+                continue
+            if not result.capacity_alarm_at:
+                continue
+            try:
+                alarm_dt = datetime.fromisoformat(result.capacity_alarm_at)
+            except Exception:
+                continue
+            days_to = (alarm_dt - now).days
+            if days_to > lead_days:
+                continue
+            alarmed.append({
+                "source_id": sid,
+                "source_name": src.get("name") or "?",
+                "alarm_at": result.capacity_alarm_at,
+                "days_to_alarm": days_to,
+                "predicted_bytes": int(result.predicted_bytes),
+                "last_bytes": int(result.last_bytes),
+                "samples_used": result.samples_used,
+            })
+
+        if not alarmed:
+            return {"status": "completed", "alarmed": 0,
+                    "checked_sources": len(sources)}
+
+        # Build a plain-text digest (HTML is optional; keep it simple).
+        lines = [
+            f"File Activity capacity forecast — {now.strftime('%Y-%m-%d')}",
+            f"Threshold: {pct:.1f}% of disk "
+            f"(~{threshold / (1024 ** 3):.1f} GiB)" if threshold else
+            "Threshold: per-request",
+            "",
+            "Sources approaching capacity within "
+            f"{lead_days} days:",
+            "",
+        ]
+        for a in alarmed:
+            lines.append(
+                f"  • [{a['source_id']}] {a['source_name']}: "
+                f"alarm {a['alarm_at']} ({a['days_to_alarm']}d) "
+                f"— last {a['last_bytes'] / (1024**3):.1f} GiB, "
+                f"projected {a['predicted_bytes'] / (1024**3):.1f} GiB"
+            )
+        body = "\n".join(lines)
+
+        # Use a minimal MIME-text send — EmailNotifier.send_user_report is
+        # tied to user-score reports; we just need a plain digest. Reuse
+        # its low-level SMTP plumbing.
+        try:
+            from email.mime.text import MIMEText
+            from email.utils import formataddr
+            msg = MIMEText(body, "plain", "utf-8")
+            subject_prefix = self.email_notifier.subject_prefix or "[File Activity]"
+            msg["Subject"] = (
+                f"{subject_prefix} Kapasite Uyarisi: "
+                f"{len(alarmed)} kaynak"
+            )
+            msg["From"] = formataddr(
+                (self.email_notifier.from_name, self.email_notifier.from_address)
+            )
+            msg["To"] = alarm_email
+            recipients = [alarm_email]
+            cc = (self.email_notifier.admin_cc or "").strip()
+            if cc and cc not in recipients:
+                msg["Cc"] = cc
+                recipients.append(cc)
+            with self.email_notifier._connect() as smtp:
+                smtp.sendmail(
+                    self.email_notifier.from_address,
+                    recipients,
+                    msg.as_string(),
+                )
+            logger.info(
+                "daily_capacity_check digest sent to %s (%d sources)",
+                alarm_email, len(alarmed),
+            )
+            return {
+                "status": "completed",
+                "alarmed": len(alarmed),
+                "checked_sources": len(sources),
+                "to": alarm_email,
+            }
+        except Exception as e:
+            logger.error("daily_capacity_check email send failed: %s", e)
+            return {"status": "error", "message": str(e),
+                    "alarmed": len(alarmed)}
+
+    def _register_capacity_check_job(self):
+        """Register the once-a-day capacity-alarm digest job (issue #113)."""
+        forecast_cfg = (self.config or {}).get("forecast") or {}
+        if not forecast_cfg.get("enabled", True):
+            logger.info("daily_capacity_check not registered: forecast.enabled=false")
+            return
+        if not (forecast_cfg.get("alarm_email") or "").strip():
+            logger.info(
+                "daily_capacity_check not registered: forecast.alarm_email empty"
+            )
+            return
+        # Run once a day at 03:15 — after the daily backup (02:00) so the
+        # snapshot reflects the freshest scans, before business hours.
+        try:
+            trigger = CronTrigger(minute="15", hour="3")
+            self.scheduler.add_job(
+                self._run_capacity_check,
+                trigger=trigger,
+                id="daily_capacity_check",
+                name="daily_capacity_check",
+                replace_existing=True,
+            )
+            logger.info("daily_capacity_check job registered (cron: 15 3 * * *)")
+        except Exception as e:
+            logger.error("Failed to register daily_capacity_check: %s", e)
 
     def reload_tasks(self):
         """Görevleri yeniden yükle."""
