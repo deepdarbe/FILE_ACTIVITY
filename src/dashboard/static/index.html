@@ -428,6 +428,10 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
         <div class="nav-item" onclick="showPage('legal-holds')"><span class="icon">⚖️</span> <span>Legal Hold</span></div>
     </div>
     <div class="nav-section">
+        <div class="nav-label">Raporlar</div>
+        <div class="nav-item" onclick="showPage('chargeback')"><span class="icon">💵</span> <span>Chargeback / Cost Center</span></div>
+    </div>
+    <div class="nav-section">
         <div class="nav-label">Entegrasyonlar</div>
         <div class="nav-item" onclick="showPage('syslog')"><span class="icon">📡</span> <span>Syslog / SIEM</span></div>
         <div class="nav-item" onclick="showPage('mcp')"><span class="icon">🤖</span> <span>MCP Server</span></div>
@@ -1022,6 +1026,103 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <div id="lh-history-pane" style="display:none">
         <div id="lh-history-container"></div>
     </div>
+</div>
+
+<!-- ============ RAPORLAR > CHARGEBACK / COST CENTER (issue #111) ============ -->
+<div class="page" id="page-chargeback">
+    <div class="page-header">
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Raporlar &raquo; Chargeback / Cost Center</div>
+            <h2>Chargeback / Cost Center Raporu</h2>
+            <div class="desc">Sahip (owner) bazli depolama maliyeti — manuel cost-center eslemeleri + aylik maliyet hesabi (formullu XLSX)</div>
+        </div>
+        <div class="actions">
+            <select id="cb-source" onchange="loadChargeback()" style="width:200px">
+                <option value="">Kaynak secin...</option>
+            </select>
+            <button class="btn btn-primary" onclick="openChargebackCenterModal()">+ Yeni Cost Center</button>
+            <button class="btn btn-outline" id="cb-xlsx-btn" onclick="exportChargebackXlsx(event)" style="display:none">XLSX Indir</button>
+        </div>
+    </div>
+
+    <!-- Total summary cards -->
+    <div class="cards" id="cb-summary-cards"></div>
+
+    <!-- Visual mode -->
+    <div id="cb-visual-host" style="margin-top:20px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+            <div class="panel">
+                <h3 class="panel-title">Cost Center Dagilimi (Toplam GB)</h3>
+                <div style="position:relative;height:300px">
+                    <canvas id="cb-pie-chart"></canvas>
+                </div>
+            </div>
+            <div class="panel">
+                <h3 class="panel-title">Aylik Maliyet (USD)</h3>
+                <div style="position:relative;height:300px">
+                    <canvas id="cb-bar-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Cost center management table -->
+        <div class="panel" style="margin-top:20px">
+            <h3 class="panel-title">Tanimli Cost Center'lar</h3>
+            <div id="cb-centers-list"></div>
+        </div>
+
+        <!-- Unmapped owners panel -->
+        <div class="panel" style="margin-top:20px">
+            <h3 class="panel-title" style="color:var(--warning)">Eslesmeyen Owner'lar</h3>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">
+                Hicbir cost center pattern'ine eslemeyen owner'lar — admin bunlari bir cost-center'a atayabilir.
+            </div>
+            <div id="cb-unmapped-list"></div>
+        </div>
+    </div>
+
+    <!-- Profesyonel mode -->
+    <div id="cb-grid-host" class="view-grid-host" style="display:none">
+        <div class="panel" style="margin-top:20px">
+            <h3 class="panel-title">Cost Center Detay Tablosu</h3>
+            <div id="cb-entity-container"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Yeni Cost Center -->
+<div class="modal-overlay" id="modal-chargeback-center">
+<div class="modal">
+    <h3>💵 Yeni Cost Center</h3>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">
+        Bir cost-center tanimlayin; ardindan owner pattern ekleyerek hangi sahiplerin bu merkeze atanacagini belirleyin.
+        Pattern formati: <code>CONTOSO\\jdoe</code> (tam) veya <code>CONTOSO\\hr_*</code> (glob).
+    </div>
+    <div class="form-group"><label>Cost Center Adi</label><input id="cb-form-name" placeholder="Ornek: Insan Kaynaklari"></div>
+    <div class="form-group"><label>Aciklama</label><input id="cb-form-desc" placeholder="HR departmani"></div>
+    <div class="form-group"><label>Aylik Maliyet ($/GB)</label><input id="cb-form-rate" type="number" step="0.001" min="0" placeholder="0.05"></div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-chargeback-center')">Iptal</button>
+        <button class="btn btn-primary" id="cb-form-submit-btn" onclick="submitChargebackCenterForm(this)">Olustur</button>
+    </div>
+</div>
+</div>
+
+<!-- Modal: Owner pattern ekle -->
+<div class="modal-overlay" id="modal-chargeback-owner">
+<div class="modal">
+    <h3>👤 Bu Cost Center'a Owner Ekle</h3>
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.5">
+        Hedef cost center: <strong id="cb-owner-target-name">-</strong><br>
+        Pattern formati: tam eslesme (<code>CONTOSO\\jdoe</code>) veya glob (<code>CONTOSO\\hr_*</code>, <code>CONTOSO\\*</code>).
+    </div>
+    <div class="form-group"><label>Owner Pattern</label><input id="cb-owner-form-pattern" placeholder="CONTOSO\\hr_*"></div>
+    <input type="hidden" id="cb-owner-form-center-id">
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-chargeback-owner')">Iptal</button>
+        <button class="btn btn-primary" id="cb-owner-submit-btn" onclick="submitChargebackOwnerForm(this)">Ekle</button>
+    </div>
+</div>
 </div>
 
 <!-- ============ GUVENLIK > YETIM SID'LER (issue #81) ============ -->
@@ -1870,7 +1971,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -1898,10 +1999,10 @@ async function loadSources() {
 }
 
 function populateAllSourceSelects() {
-    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source'].forEach(id => populateSourceSelect(id));
+    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source'].forEach(id => populateSourceSelect(id));
     // Auto-select first source if only one
     if (sources.length === 1) {
-        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source'].forEach(id => {
+        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source'].forEach(id => {
             const sel = document.getElementById(id);
             if (sel && !sel.value) sel.value = sources[0].id;
         });
@@ -6451,6 +6552,355 @@ async function exportAclXlsx(ev) {
         } else {
             await fetchAndDownload(`${API}/security/acl/sprawl/export.xlsx`, signal, 'acl_sprawl.xlsx');
         }
+    });
+}
+
+// ═══════════════════════════════════════════════════
+// CHARGEBACK / COST CENTER (issue #111)
+// ═══════════════════════════════════════════════════
+let _cbReport = null;          // last computed report payload
+let _cbCenters = [];           // cached center list (with owner_patterns)
+
+function _attachChargebackViewToggle() {
+    const page = document.getElementById('page-chargeback');
+    if (!page || typeof attachViewToggle !== 'function') return;
+    attachViewToggle(page, {
+        pageKey: 'chargeback',
+        renderVisual: _renderChargebackVisual,
+        renderGrid: _renderChargebackGrid,
+        defaultMode: 'visual',
+    });
+}
+
+function _renderChargebackVisual() {
+    const v = document.getElementById('cb-visual-host');
+    const g = document.getElementById('cb-grid-host');
+    if (v) v.style.display = '';
+    if (g) g.style.display = 'none';
+    if (_cbReport) _renderChargebackCharts(_cbReport);
+}
+
+function _renderChargebackGrid() {
+    const v = document.getElementById('cb-visual-host');
+    const g = document.getElementById('cb-grid-host');
+    if (v) v.style.display = 'none';
+    if (g) g.style.display = '';
+    if (_cbReport) _renderChargebackEntityList(_cbReport);
+}
+
+async function loadChargeback() {
+    _attachChargebackViewToggle();
+    // Always refresh the centers list so the management table reflects the
+    // server-side state, even when the user has not yet selected a source.
+    await _loadChargebackCenters();
+
+    const sid = document.getElementById('cb-source').value;
+    if (!sid) {
+        document.getElementById('cb-summary-cards').innerHTML = '';
+        document.getElementById('cb-unmapped-list').innerHTML =
+            '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>';
+        const xb = document.getElementById('cb-xlsx-btn');
+        if (xb) xb.style.display = 'none';
+        return;
+    }
+
+    let data;
+    try {
+        data = await api(`/chargeback/${sid}`);
+    } catch (e) {
+        // 404 = no completed scan yet for this source
+        document.getElementById('cb-summary-cards').innerHTML =
+            '<div style="padding:20px;color:var(--text-muted)">Bu kaynak icin tamamlanmis bir tarama yok.</div>';
+        return;
+    }
+    _cbReport = data;
+    document.getElementById('cb-xlsx-btn').style.display = '';
+
+    // Summary cards
+    const fmtUSD = n => '$' + Number(n || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    document.getElementById('cb-summary-cards').innerHTML = `
+        <div class="card" style="border-top:3px solid var(--accent)">
+            <div class="card-label">Toplam Cost Center</div>
+            <div class="card-value">${(data.centers || []).length}</div>
+            <div class="card-sub">${(data.unmapped_owners || []).length} eslesmeyen owner</div>
+        </div>
+        <div class="card" style="border-top:3px solid var(--info)">
+            <div class="card-label">Toplam Veri</div>
+            <div class="card-value">${Number(data.total_gb || 0).toFixed(2)} GB</div>
+            <div class="card-sub">${formatNum(data.total_file_count || 0)} dosya</div>
+        </div>
+        <div class="card" style="border-top:3px solid var(--success)">
+            <div class="card-label">Aylik Toplam Maliyet</div>
+            <div class="card-value">${fmtUSD(data.total_monthly_cost)}</div>
+            <div class="card-sub">cost_per_gb_month × GB</div>
+        </div>
+    `;
+
+    // Unmapped owners
+    const u = data.unmapped_owners || [];
+    if (u.length === 0) {
+        document.getElementById('cb-unmapped-list').innerHTML =
+            '<div style="padding:20px;color:var(--success)">Tum owner\'lar bir cost-center\'a atanmis.</div>';
+    } else {
+        document.getElementById('cb-unmapped-list').innerHTML = `
+            <div class="table-wrap"><table>
+                <thead><tr><th>Owner</th><th>Dosya</th><th>Toplam GB</th><th>Aksiyon</th></tr></thead>
+                <tbody>${u.slice(0, 50).map(r => `
+                    <tr>
+                        <td><code>${_cbEsc(r.owner)}</code></td>
+                        <td>${formatNum(r.file_count)}</td>
+                        <td>${Number(r.total_gb || 0).toFixed(3)}</td>
+                        <td>
+                            <select onchange="cbAssignUnmapped('${_cbEsc(r.owner).replace(/'/g, "\\'")}', this.value, this)" style="font-size:11px">
+                                <option value="">Cost center sec...</option>
+                                ${(_cbCenters || []).map(c =>
+                                    `<option value="${c.id}">${_cbEsc(c.name)}</option>`
+                                ).join('')}
+                            </select>
+                        </td>
+                    </tr>
+                `).join('')}</tbody>
+            </table></div>
+            ${u.length > 50 ? `<div style="font-size:11px;color:var(--text-muted);margin-top:8px">${u.length - 50} owner daha gosterilmedi.</div>` : ''}
+        `;
+    }
+
+    // Charts + tables
+    _renderChargebackCharts(data);
+    _renderChargebackEntityList(data);
+}
+
+function _cbEsc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function _loadChargebackCenters() {
+    try {
+        const data = await api('/chargeback/centers');
+        _cbCenters = data.centers || [];
+    } catch (e) {
+        _cbCenters = [];
+    }
+    const host = document.getElementById('cb-centers-list');
+    if (!host) return;
+    if (_cbCenters.length === 0) {
+        host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Henuz cost-center tanimlanmamis. Sag ustteki "+ Yeni Cost Center" butonu ile ekleyin.</div>';
+        return;
+    }
+    host.innerHTML = `
+        <div class="table-wrap"><table>
+            <thead><tr><th>Ad</th><th>Aciklama</th><th>$/GB/ay</th><th>Owner Pattern Sayisi</th><th>Pattern'ler</th><th>Aksiyon</th></tr></thead>
+            <tbody>${_cbCenters.map(c => `
+                <tr>
+                    <td><strong>${_cbEsc(c.name)}</strong></td>
+                    <td>${_cbEsc(c.description || '')}</td>
+                    <td>$${Number(c.cost_per_gb_month || 0).toFixed(4)}</td>
+                    <td>${(c.owner_patterns || []).length}</td>
+                    <td style="font-size:11px;font-family:monospace;color:var(--text-secondary)">
+                        ${(c.owner_patterns || []).slice(0, 5).map(p =>
+                            `<span style="display:inline-block;padding:2px 6px;background:var(--bg-secondary);border-radius:3px;margin:1px">${_cbEsc(p)} <a href="#" onclick="cbRemoveOwner(${c.id}, '${_cbEsc(p).replace(/'/g, "\\'")}', event)" style="color:var(--danger);text-decoration:none;margin-left:3px">×</a></span>`
+                        ).join(' ')}
+                        ${(c.owner_patterns || []).length > 5 ? `+${(c.owner_patterns || []).length - 5} daha` : ''}
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline" onclick="openChargebackOwnerModal(${c.id}, '${_cbEsc(c.name).replace(/'/g, "\\'")}')">+ Owner</button>
+                        <button class="btn btn-sm btn-outline" style="color:var(--danger)" onclick="cbRemoveCenter(${c.id})">Sil</button>
+                    </td>
+                </tr>
+            `).join('')}</tbody>
+        </table></div>
+    `;
+}
+
+function _renderChargebackCharts(data) {
+    const centers = (data.centers || []).filter(c => (c.total_gb || 0) > 0);
+    const COLORS_CB = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#84cc16','#06b6d4'];
+
+    destroyChart('cb-pie-chart');
+    const pieEl = document.getElementById('cb-pie-chart');
+    if (pieEl && centers.length) {
+        chartInstances['cb-pie-chart'] = new Chart(pieEl, {
+            type: 'doughnut',
+            data: {
+                labels: centers.map(c => c.name),
+                datasets: [{
+                    data: centers.map(c => c.total_gb),
+                    backgroundColor: COLORS_CB,
+                    borderWidth: 0,
+                }],
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, cutout: '55%',
+                plugins: {
+                    legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } },
+                    tooltip: {
+                        callbacks: {
+                            label: (ctx) => `${ctx.label}: ${Number(ctx.parsed).toFixed(2)} GB`,
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    destroyChart('cb-bar-chart');
+    const barEl = document.getElementById('cb-bar-chart');
+    if (barEl && centers.length) {
+        chartInstances['cb-bar-chart'] = new Chart(barEl, {
+            type: 'bar',
+            data: {
+                labels: centers.map(c => c.name),
+                datasets: [{
+                    label: 'Aylik Maliyet ($)',
+                    data: centers.map(c => c.monthly_cost || 0),
+                    backgroundColor: COLORS_CB.map(c => c + '99'),
+                    borderColor: COLORS_CB,
+                    borderWidth: 1,
+                    borderRadius: 4,
+                }],
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { display: false } },
+                scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } },
+            },
+        });
+    }
+}
+
+function _renderChargebackEntityList(data) {
+    const container = document.getElementById('cb-entity-container');
+    if (!container || typeof renderEntityList !== 'function') return;
+
+    const rows = (data.centers || []).map(c => ({
+        id: c.id,
+        name: c.name,
+        total_gb: Number(c.total_gb || 0).toFixed(3),
+        file_count: c.file_count || 0,
+        monthly_cost: '$' + Number(c.monthly_cost || 0).toFixed(2),
+        top_owner: (c.top_owners && c.top_owners[0]) ? c.top_owners[0].owner : '',
+    }));
+
+    renderEntityList(container, {
+        rows: rows,
+        rowKey: 'id',
+        pageSize: 50,
+        searchKeys: ['name', 'top_owner'],
+        columns: [
+            { key: 'name', label: 'Cost Center' },
+            { key: 'total_gb', label: 'Toplam GB' },
+            { key: 'file_count', label: 'Dosya Sayisi' },
+            { key: 'monthly_cost', label: 'Aylik Maliyet' },
+            { key: 'top_owner', label: 'En Buyuk Owner' },
+        ],
+        toolbar: {},
+        emptyMessage: 'Bu kaynakta esleyen cost-center yok',
+    });
+}
+
+// ---- CRUD modals & actions ----------------------------------------------
+
+function openChargebackCenterModal() {
+    document.getElementById('cb-form-name').value = '';
+    document.getElementById('cb-form-desc').value = '';
+    document.getElementById('cb-form-rate').value = '';
+    openModal('modal-chargeback-center');
+}
+
+async function submitChargebackCenterForm(btn) {
+    const name = document.getElementById('cb-form-name').value.trim();
+    const description = document.getElementById('cb-form-desc').value.trim();
+    const rate = parseFloat(document.getElementById('cb-form-rate').value || '0') || 0;
+    if (!name) { notify('Cost center adi gerekli', 'warning'); return; }
+    btn.disabled = true;
+    try {
+        await api('/chargeback/centers', {
+            method: 'POST',
+            body: JSON.stringify({ name, description, cost_per_gb_month: rate }),
+        });
+        notify('Cost center olusturuldu', 'success');
+        closeModal('modal-chargeback-center');
+        loadChargeback();
+    } catch (e) {
+        // notify already fired
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function openChargebackOwnerModal(centerId, centerName) {
+    document.getElementById('cb-owner-target-name').textContent = centerName;
+    document.getElementById('cb-owner-form-center-id').value = String(centerId);
+    document.getElementById('cb-owner-form-pattern').value = '';
+    openModal('modal-chargeback-owner');
+}
+
+async function submitChargebackOwnerForm(btn) {
+    const cid = parseInt(document.getElementById('cb-owner-form-center-id').value, 10);
+    const pat = document.getElementById('cb-owner-form-pattern').value.trim();
+    if (!cid || !pat) { notify('Pattern gerekli', 'warning'); return; }
+    btn.disabled = true;
+    try {
+        await api(`/chargeback/centers/${cid}/owners`, {
+            method: 'POST',
+            body: JSON.stringify({ owner_pattern: pat }),
+        });
+        notify('Owner pattern eklendi', 'success');
+        closeModal('modal-chargeback-owner');
+        loadChargeback();
+    } catch (e) {
+        // notify fired
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+async function cbRemoveCenter(centerId) {
+    if (!window.confirm('Bu cost center silinsin mi? Tum owner pattern\'leri de silinecek.')) return;
+    try {
+        await api(`/chargeback/centers/${centerId}`, { method: 'DELETE' });
+        notify('Cost center silindi', 'success');
+        loadChargeback();
+    } catch (e) { /* notify fired */ }
+}
+
+async function cbRemoveOwner(centerId, pattern, ev) {
+    if (ev) ev.preventDefault();
+    try {
+        await api(
+            `/chargeback/centers/${centerId}/owners/${encodeURIComponent(pattern)}`,
+            { method: 'DELETE' }
+        );
+        loadChargeback();
+    } catch (e) { /* notify fired */ }
+}
+
+async function cbAssignUnmapped(owner, centerId, selectEl) {
+    if (!centerId) return;
+    try {
+        await api(`/chargeback/centers/${centerId}/owners`, {
+            method: 'POST',
+            body: JSON.stringify({ owner_pattern: owner }),
+        });
+        notify('Owner ' + owner + ' atandi', 'success');
+        loadChargeback();
+    } catch (e) {
+        if (selectEl) selectEl.value = '';
+    }
+}
+
+async function exportChargebackXlsx(ev) {
+    const sid = document.getElementById('cb-source').value;
+    if (!sid) { notify('Once kaynak secin', 'warning'); return; }
+    await withButtonLoading(ev.target, async (signal) => {
+        await fetchAndDownload(
+            `${API}/chargeback/${sid}/export.xlsx`,
+            signal,
+            `chargeback_source${sid}.xlsx`
+        );
     });
 }
 
