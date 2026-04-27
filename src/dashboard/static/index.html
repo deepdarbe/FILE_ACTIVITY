@@ -240,7 +240,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 
 /* === RESPONSIVE === */
 @media (max-width: 1200px) { .chart-grid { grid-template-columns: 1fr; } .progress-stats { grid-template-columns: repeat(3, 1fr); } }
-@media (max-width: 900px) { .sidebar { width: 60px; } .sidebar .nav-item span, .sidebar .nav-label, .sidebar-header .subtitle, .sidebar-header .version, .sidebar-footer .status span { display: none; } .sidebar-header h1 span { display: none; } .main { margin-left: 60px; } }
+/* Issue #124: legacy 900px auto-narrow superseded by user-controlled narrow toggle */
 
 /* === SPINNER (Bug 3 fix - export button loading state) === */
 .spinner {
@@ -339,6 +339,108 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 @media (max-width: 700px) {
     .view-grid-host { overflow-x: auto; }
 }
+
+/* === SIDEBAR RESPONSIVE (issue #124) === */
+/* Vertical scroll inside sidebar: header + search stay top, footer pinned bottom,
+   middle .nav-content scrolls. */
+.sidebar { overflow: hidden; }
+.sidebar-header { position: relative; flex-shrink: 0; }
+.sidebar-header .sidebar-toggle {
+    position: absolute; top: 14px; right: 12px;
+    background: transparent; color: var(--text-muted);
+    border: 1px solid var(--border-light); border-radius: 6px;
+    width: 28px; height: 28px; line-height: 1; padding: 0;
+    cursor: pointer; font-size: 14px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    transition: var(--transition);
+}
+.sidebar-header .sidebar-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sidebar-search-wrap { padding: 10px 16px 8px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.sidebar-search-wrap input {
+    width: 100%; padding: 7px 10px; font-size: 12px;
+    background: var(--bg-input); border: 1px solid var(--border-light);
+    color: var(--text-primary); border-radius: 6px;
+}
+.sidebar-search-wrap input::placeholder { color: var(--text-muted); }
+.nav-content {
+    flex: 1; overflow-y: auto; overflow-x: hidden;
+    scrollbar-width: thin; scrollbar-color: var(--accent) transparent;
+}
+.nav-content::-webkit-scrollbar { width: 6px; }
+.nav-content::-webkit-scrollbar-track { background: transparent; }
+.nav-content::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; opacity: 0.6; }
+.nav-content::-webkit-scrollbar-thumb:hover { background: var(--accent-light); }
+
+/* Group collapsibility */
+.nav-section .nav-label {
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: pointer; user-select: none; padding-right: 18px;
+}
+.nav-section .nav-label .chev {
+    font-size: 9px; color: var(--text-muted); transition: transform 0.2s ease;
+    margin-left: 8px; flex-shrink: 0;
+}
+.nav-section.collapsed .nav-label .chev { transform: rotate(-90deg); }
+.nav-section.collapsed .nav-item { display: none; }
+.nav-section.search-empty { display: none; }
+.nav-item.search-hidden { display: none; }
+
+.sidebar-footer { flex-shrink: 0; }
+
+/* Narrow mode (icon-only) */
+.sidebar.narrow { width: 64px; }
+.sidebar.narrow ~ .main { margin-left: 64px; }
+.sidebar.narrow .nav-item span:not(.icon):not(.badge) { display: none; }
+.sidebar.narrow .nav-item { padding: 10px 0; justify-content: center; }
+.sidebar.narrow .nav-item .icon { width: 24px; }
+.sidebar.narrow .nav-item .badge { right: 6px; top: 4px; }
+.sidebar.narrow .nav-label { display: none; }
+.sidebar.narrow .sidebar-header h1 span:not(.logo) { display: none; }
+.sidebar.narrow .sidebar-header .subtitle,
+.sidebar.narrow .sidebar-header .version,
+.sidebar.narrow .sidebar-header .sidebar-toggle,
+.sidebar.narrow #update-badge,
+.sidebar.narrow #wal-warning-badge,
+.sidebar.narrow #legal-hold-badge { display: none !important; }
+.sidebar.narrow .sidebar-header { padding: 16px 8px; text-align: center; }
+.sidebar.narrow .sidebar-search-wrap { display: none; }
+.sidebar.narrow .sidebar-footer { padding: 12px 8px; text-align: center; }
+.sidebar.narrow .sidebar-footer .status span:not(.dot) { display: none; }
+.sidebar.narrow .nav-item { position: relative; }
+
+/* Mobile hamburger + backdrop */
+.sidebar-hamburger {
+    display: none; position: fixed; top: 12px; left: 12px; z-index: 1500;
+    background: var(--bg-card); color: var(--text-primary);
+    border: 1px solid var(--border-light); border-radius: 8px;
+    width: 38px; height: 38px; cursor: pointer; font-size: 18px;
+    align-items: center; justify-content: center;
+    box-shadow: var(--shadow);
+}
+.sidebar-backdrop {
+    display: none; position: fixed; inset: 0; z-index: 99;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(2px);
+}
+.sidebar-backdrop.active { display: block; }
+body.sidebar-open { overflow: hidden; }
+
+@media (max-width: 768px) {
+    .sidebar-hamburger { display: flex; }
+    .sidebar { transform: translateX(-100%); width: 280px; box-shadow: var(--shadow); }
+    .sidebar.open { transform: translateX(0); }
+    .sidebar.narrow { width: 280px; } /* narrow mode disabled on mobile */
+    .sidebar.narrow .nav-item span:not(.icon):not(.badge),
+    .sidebar.narrow .nav-label,
+    .sidebar.narrow .sidebar-header h1 span:not(.logo),
+    .sidebar.narrow .sidebar-header .subtitle,
+    .sidebar.narrow .sidebar-header .version,
+    .sidebar.narrow .sidebar-header .sidebar-toggle,
+    .sidebar.narrow .sidebar-search-wrap,
+    .sidebar.narrow .sidebar-footer .status span:not(.dot) { display: revert !important; }
+    .sidebar.narrow .nav-item { padding: 10px 24px; justify-content: flex-start; }
+    .sidebar.narrow ~ .main { margin-left: 0; }
+    .main { margin-left: 0 !important; padding-top: 60px; }
+}
 </style>
 </head>
 <body>
@@ -364,12 +466,17 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
     <button id="auto-restore-banner-close" type="button" style="margin-left:6px;padding:4px 10px;background:transparent;color:#000;border:1px solid #000;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">Kapat</button>
 </div>
 
+<!-- Issue #124: Mobile hamburger + backdrop -->
+<button class="sidebar-hamburger" id="sidebar-hamburger" type="button" aria-label="Menuyu ac" title="Menu">&#9776;</button>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
 <!-- SIDEBAR -->
-<nav class="sidebar">
+<nav class="sidebar" id="sidebar">
     <div class="sidebar-header">
         <h1><span class="logo">📊</span> <span>FILE ACTIVITY</span></h1>
         <div class="subtitle">Dosya Analiz & Arsiv</div>
         <div class="version" id="app-version">...</div>
+        <button class="sidebar-toggle" id="sidebar-narrow-toggle" type="button" aria-label="Daralt/Genislet" title="Daralt / Genislet">&#8801;</button>
         <div id="update-badge" style="display:none;margin-top:8px;padding:8px;background:var(--warning,#f59e0b);color:#000;border-radius:6px;font-size:11px;cursor:pointer" onclick="showUpdateDialog()">
             <div style="font-weight:600">Yeni sürüm mevcut</div>
             <div id="update-badge-info" style="margin-top:2px;opacity:0.9"></div>
@@ -383,67 +490,72 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
             <div id="legal-hold-badge-info" style="margin-top:2px;opacity:0.9"></div>
         </div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Genel</div>
-        <div class="nav-item active" onclick="showPage('overview')"><span class="icon">📈</span> <span>Genel Bakis</span></div>
-        <div class="nav-item" onclick="showPage('sources')"><span class="icon">📁</span> <span>Kaynaklar</span></div>
+    <div class="sidebar-search-wrap">
+        <input id="sidebar-search" type="search" placeholder="Menude ara..." autocomplete="off" aria-label="Menude ara">
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Analiz</div>
-        <div class="nav-item" onclick="showPage('treemap')"><span class="icon">🗺️</span> <span>Treemap Harita</span></div>
-        <div class="nav-item" onclick="showPage('frequency')"><span class="icon">📅</span> <span>Erisim Sikligi</span></div>
-        <div class="nav-item" onclick="showPage('types')"><span class="icon">📎</span> <span>Dosya Turleri</span></div>
-        <div class="nav-item" onclick="showPage('sizes')"><span class="icon">📊</span> <span>Boyut Dagilimi</span></div>
+    <div class="nav-content" id="nav-content">
+    <div class="nav-section" data-group="Genel">
+        <div class="nav-label">Genel <span class="chev">&#9660;</span></div>
+        <div class="nav-item active" onclick="showPage('overview')" title="Genel Bakis"><span class="icon">📈</span> <span>Genel Bakis</span></div>
+        <div class="nav-item" onclick="showPage('sources')" title="Kaynaklar"><span class="icon">📁</span> <span>Kaynaklar</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Kullanicilar</div>
-        <div class="nav-item" onclick="showPage('users')"><span class="icon">👥</span> <span>Kullanici Aktivite</span></div>
-        <div class="nav-item" onclick="showPage('anomalies')"><span class="icon">⚠️</span> <span>Anomaliler</span> <span class="badge" id="anomaly-badge" style="display:none">0</span></div>
+    <div class="nav-section" data-group="Analiz">
+        <div class="nav-label">Analiz <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('treemap')" title="Treemap Harita"><span class="icon">🗺️</span> <span>Treemap Harita</span></div>
+        <div class="nav-item" onclick="showPage('frequency')" title="Erisim Sikligi"><span class="icon">📅</span> <span>Erisim Sikligi</span></div>
+        <div class="nav-item" onclick="showPage('types')" title="Dosya Turleri"><span class="icon">📎</span> <span>Dosya Turleri</span></div>
+        <div class="nav-item" onclick="showPage('sizes')" title="Boyut Dagilimi"><span class="icon">📊</span> <span>Boyut Dagilimi</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Zeka</div>
-        <div class="nav-item" onclick="showPage('insights')"><span class="icon">🧠</span> <span>AI Insights</span></div>
+    <div class="nav-section" data-group="Kullanicilar">
+        <div class="nav-label">Kullanicilar <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('users')" title="Kullanici Aktivite"><span class="icon">👥</span> <span>Kullanici Aktivite</span></div>
+        <div class="nav-item" onclick="showPage('anomalies')" title="Anomaliler"><span class="icon">⚠️</span> <span>Anomaliler</span> <span class="badge" id="anomaly-badge" style="display:none">0</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Guvenlik</div>
-        <div class="nav-item" onclick="showPage('orphan-sids')"><span class="icon">👤</span> <span>Yetim SID'ler</span></div>
-        <div class="nav-item" onclick="showPage('ransomware')"><span class="icon">🛡️</span> <span>Ransomware Uyarilari</span></div>
-        <div class="nav-item" onclick="showPage('acl')"><span class="icon">🔐</span> <span>ACL Analizi</span></div>
+    <div class="nav-section" data-group="Zeka">
+        <div class="nav-label">Zeka <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('insights')" title="AI Insights"><span class="icon">🧠</span> <span>AI Insights</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Islemler</div>
-        <div class="nav-item" onclick="showPage('archive')"><span class="icon">🗃️</span> <span>Arsivleme</span></div>
-        <div class="nav-item" onclick="showPage('archive-history')"><span class="icon">📜</span> <span>Arsiv Gecmisi</span></div>
-        <div class="nav-item" onclick="showPage('duplicates')"><span class="icon">📑</span> <span>Kopya Dosyalar</span></div>
-        <div class="nav-item" onclick="showPage('growth')"><span class="icon">📈</span> <span>Buyume Analizi</span></div>
-        <div class="nav-item" onclick="showPage('naming')"><span class="icon">📐</span> <span>Adlandirma Uyumu</span></div>
-        <div class="nav-item" onclick="showPage('policies')"><span class="icon">📋</span> <span>Politikalar</span></div>
-        <div class="nav-item" onclick="showPage('schedules')"><span class="icon">⏰</span> <span>Zamanlama</span></div>
-        <div class="nav-item" onclick="showPage('sqlquery')"><span class="icon">🔍</span> <span>Sorgu</span></div>
+    <div class="nav-section" data-group="Guvenlik">
+        <div class="nav-label">Guvenlik <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('orphan-sids')" title="Yetim SID'ler"><span class="icon">👤</span> <span>Yetim SID'ler</span></div>
+        <div class="nav-item" onclick="showPage('ransomware')" title="Ransomware Uyarilari"><span class="icon">🛡️</span> <span>Ransomware Uyarilari</span></div>
+        <div class="nav-item" onclick="showPage('acl')" title="ACL Analizi"><span class="icon">🔐</span> <span>ACL Analizi</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Uyumluluk</div>
-        <div class="nav-item" onclick="showPage('pii')"><span class="icon">🛡️</span> <span>PII Bulgular</span></div>
-        <div class="nav-item" onclick="showPage('retention')"><span class="icon">🗓️</span> <span>Saklama Politikalari</span></div>
-        <div class="nav-item" onclick="showPage('legal-holds')"><span class="icon">⚖️</span> <span>Legal Hold</span></div>
+    <div class="nav-section" data-group="Islemler">
+        <div class="nav-label">Islemler <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('archive')" title="Arsivleme"><span class="icon">🗃️</span> <span>Arsivleme</span></div>
+        <div class="nav-item" onclick="showPage('archive-history')" title="Arsiv Gecmisi"><span class="icon">📜</span> <span>Arsiv Gecmisi</span></div>
+        <div class="nav-item" onclick="showPage('duplicates')" title="Kopya Dosyalar"><span class="icon">📑</span> <span>Kopya Dosyalar</span></div>
+        <div class="nav-item" onclick="showPage('growth')" title="Buyume Analizi"><span class="icon">📈</span> <span>Buyume Analizi</span></div>
+        <div class="nav-item" onclick="showPage('naming')" title="Adlandirma Uyumu"><span class="icon">📐</span> <span>Adlandirma Uyumu</span></div>
+        <div class="nav-item" onclick="showPage('policies')" title="Politikalar"><span class="icon">📋</span> <span>Politikalar</span></div>
+        <div class="nav-item" onclick="showPage('schedules')" title="Zamanlama"><span class="icon">⏰</span> <span>Zamanlama</span></div>
+        <div class="nav-item" onclick="showPage('sqlquery')" title="Sorgu"><span class="icon">🔍</span> <span>Sorgu</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Raporlar</div>
-        <div class="nav-item" onclick="showPage('chargeback')"><span class="icon">💵</span> <span>Chargeback / Cost Center</span></div>
-        <div class="nav-item" onclick="showPage('forecast')"><span class="icon">🔮</span> <span>Kapasite Tahmini</span></div>
+    <div class="nav-section" data-group="Uyumluluk">
+        <div class="nav-label">Uyumluluk <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('pii')" title="PII Bulgular"><span class="icon">🛡️</span> <span>PII Bulgular</span></div>
+        <div class="nav-item" onclick="showPage('retention')" title="Saklama Politikalari"><span class="icon">🗓️</span> <span>Saklama Politikalari</span></div>
+        <div class="nav-item" onclick="showPage('legal-holds')" title="Legal Hold"><span class="icon">⚖️</span> <span>Legal Hold</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Entegrasyonlar</div>
-        <div class="nav-item" onclick="showPage('syslog')"><span class="icon">📡</span> <span>Syslog / SIEM</span></div>
-        <div class="nav-item" onclick="showPage('mcp')"><span class="icon">🤖</span> <span>MCP Server</span></div>
+    <div class="nav-section" data-group="Raporlar">
+        <div class="nav-label">Raporlar <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('chargeback')" title="Chargeback / Cost Center"><span class="icon">💵</span> <span>Chargeback / Cost Center</span></div>
+        <div class="nav-item" onclick="showPage('forecast')" title="Kapasite Tahmini"><span class="icon">🔮</span> <span>Kapasite Tahmini</span></div>
     </div>
-    <div class="nav-section">
-        <div class="nav-label">Sistem</div>
-        <div class="nav-item" onclick="showPage('backups')"><span class="icon">💾</span> <span>Yedekler</span></div>
-        <div class="nav-item" onclick="showPage('quarantine')"><span class="icon">🧪</span> <span>Karantina</span></div>
-        <div class="nav-item" onclick="showPage('operations')"><span class="icon">📜</span> <span>Islem Gecmisi</span></div>
-        <div class="nav-item" onclick="showPage('approvals')"><span class="icon">✅</span> <span>Onaylar</span></div>
+    <div class="nav-section" data-group="Entegrasyonlar">
+        <div class="nav-label">Entegrasyonlar <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('syslog')" title="Syslog / SIEM"><span class="icon">📡</span> <span>Syslog / SIEM</span></div>
+        <div class="nav-item" onclick="showPage('mcp')" title="MCP Server"><span class="icon">🤖</span> <span>MCP Server</span></div>
     </div>
+    <div class="nav-section" data-group="Sistem">
+        <div class="nav-label">Sistem <span class="chev">&#9660;</span></div>
+        <div class="nav-item" onclick="showPage('backups')" title="Yedekler"><span class="icon">💾</span> <span>Yedekler</span></div>
+        <div class="nav-item" onclick="showPage('quarantine')" title="Karantina"><span class="icon">🧪</span> <span>Karantina</span></div>
+        <div class="nav-item" onclick="showPage('operations')" title="Islem Gecmisi"><span class="icon">📜</span> <span>Islem Gecmisi</span></div>
+        <div class="nav-item" onclick="showPage('approvals')" title="Onaylar"><span class="icon">✅</span> <span>Onaylar</span></div>
+    </div>
+    </div><!-- /.nav-content -->
     <div class="sidebar-footer">
         <div class="status"><span class="dot"></span> <span>Sistem Aktif</span></div>
     </div>
@@ -7473,6 +7585,173 @@ async function exportForecastXlsx(ev) {
         );
     });
 }
+
+// ═══════════════════════════════════════════════════
+// SIDEBAR RESPONSIVE (issue #124)
+// ═══════════════════════════════════════════════════
+(function initSidebarResponsive() {
+    // localStorage helpers — gracefully no-op in private mode / when blocked.
+    function lsGet(k, fallback) {
+        try { const v = localStorage.getItem(k); return v == null ? fallback : v; }
+        catch (e) { return fallback; }
+    }
+    function lsSet(k, v) {
+        try { localStorage.setItem(k, v); } catch (e) { /* private mode */ }
+    }
+    function lsGetJSON(k, fallback) {
+        try { const v = localStorage.getItem(k); return v == null ? fallback : JSON.parse(v); }
+        catch (e) { return fallback; }
+    }
+    function lsSetJSON(k, v) { lsSet(k, JSON.stringify(v)); }
+
+    // Turkish ASCII fold for case-insensitive search.
+    const TR_MAP = { 'ç':'c','Ç':'c','ğ':'g','Ğ':'g','ı':'i','İ':'i','ö':'o','Ö':'o','ş':'s','Ş':'s','ü':'u','Ü':'u' };
+    function fold(s) {
+        if (!s) return '';
+        let out = '';
+        for (const ch of s) out += TR_MAP[ch] || ch.toLowerCase();
+        return out;
+    }
+
+    const KEY_COLLAPSED = 'sidebar.collapsed_groups';
+    const KEY_NARROW = 'sidebar.narrow';
+    // Default-collapsed groups for first-time visitors (less common ones).
+    const DEFAULT_COLLAPSED = ['Entegrasyonlar', 'Sistem'];
+
+    const sidebar = document.getElementById('sidebar');
+    if (!sidebar) return;
+    const navContent = document.getElementById('nav-content');
+    const searchInput = document.getElementById('sidebar-search');
+    const narrowToggle = document.getElementById('sidebar-narrow-toggle');
+    const hamburger = document.getElementById('sidebar-hamburger');
+    const backdrop = document.getElementById('sidebar-backdrop');
+
+    // ---- Group collapse state ----
+    function getStoredCollapsed() {
+        const raw = lsGetJSON(KEY_COLLAPSED, null);
+        if (Array.isArray(raw)) return new Set(raw);
+        return new Set(DEFAULT_COLLAPSED);
+    }
+    let collapsedGroups = getStoredCollapsed();
+
+    function saveCollapsed() {
+        lsSetJSON(KEY_COLLAPSED, Array.from(collapsedGroups));
+    }
+
+    function applyCollapsedState() {
+        document.querySelectorAll('.nav-section[data-group]').forEach(sec => {
+            const g = sec.getAttribute('data-group');
+            if (collapsedGroups.has(g)) sec.classList.add('collapsed');
+            else sec.classList.remove('collapsed');
+        });
+    }
+
+    function expandActiveGroup() {
+        const activeItem = document.querySelector('.nav-item.active');
+        if (!activeItem) return;
+        const sec = activeItem.closest('.nav-section[data-group]');
+        if (!sec) return;
+        const g = sec.getAttribute('data-group');
+        if (collapsedGroups.has(g)) {
+            collapsedGroups.delete(g);
+            saveCollapsed();
+            sec.classList.remove('collapsed');
+        }
+    }
+
+    // Click on nav-label toggles collapse.
+    document.querySelectorAll('.nav-section[data-group] .nav-label').forEach(lbl => {
+        lbl.addEventListener('click', () => {
+            const sec = lbl.parentElement;
+            const g = sec.getAttribute('data-group');
+            if (sec.classList.toggle('collapsed')) collapsedGroups.add(g);
+            else collapsedGroups.delete(g);
+            saveCollapsed();
+        });
+    });
+
+    applyCollapsedState();
+    expandActiveGroup();
+
+    // ---- Search ----
+    function applySearch(query) {
+        const q = fold(query.trim());
+        const sections = document.querySelectorAll('.nav-section[data-group]');
+        sections.forEach(sec => {
+            let anyVisible = false;
+            sec.querySelectorAll('.nav-item').forEach(item => {
+                if (!q) {
+                    item.classList.remove('search-hidden');
+                    anyVisible = true;
+                    return;
+                }
+                const txt = fold(item.textContent || '');
+                if (txt.indexOf(q) !== -1) {
+                    item.classList.remove('search-hidden');
+                    anyVisible = true;
+                } else {
+                    item.classList.add('search-hidden');
+                }
+            });
+            if (q && !anyVisible) sec.classList.add('search-empty');
+            else sec.classList.remove('search-empty');
+            // While searching, force-expand groups so matches show.
+            if (q) sec.classList.remove('collapsed');
+            else if (collapsedGroups.has(sec.getAttribute('data-group'))) sec.classList.add('collapsed');
+        });
+    }
+    if (searchInput) {
+        searchInput.addEventListener('input', e => applySearch(e.target.value));
+        searchInput.addEventListener('keydown', e => {
+            if (e.key === 'Escape') { searchInput.value = ''; applySearch(''); }
+        });
+    }
+
+    // ---- Narrow mode ----
+    function applyNarrow(on) {
+        if (on) sidebar.classList.add('narrow');
+        else sidebar.classList.remove('narrow');
+    }
+    applyNarrow(lsGet(KEY_NARROW, 'false') === 'true');
+    if (narrowToggle) {
+        narrowToggle.addEventListener('click', () => {
+            const next = !sidebar.classList.contains('narrow');
+            applyNarrow(next);
+            lsSet(KEY_NARROW, String(next));
+        });
+    }
+
+    // ---- Mobile hamburger ----
+    function openMobile() {
+        sidebar.classList.add('open');
+        backdrop.classList.add('active');
+        document.body.classList.add('sidebar-open');
+    }
+    function closeMobile() {
+        sidebar.classList.remove('open');
+        backdrop.classList.remove('active');
+        document.body.classList.remove('sidebar-open');
+    }
+    if (hamburger) hamburger.addEventListener('click', openMobile);
+    if (backdrop) backdrop.addEventListener('click', closeMobile);
+
+    // Close on nav-item click in mobile mode (ignore label clicks).
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', () => {
+            if (window.matchMedia('(max-width: 768px)').matches) closeMobile();
+        });
+    });
+
+    // ---- Hook into showPage so the active group auto-expands on navigation ----
+    if (typeof window.showPage === 'function') {
+        const _origShowPage = window.showPage;
+        window.showPage = function (name) {
+            const r = _origShowPage.apply(this, arguments);
+            try { expandActiveGroup(); } catch (e) {}
+            return r;
+        };
+    }
+})();
 
 </script>
 
