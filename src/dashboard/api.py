@@ -2085,6 +2085,155 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             raise HTTPException(403, str(e))
         return result.to_dict()
 
+    # --- QUARANTINE BROWSER + LIFECYCLE (issue #110 Phase 2) ---
+    # Read-only listing + manual purge + restore endpoints. The daily
+    # auto-purge job runs from task_scheduler.py — these handlers just
+    # let operators inspect / act on individual rows from the UI.
+
+    @app.get("/api/quarantine")
+    async def quarantine_list(
+        status: Optional[str] = Query(None),
+        limit: int = Query(500, ge=1, le=5000),
+    ):
+        """List quarantine_log rows with derived ``status`` and
+        ``will_purge_at`` fields. ``status`` filter is one of
+        ``quarantined`` | ``restored`` | ``purged`` | ``all``."""
+        dup_cfg = ((config or {}).get("duplicates") or {}).get(
+            "quarantine"
+        ) or {}
+        try:
+            qdays = max(1, int(dup_cfg.get("quarantine_days") or 30))
+        except (TypeError, ValueError):
+            qdays = 30
+        sql = (
+            "SELECT id, file_id, original_path, quarantine_path, sha256, "
+            "file_size, moved_at, moved_by, gain_report_id, "
+            "purged_at, restored_at "
+            "FROM quarantine_log "
+        )
+        where: list = []
+        params: list = []
+        if status == "quarantined":
+            where.append("purged_at IS NULL AND restored_at IS NULL")
+        elif status == "restored":
+            where.append("restored_at IS NOT NULL")
+        elif status == "purged":
+            where.append("purged_at IS NOT NULL")
+        if where:
+            sql += "WHERE " + " AND ".join(where) + " "
+        sql += "ORDER BY moved_at DESC LIMIT ?"
+        params.append(int(limit))
+        rows: list = []
+        with db.get_cursor() as cur:
+            cur.execute(sql, params)
+            for r in cur.fetchall():
+                d = dict(r)
+                # Derive status + will_purge_at for the UI.
+                if d.get("purged_at"):
+                    d["status"] = "purged"
+                elif d.get("restored_at"):
+                    d["status"] = "restored"
+                else:
+                    d["status"] = "quarantined"
+                moved_at = d.get("moved_at")
+                will_purge: Optional[str] = None
+                if moved_at:
+                    try:
+                        if isinstance(moved_at, str):
+                            dt = datetime.fromisoformat(
+                                moved_at.replace("Z", "")
+                            )
+                        else:
+                            dt = moved_at
+                        will_purge = (dt + timedelta(days=qdays)).strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                    except Exception:
+                        will_purge = None
+                d["will_purge_at"] = will_purge
+                rows.append(d)
+        return {
+            "enabled": bool(dup_cfg.get("enabled", True)),
+            "quarantine_days": qdays,
+            "rows": rows,
+        }
+
+    @app.post("/api/quarantine/{quarantine_log_id}/purge")
+    async def quarantine_purge(quarantine_log_id: int, request: Request):
+        """Manual hard-delete. Body: {confirm: true, safety_token: "PURGE"}.
+
+        SHA-256 mismatch = forensic preserve, never delete (returns 409).
+        """
+        from src.archiver.duplicate_cleaner import (
+            DuplicateCleaner, PURGE_SAFETY_TOKEN_VALUE,
+        )
+        body = await request.json()
+        confirm = bool(body.get("confirm", False))
+        safety_token = body.get("safety_token", "")
+        purged_by = body.get("purged_by") or "operator"
+        if not confirm:
+            raise HTTPException(400, "confirm=True required to purge")
+        # Placeholder for future #112 approval-list wiring — for now we
+        # only enforce the safety_token. The token MUST equal "PURGE".
+        if safety_token != PURGE_SAFETY_TOKEN_VALUE:
+            raise HTTPException(
+                400,
+                f"safety_token must equal {PURGE_SAFETY_TOKEN_VALUE!r}",
+            )
+        cleaner = DuplicateCleaner(db, config)
+        result = cleaner.purge_one(int(quarantine_log_id), purged_by=purged_by)
+        if result.status in ("purged", "skipped_missing"):
+            return result.to_dict()
+        if result.status == "skipped_not_found":
+            raise HTTPException(404, result.reason or "not found")
+        if result.status == "abort_sha_mismatch":
+            # 409 Conflict: file integrity mismatch, refused — operator
+            # must triage.
+            raise HTTPException(
+                409,
+                {
+                    "error": "sha_mismatch_forensic_preserve",
+                    "detail": result.to_dict(),
+                },
+            )
+        if result.status in (
+            "skipped_already_purged", "skipped_restored",
+        ):
+            raise HTTPException(409, result.reason or result.status)
+        # status == "error" — bubble as 500 with audit-friendly body.
+        raise HTTPException(
+            500,
+            {"error": result.status, "detail": result.to_dict()},
+        )
+
+    @app.post("/api/quarantine/{quarantine_log_id}/restore")
+    async def quarantine_restore(quarantine_log_id: int, request: Request):
+        """Restore from quarantine. Body: {confirm: true}."""
+        from src.archiver.duplicate_cleaner import DuplicateCleaner
+        body = await request.json()
+        confirm = bool(body.get("confirm", False))
+        restored_by = body.get("restored_by") or "operator"
+        if not confirm:
+            raise HTTPException(400, "confirm=True required to restore")
+        cleaner = DuplicateCleaner(db, config)
+        result = cleaner.restore(
+            int(quarantine_log_id), restored_by=restored_by
+        )
+        if result.status == "restored":
+            return result.to_dict()
+        if result.status == "skipped_not_found":
+            raise HTTPException(404, result.reason or "not found")
+        if result.status in (
+            "skipped_collision",
+            "skipped_already_restored",
+            "skipped_already_purged",
+            "skipped_missing",
+        ):
+            raise HTTPException(409, result.reason or result.status)
+        raise HTTPException(
+            500, {"error": result.status, "detail": result.to_dict()},
+        )
+
     # --- OPERATIONS HISTORY (gain reports) ---
     # Read-only listing of gain_reports rows (any operation). Used by the
     # "Islem Gecmisi" page to render before/after/delta panels.
