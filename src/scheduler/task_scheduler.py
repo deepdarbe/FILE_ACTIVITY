@@ -15,15 +15,46 @@ logger = logging.getLogger("file_activity.scheduler")
 class TaskScheduler:
     """Zamanlanmış görevleri yöneten scheduler."""
 
-    def __init__(self, db, config, ad_lookup=None, email_notifier=None):
+    def __init__(self, db, config, ad_lookup=None, email_notifier=None,
+                 operations_registry=None):
         self.db = db
         self.config = config
         self.ad_lookup = ad_lookup
         self.email_notifier = email_notifier
+        # Issue #125 — optional in-memory operations registry. Scheduled
+        # jobs (daily backup, daily purge) call start/finish on it so the
+        # frontend banner reflects long-running scheduled work too. May
+        # be ``None`` in test paths or older callers.
+        self.operations_registry = operations_registry
         self.scheduler = BackgroundScheduler(
             job_defaults={"coalesce": True, "max_instances": 1}
         )
         self._jobs = {}
+
+    def _track_op(self, op_type: str, label: str, metadata: dict | None = None):
+        """Issue #125 — best-effort start on the operations registry.
+
+        Returns the ``op_id`` (or empty string when there is no registry
+        / on failure). Pair with :meth:`_finish_op`. Failures are
+        swallowed because tracking MUST NOT break a scheduled job.
+        """
+        try:
+            if self.operations_registry is None:
+                return ""
+            return self.operations_registry.start(op_type, label, metadata=metadata) or ""
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.debug("ops.start(%s) failed: %s", op_type, e)
+            return ""
+
+    def _finish_op(self, op_id: str) -> None:
+        """Issue #125 — best-effort finish on the operations registry."""
+        if not op_id:
+            return
+        try:
+            if self.operations_registry is not None:
+                self.operations_registry.finish(op_id)
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.debug("ops.finish failed: %s", e)
 
     def start(self):
         """Scheduler'ı başlat ve veritabanındaki görevleri yükle."""
@@ -349,6 +380,11 @@ class TaskScheduler:
             (self.config or {}).get("database", {}).get("path")
             or "data/file_activity.db"
         )
+        op_id = self._track_op(
+            "snapshot",
+            "Gunluk DB anlik goruntu",
+            metadata={"reason": "scheduled-daily"},
+        )
         try:
             mgr = BackupManager(db_path, self.config)
             meta = mgr.snapshot(reason="scheduled-daily")
@@ -369,6 +405,8 @@ class TaskScheduler:
         except Exception as e:
             logger.error("daily_backup snapshot failed: %s", e, exc_info=True)
             return {"status": "error", "message": str(e)}
+        finally:
+            self._finish_op(op_id)
 
     def _register_daily_backup_job(self):
         """Register the config-driven daily backup job (issue #77)."""
@@ -473,6 +511,11 @@ class TaskScheduler:
             return {"status": "skipped",
                     "message": "duplicates.quarantine.enabled=false"}
 
+        op_id = self._track_op(
+            "purge",
+            "Karantina temizligi",
+            metadata={"trigger": "scheduled-daily"},
+        )
         try:
             cleaner = DuplicateCleaner(self.db, self.config)
             results = cleaner.purge_expired(purged_by="scheduler")
@@ -502,6 +545,8 @@ class TaskScheduler:
             logger.error("daily_quarantine_purge failed: %s", e,
                          exc_info=True)
             return {"status": "error", "message": str(e)}
+        finally:
+            self._finish_op(op_id)
 
     def _register_daily_quarantine_purge_job(self):
         """Register the config-driven daily quarantine purge job (#110)."""

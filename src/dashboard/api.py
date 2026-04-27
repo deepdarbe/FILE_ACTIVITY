@@ -7,6 +7,7 @@ ONEMLI: Tum API endpoint'leri source_id (integer) kullanir,
 source_name veya UNC path URL'de KULLANILMAZ (encoding sorunlari).
 """
 
+import contextlib
 import os
 import json
 import logging
@@ -424,7 +425,8 @@ def _read_version() -> str:
 APP_VERSION = _read_version()
 
 
-def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
+def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
+               operations_registry=None):
     """FastAPI uygulamasini olustur.
 
     analytics: Opsiyonel AnalyticsEngine. Verilmezse config.analytics'e gore
@@ -568,11 +570,6 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
 
     # ─────────────────────────────────────────────────────────────────
     # Issue #118 Phase 1 — auto error reporter (GitHub Issues).
-    # Constructed unconditionally; with the shipped default
-    # (``telemetry.enabled: false``) every capture() call short-circuits
-    # before touching the network. The exception_handler is wired in so
-    # operators only need to flip the config flag + provide a token to
-    # opt in.
     # ─────────────────────────────────────────────────────────────────
     try:
         from src.telemetry.error_reporter import ErrorReporter
@@ -591,16 +588,22 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
                     "method": request.method,
                 })
             except Exception:
-                # Telemetry failures must never break the response path.
                 pass
-        # FastAPI exception handlers must *return* a Response — re-
-        # raising does not propagate to the default 500 handler. Mirror
-        # the framework's default JSON shape so existing clients see no
-        # behavioural change.
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal Server Error"},
         )
+
+    # Issue #125 — process-local operations registry.
+    if operations_registry is not None:
+        app.state.operations = operations_registry
+    else:
+        try:
+            from src.storage.operations_tracker import OperationsRegistry
+            app.state.operations = OperationsRegistry()
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.warning("OperationsRegistry init failed: %s", e)
+            app.state.operations = None
 
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
@@ -735,9 +738,30 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         src = _get_source(db, source_id)
 
         def _scan_worker():
-            scanner = FileScanner(db, config)
-            result = scanner.scan_source(src.id, src.name, src.unc_path)
-            _scan_results[source_id] = result
+            # Issue #125: register the scan in the operations tracker so the
+            # "su an ne oluyor" banner reflects activity. Tracker calls are
+            # wrapped — a failure here MUST NOT break the scan.
+            registry = getattr(app.state, "operations", None)
+            op_id = None
+            try:
+                if registry is not None:
+                    op_id = registry.start(
+                        "scan",
+                        f"Tarama: {src.name}",
+                        metadata={"source_id": src.id},
+                    )
+            except Exception as e:  # pragma: no cover - defensive only
+                logger.debug("ops.start(scan) failed: %s", e)
+            try:
+                scanner = FileScanner(db, config)
+                result = scanner.scan_source(src.id, src.name, src.unc_path)
+                _scan_results[source_id] = result
+            finally:
+                try:
+                    if registry is not None and op_id:
+                        registry.finish(op_id)
+                except Exception as e:  # pragma: no cover - defensive only
+                    logger.debug("ops.finish(scan) failed: %s", e)
 
         t = threading.Thread(target=_scan_worker, daemon=True)
         _scan_threads[source_id] = t
@@ -788,6 +812,27 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         gen = ReportGenerator(db, config)
         return gen.generate_status_report(src.id)
 
+    # Issue #125 — context manager that wraps a block in start/finish on
+    # the operations registry. Tracker outage MUST NOT break the work,
+    # so all tracker calls are individually try/except'd.
+    @contextlib.contextmanager
+    def _track_op(op_type: str, label: str, metadata: Optional[dict] = None):
+        registry = getattr(app.state, "operations", None)
+        op_id = None
+        try:
+            if registry is not None:
+                op_id = registry.start(op_type, label, metadata=metadata)
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.debug("ops.start(%s) failed: %s", op_type, e)
+        try:
+            yield
+        finally:
+            try:
+                if registry is not None and op_id:
+                    registry.finish(op_id)
+            except Exception as e:  # pragma: no cover - defensive only
+                logger.debug("ops.finish(%s) failed: %s", op_type, e)
+
     @app.get("/api/reports/frequency/{source_id}")
     async def report_frequency(source_id: int, days: Optional[str] = None):
         from src.analyzer.report_generator import ReportGenerator
@@ -821,48 +866,68 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         if scan_id is None:
             return gen.generate_frequency_report(src.id, custom)
         analyzer_name = "frequency" if not custom else f"frequency:{','.join(map(str, custom))}"
-        envelope = analyzer_cache.get_or_compute(
-            db, analyzer_name, scan_id,
-            lambda: gen.generate_frequency_report(src.id, custom),
-        )
-        return _attach_cache_envelope(envelope)
+        with _track_op(
+            "analysis",
+            f"Erisim sikligi analizi: {src.name}",
+            metadata={"source_id": src.id},
+        ):
+            envelope = analyzer_cache.get_or_compute(
+                db, analyzer_name, scan_id,
+                lambda: gen.generate_frequency_report(src.id, custom),
+            )
+            return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/types/{source_id}")
     async def report_types(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
-        gen = ReportGenerator(db, config)
-        scan_id = db.get_latest_scan_id(src.id, include_running=True)
-        if scan_id is None:
-            return gen.generate_type_report(src.id)
-        envelope = analyzer_cache.get_or_compute(
-            db, "types", scan_id,
-            lambda: gen.generate_type_report(src.id),
-        )
-        return _attach_cache_envelope(envelope)
+        with _track_op(
+            "analysis",
+            f"Tur analizi: {src.name}",
+            metadata={"source_id": src.id},
+        ):
+            gen = ReportGenerator(db, config)
+            scan_id = db.get_latest_scan_id(src.id, include_running=True)
+            if scan_id is None:
+                return gen.generate_type_report(src.id)
+            envelope = analyzer_cache.get_or_compute(
+                db, "types", scan_id,
+                lambda: gen.generate_type_report(src.id),
+            )
+            return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/sizes/{source_id}")
     async def report_sizes(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
-        gen = ReportGenerator(db, config)
-        scan_id = db.get_latest_scan_id(src.id, include_running=True)
-        if scan_id is None:
-            return gen.generate_size_report(src.id)
-        envelope = analyzer_cache.get_or_compute(
-            db, "sizes", scan_id,
-            lambda: gen.generate_size_report(src.id),
-        )
-        return _attach_cache_envelope(envelope)
+        with _track_op(
+            "analysis",
+            f"Boyut analizi: {src.name}",
+            metadata={"source_id": src.id},
+        ):
+            gen = ReportGenerator(db, config)
+            scan_id = db.get_latest_scan_id(src.id, include_running=True)
+            if scan_id is None:
+                return gen.generate_size_report(src.id)
+            envelope = analyzer_cache.get_or_compute(
+                db, "sizes", scan_id,
+                lambda: gen.generate_size_report(src.id),
+            )
+            return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/full/{source_id}")
     async def report_full(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
         src = _get_source(db, source_id)
-        gen = ReportGenerator(db, config)
-        return gen.generate_full_report(src.id)
+        with _track_op(
+            "analysis",
+            f"Tam rapor: {src.name}",
+            metadata={"source_id": src.id},
+        ):
+            gen = ReportGenerator(db, config)
+            return gen.generate_full_report(src.id)
 
     # --- ARCHIVE API ---
 
@@ -2158,20 +2223,25 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
         if not isinstance(file_ids, list):
             raise HTTPException(400, "file_ids must be a list")
         cleaner = DuplicateCleaner(db, config)
-        try:
-            result = cleaner.quarantine(
-                file_ids=[int(i) for i in file_ids],
-                confirm=confirm,
-                safety_token=safety_token,
-                moved_by=moved_by,
-                source_id=source_id,
-            )
-        except ValueError as e:
-            # Confirm/token/cap failures are 400 — not 500.
-            raise HTTPException(400, str(e))
-        except RuntimeError as e:
-            # Kill-switch off → 403 so the UI can show a clear hint.
-            raise HTTPException(403, str(e))
+        with _track_op(
+            "archive",
+            f"Karantina: {len(file_ids)} dosya",
+            metadata={"source_id": source_id, "file_count": len(file_ids)},
+        ):
+            try:
+                result = cleaner.quarantine(
+                    file_ids=[int(i) for i in file_ids],
+                    confirm=confirm,
+                    safety_token=safety_token,
+                    moved_by=moved_by,
+                    source_id=source_id,
+                )
+            except ValueError as e:
+                # Confirm/token/cap failures are 400 — not 500.
+                raise HTTPException(400, str(e))
+            except RuntimeError as e:
+                # Kill-switch off → 403 so the UI can show a clear hint.
+                raise HTTPException(403, str(e))
         return result.to_dict()
 
     # --- QUARANTINE BROWSER + LIFECYCLE (issue #110 Phase 2) ---
@@ -2904,6 +2974,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
     async def version():
         """Calisan sürüm (repo kokundeki VERSION dosyasindan)."""
         return {"version": APP_VERSION}
+
+    @app.get("/api/system/status")
+    async def system_status():
+        """Issue #125 — list currently running background operations.
+
+        Always 200; returns ``{"operations": []}`` when nothing is
+        active. Reads in-memory only — no DB access — so the dashboard
+        can poll every 5 seconds without measurable cost. If the
+        registry is missing (older app.state, hot-reload edge case)
+        the endpoint silently returns an empty list rather than 500.
+        """
+        registry = getattr(app.state, "operations", None)
+        if registry is None:
+            return {"operations": []}
+        try:
+            ops = [op.to_public_dict() for op in registry.list_active()]
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.warning("operations registry list_active failed: %s", e)
+            ops = []
+        return {"operations": ops}
 
     @app.get("/api/system/ad/status")
     async def ad_status():
@@ -4041,11 +4131,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None):
             raise HTTPException(500, f"manager_init_failed: {e}")
         if not mgr.enabled:
             raise HTTPException(400, "backup feature disabled in config.yaml")
-        try:
-            meta = mgr.snapshot(reason=reason)
-        except Exception as e:
-            logger.error("snapshot failed: %s", e)
-            raise HTTPException(500, f"snapshot_failed: {e}")
+        with _track_op(
+            "snapshot",
+            f"DB anlik goruntu: {reason}",
+            metadata={"reason": reason},
+        ):
+            try:
+                meta = mgr.snapshot(reason=reason)
+            except Exception as e:
+                logger.error("snapshot failed: %s", e)
+                raise HTTPException(500, f"snapshot_failed: {e}")
         return {"ok": True, **meta.to_dict()}
 
     def _do_snapshot_restore(payload: dict) -> dict:
