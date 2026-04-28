@@ -578,6 +578,9 @@ class FileScanner:
             {"total_files": int, "total_size": int, "errors": int, "status": str}
         """
         logger.info("Tarama basladi: %s (%s)", source_name, path)
+        # Issue #175 — stash the active source_id for _run_size_enrich
+        # which doesn't carry it through the orchestrator argument list.
+        self._current_source_id = source_id
 
         # Ilerleme durumu baslat
         # Issue #135 — ``phase`` enumere edilmis tarama yasam dongusunu
@@ -985,6 +988,19 @@ class FileScanner:
                         scan_id, e,
                     )
 
+            # Issue #175 — post-walk size + timestamp enrich. Streams
+            # scanned_files rows for this scan, fills file_size / mtime
+            # via os.stat (or FSCTL on local NTFS). Gated by
+            # scanner.enrich_sizes (default ON because the customer's #1
+            # KPI was BOYUT showing 0 B).
+            try:
+                self._run_size_enrich(scan_id)
+            except Exception as e:
+                logger.warning(
+                    "Size-enrich pasi basarisiz (scan_id=%d): %s",
+                    scan_id, e,
+                )
+
         # Son ilerleme durumunu guncelle
         # Issue #135 — phase artik ``completed`` (veya cancelled/failed). Bu
         # alan /api/scan/progress yanitinda kullanilir; in-memory progress
@@ -1153,6 +1169,106 @@ class FileScanner:
             )
             for row in cur.fetchall():
                 yield row["file_path"]
+
+    def _run_size_enrich(self, scan_id: int) -> dict:
+        """Issue #175 — post-walk size + timestamp enrich pass.
+
+        Iterates ``scanned_files`` rows for ``scan_id`` whose
+        ``file_size = 0`` (the MFT backend signature) and runs
+        :meth:`SizeEnricher.enrich` over them. Default ON because the
+        customer's BOYUT KPI was always ``0 B``; flip
+        ``scanner.enrich_sizes: false`` in config to skip.
+
+        Mirrors :meth:`_run_extension_check` in shape: callback wiring
+        through ``self.progress_callback``, a single phase log line,
+        chunked DB writes through the retry-protected helper.
+
+        Returns ``{scan_id, enriched, skipped, elapsed_seconds, skipped_disabled}``.
+        """
+        if not self.config.get("enrich_sizes", True):
+            # Silent skip — operators who consciously disabled this
+            # don't need a log line on every scan.
+            return {
+                "scan_id": scan_id,
+                "enriched": 0,
+                "skipped": 0,
+                "elapsed_seconds": 0.0,
+                "skipped_disabled": True,
+            }
+
+        from src.scanner.size_enricher import SizeEnricher
+
+        enricher = SizeEnricher(self._full_config, self.db)
+        if not enricher.available:
+            logger.info(
+                "Size-enrich atlandi (os.stat erisilebilir degil) scan=%d",
+                scan_id,
+            )
+            return {
+                "scan_id": scan_id,
+                "enriched": 0,
+                "skipped": 0,
+                "elapsed_seconds": 0.0,
+                "skipped_unavailable": True,
+            }
+
+        progress = _scan_progress.get(scan_id) or {}
+        progress["phase"] = "size_enrich"
+
+        t0 = time.time()
+
+        def _paths_iter():
+            # Stream so we don't materialise millions of paths for the
+            # 3M-file customer scan. ``scan_id`` is composite-indexed
+            # via idx_sf_scan; the additional ``file_size = 0`` filter
+            # means we only stat rows the MFT backend left empty.
+            with self.db.get_cursor() as cur:
+                cur.execute(
+                    "SELECT file_path FROM scanned_files "
+                    "WHERE scan_id = ? AND file_size = 0",
+                    (scan_id,),
+                )
+                for r in cur.fetchall():
+                    yield r["file_path"]
+
+        # Forward the ops banner callback so the dashboard's scan
+        # progress card lights up during this phase too.
+        progress_cb = self.progress_callback
+
+        try:
+            enriched = enricher.enrich(
+                scan_id=scan_id,
+                source_id=getattr(self, "_current_source_id", 0),
+                paths_iter=_paths_iter(),
+                progress_cb=progress_cb,
+            )
+        except Exception as e:
+            elapsed = time.time() - t0
+            logger.warning(
+                "Size-enrich basarisiz scan=%d %.1f sn: %s",
+                scan_id, elapsed, e,
+            )
+            return {
+                "scan_id": scan_id,
+                "enriched": 0,
+                "skipped": 0,
+                "elapsed_seconds": round(elapsed, 2),
+                "error": str(e),
+            }
+
+        skipped = int(getattr(enricher, "last_skipped", 0) or 0)
+        elapsed = time.time() - t0
+        logger.info(
+            "Size-enrich (scan_id=%d): %d satir zenginlestirildi, "
+            "%d atlandi, %.1f sn",
+            scan_id, enriched, skipped, elapsed,
+        )
+        return {
+            "scan_id": scan_id,
+            "enriched": enriched,
+            "skipped": skipped,
+            "elapsed_seconds": round(elapsed, 2),
+        }
 
     def _generate_auto_report(self, source_id: int, source_name: str) -> dict:
         """Tarama sonrasi otomatik rapor uret ve kaydet."""

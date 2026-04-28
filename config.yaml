@@ -166,6 +166,14 @@ scanner:
   # Kurulum:
   #   pip install -r requirements-accel.txt
   detect_wrong_extensions: false
+  # Issue #175 — post-walk size + timestamp enrich.
+  # MFT enumeration is path-only by design (FSCTL_ENUM_USN_DATA). After
+  # the walk we run a second pass with os.stat (or FSCTL_GET_NTFS_FILE_RECORD
+  # on local NTFS) to fill file_size + mtime. ~50-500 dosya/sn on stat,
+  # 10-50x faster on FSCTL. 3.1M-file scan estimated 2-5 dk.
+  enrich_sizes: true
+  size_enrich_workers: 8
+  size_enrich_max_mb: 0   # 0 = enrich every file regardless of size
   parquet_staging:
     # Tarama sirasinda satirlari Parquet dosyasina biriktirir, sonra DuckDB
     # uzerinden tek INSERT ile SQLite'a ingest eder. 100k+ satirli scan'lerde
