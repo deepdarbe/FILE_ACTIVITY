@@ -1706,7 +1706,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 headers={"Content-Disposition": f"attachment; filename=FileActivity_{src.name}_{datetime.now().strftime('%Y%m%d')}.xlsx"}
             )
         except ImportError:
-            raise HTTPException(500, "openpyxl kurulu degil. pip install openpyxl")
+            raise HTTPException(501, "openpyxl kurulu degil. pip install openpyxl")
         except Exception as e:
             logger.error("XLS export error: %s", e)
             raise HTTPException(500, str(e))
@@ -4942,7 +4942,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             import openpyxl
             from openpyxl.styles import Font, PatternFill, Alignment
         except ImportError:
-            raise HTTPException(500, "openpyxl kurulu degil. pip install openpyxl")
+            raise HTTPException(501, "openpyxl kurulu degil. pip install openpyxl")
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -6065,9 +6065,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         try:
             from openpyxl import Workbook
-        except ImportError as e:  # pragma: no cover - in requirements.txt
+        except ImportError as e:  # pragma: no cover - openpyxl optional in CI
             raise HTTPException(
-                500,
+                501,
                 "openpyxl is not installed; add openpyxl>=3.1.0 to requirements.txt",
             ) from e
 

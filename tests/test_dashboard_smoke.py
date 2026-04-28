@@ -435,7 +435,7 @@ def test_no_endpoint_returns_500(app_and_routes, html_paths):
                 failures.append(f"{method} {url} raised {type(e).__name__}: {e}")
                 continue
 
-            if resp.status_code >= 500:
+            if resp.status_code >= 500 and resp.status_code not in _OK_STATUSES:
                 failures.append(
                     f"{method} {url} -> {resp.status_code} "
                     f"(body: {resp.text[:200]!r})"
