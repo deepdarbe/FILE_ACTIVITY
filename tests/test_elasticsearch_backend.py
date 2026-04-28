@@ -13,7 +13,6 @@ should still get a green pytest run for the rest of the suite.
 from __future__ import annotations
 
 import os
-import time
 
 import pytest
 
@@ -63,6 +62,9 @@ def es_container():
         try:
             container.stop()
         except Exception:
+            # Best-effort teardown: a stop() failure here would mask the
+            # real test failure and the next pytest run picks up after
+            # the container's TTL anyway. Logging would also be noise.
             pass
 
 
@@ -75,6 +77,9 @@ def db(tmp_path):
     try:
         inst.close()
     except Exception:
+        # Best-effort teardown: tmp_path is removed by pytest regardless,
+        # so a close() failure here would only obscure the real test
+        # failure further up the stack.
         pass
 
 
@@ -115,6 +120,9 @@ def _refresh(backend: ElasticsearchBackend, scan_id: int, source_id: int) -> Non
     try:
         backend.client.indices.refresh(index=index)
     except Exception:
+        # Refresh may legitimately 404 when the test wrote zero rows
+        # (delete_scan / empty insert paths). Treating that as fatal
+        # would mask the real assertion below.
         pass
 
 
