@@ -644,6 +644,64 @@ class FileScanner:
         DB_UPDATE_EVERY_SECONDS = 10.0
         DB_UPDATE_EVERY_RECORDS = 100_000
 
+        # Issue #139 — partial summary scheduler. While the scan runs we
+        # periodically aggregate the rows already written and stash a
+        # JSON snapshot on ``scan_runs.partial_summary_json`` so the
+        # dashboard can show rolling KPIs instead of all-zeros. Trigger:
+        # every 10 minutes OR every 100k records, whichever first. The
+        # compute itself runs in a SHORT background thread on a read-only
+        # cursor so it can never block the writer. If a single compute
+        # exceeds 30 sec we double the interval to 20 minutes.
+        partial_last_compute_ts: float = start_time
+        partial_last_compute_count: int = 0
+        partial_interval_seconds: float = 600.0  # 10 minutes
+        PARTIAL_INTERVAL_RECORDS = 100_000
+        PARTIAL_SLOW_THRESHOLD_SECONDS = 30.0
+        partial_thread: threading.Thread | None = None
+
+        def _run_partial_summary(captured_scan_id: int) -> None:
+            """Compute + persist a partial summary in a worker thread.
+
+            Doubles ``partial_interval_seconds`` on the enclosing scope
+            if the compute takes more than 30 sec — mutable via a
+            list-wrapped slot since closures + nonlocal don't reach
+            this far without a wrapper.
+            """
+            try:
+                from src.analyzer.partial_summary import compute_partial_summary
+                t0 = time.time()
+                payload = compute_partial_summary(self.db, captured_scan_id)
+                self.db.save_scan_partial_summary(captured_scan_id, payload)
+                dt = time.time() - t0
+                if dt > PARTIAL_SLOW_THRESHOLD_SECONDS:
+                    new_interval = min(
+                        partial_interval_slot[0] * 2.0, 3600.0,
+                    )
+                    if new_interval != partial_interval_slot[0]:
+                        logger.warning(
+                            "partial_summary slow (%.1fs > %.1fs); doubling "
+                            "interval to %.0f sec for scan_id=%d",
+                            dt, PARTIAL_SLOW_THRESHOLD_SECONDS,
+                            new_interval, captured_scan_id,
+                        )
+                        partial_interval_slot[0] = new_interval
+                else:
+                    logger.debug(
+                        "partial_summary scan=%d files=%s elapsed=%.2fs",
+                        captured_scan_id,
+                        payload.get("total_files"), dt,
+                    )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "partial_summary compute failed scan=%d: %s",
+                    captured_scan_id, e,
+                )
+
+        # Mutable slot so the worker can adjust the interval — we're
+        # already in a non-trivial closure tree, this is the cleanest
+        # cross-thread channel that doesn't need a Lock.
+        partial_interval_slot = [partial_interval_seconds]
+
         # Issue #135 — initial phase = enumeration (MFT walk in progress).
         try:
             self.db.update_scan_phase(scan_id, "enumeration")
@@ -757,6 +815,34 @@ class FileScanner:
                                 )
                             last_db_update_ts = now_db
                             last_db_update_count = file_count
+
+                        # Issue #139 — partial summary scheduler. Same
+                        # batch-boundary placement as the progress UPDATE
+                        # above so the cost is amortised across batches.
+                        # Fire-and-forget worker thread so a slow aggregate
+                        # never stalls the insert loop. We only spawn one
+                        # worker at a time — if the previous compute is
+                        # still running we skip this trigger and try at
+                        # the next checkpoint.
+                        elapsed_since_partial = now_db - partial_last_compute_ts
+                        rows_since_partial = file_count - partial_last_compute_count
+                        partial_due = (
+                            rows_since_partial >= PARTIAL_INTERVAL_RECORDS
+                            or elapsed_since_partial >= partial_interval_slot[0]
+                        )
+                        if partial_due and (
+                            partial_thread is None or not partial_thread.is_alive()
+                        ):
+                            partial_last_compute_ts = now_db
+                            partial_last_compute_count = file_count
+                            partial_thread = threading.Thread(
+                                target=_run_partial_summary,
+                                args=(scan_id,),
+                                name=f"partial-summary-{scan_id}",
+                                daemon=True,
+                            )
+                            partial_thread.start()
+
                         # Issue #131 — cancellation check at batch boundary.
                         # Setting cancel_event from /api/scan/{id}/stop
                         # causes us to break here; partial rows are
