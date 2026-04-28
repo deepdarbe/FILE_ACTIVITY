@@ -161,13 +161,13 @@ def test_bulk_insert_retries_on_locked_then_succeeds(tmp_path, monkeypatch):
 
     @contextlib.contextmanager
     def patched():
-        with real_get_conn() as real:
+        with real_get_conn() as real_conn:
             class _Wrap:
-                def executemany(self_inner, sql, params):
+                def executemany(self, sql, params):
                     state["calls"] += 1
                     if state["calls"] <= 2:
                         raise sqlite3.OperationalError("database is locked")
-                    return real.executemany(sql, params)
+                    return real_conn.executemany(sql, params)
             yield _Wrap()
 
     db.get_conn = patched  # type: ignore[assignment]
@@ -196,9 +196,9 @@ def test_bulk_insert_reraises_after_all_retries_fail(tmp_path, monkeypatch):
 
     @contextlib.contextmanager
     def patched():
-        with real_get_conn() as real:
+        with real_get_conn() as real_conn:  # noqa: F841 - used by closure below
             class _Wrap:
-                def executemany(self_inner, sql, params):
+                def executemany(self, sql, params):
                     state["calls"] += 1
                     raise sqlite3.OperationalError("database is locked")
             yield _Wrap()
@@ -225,9 +225,9 @@ def test_bulk_insert_does_not_retry_on_unrelated_error(tmp_path, monkeypatch):
 
     @contextlib.contextmanager
     def patched():
-        with real_get_conn() as real:
+        with real_get_conn() as real_conn:  # noqa: F841 - used by closure below
             class _Wrap:
-                def executemany(self_inner, sql, params):
+                def executemany(self, sql, params):
                     state["calls"] += 1
                     raise sqlite3.OperationalError("no such table: scanned_files")
             yield _Wrap()
