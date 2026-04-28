@@ -40,6 +40,15 @@ backup:
   # this budget the probe aborts and assumes healthy + logs a WARNING.
   # Prevents a slow/locked DB from hanging dashboard startup forever.
   corruption_check_timeout_seconds: 30
+  # Issue #153 Lever A — manual WAL checkpointer.
+  # The daemon thread runs PRAGMA wal_checkpoint(TRUNCATE) when the
+  # scanner is between batches OR every checkpoint_interval_seconds,
+  # whichever comes first. checkpoint_force_threshold_mb is the safety
+  # net: when the WAL grows past this size we force-truncate even if
+  # the writer is hot. With this thread alive we set
+  # PRAGMA wal_autocheckpoint=0 — the engine never checkpoints itself.
+  checkpoint_interval_seconds: 30
+  checkpoint_force_threshold_mb: 500
 
 database:
   path: "data/file_activity.db"    # SQLite veritabani dosyasi
