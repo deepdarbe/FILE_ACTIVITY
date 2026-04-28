@@ -97,7 +97,7 @@ class ImageHasher:
         except ImportError as e:
             self._available = False
             logger.warning(
-                "imagehash/Pillow nicht verfügbar — perceptual hash devre disi. "
+                "imagehash/Pillow yuklu degil — perceptual hash devre disi. "
                 "Yuklemek icin: pip install imagehash>=4.3. Hata: %s", e,
             )
 
