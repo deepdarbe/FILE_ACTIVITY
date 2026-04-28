@@ -2246,6 +2246,27 @@ function retryLastLoad() {
 let _opsPollTimer = null;
 let _opsLastSig = '';
 const OPS_POLL_INTERVAL_MS = 5000;
+// Per-source live scan op snapshots, keyed by source_id. Populated by
+// ``pollOperations`` and consumed by ``pollScanProgress`` so the inline
+// "MFT okunuyor (N kayit)" header and the bottom status bar can fall back
+// to the ops registry's live count while the scan is still in the
+// enumeration phase (when ``progress.file_count`` is still 0).
+//   { [source_id]: { live_count: int, started_at: float, label: string } }
+const _opsLiveBySource = {};
+
+// Parse a scan op label like "MFT okuma: 1,651,187 kayit" or
+// "Tarama: \\fs01\dept (123,456)" and return the embedded integer count,
+// or null if no count is present. Tolerates the Turkish locale's "."
+// thousand separator as well as "," (the backend currently uses ",").
+function _parseOpsLiveCount(label) {
+    if (!label || typeof label !== 'string') return null;
+    const m = label.match(/([\d.,]+)\s*kayit/i) || label.match(/\(([\d.,]+)\)/);
+    if (!m) return null;
+    const digits = m[1].replace(/[.,\s]/g, '');
+    if (!digits) return null;
+    const n = parseInt(digits, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
 
 function _opsIcon(type) {
     return '🔄';
@@ -2308,6 +2329,28 @@ async function pollOperations() {
         if (!r.ok) return;
         const j = await r.json();
         const ops = (j && Array.isArray(j.operations)) ? j.operations : [];
+        // Refresh per-source live snapshots BEFORE the no-op short-circuit
+        // below — pollScanProgress reads from this map every 3s and the
+        // banner-signature check would otherwise starve it whenever the
+        // label digits change but the eta does not.
+        const seenSources = new Set();
+        for (const op of ops) {
+            const sid = op && op.metadata && op.metadata.source_id;
+            if (sid == null || op.type !== 'scan') continue;
+            seenSources.add(sid);
+            const live = _parseOpsLiveCount(op.label);
+            _opsLiveBySource[sid] = {
+                live_count: live,
+                started_at: typeof op.started_at === 'number' ? op.started_at : null,
+                label: op.label || '',
+            };
+        }
+        // Drop entries for sources that no longer have an active scan op.
+        for (const sid of Object.keys(_opsLiveBySource)) {
+            if (!seenSources.has(Number(sid)) && !seenSources.has(sid)) {
+                delete _opsLiveBySource[sid];
+            }
+        }
         // Avoid re-rendering when the snapshot is unchanged — keeps the
         // banner steady and avoids flicker. Cheap signature: type+id only.
         const sig = ops.map(o => `${o.op_id || ''}|${o.label || ''}|${o.eta_seconds || ''}`).join(';');
@@ -2647,11 +2690,29 @@ async function pollScanProgress(sourceId) {
         }
 
         if (p.status === 'scanning' || p.status === 'generating_report' || p.status === 'connecting' || p.status === 'resuming') {
+            // displayCount comes from the function-scope definition at the
+            // top of pollScanProgress (#138 — prefers p.live_count over
+            // p.file_count during MFT collection phase).
+            const _opsLive = _opsLiveBySource[sourceId];
+            // Bottom-status elapsed (s) — fall back to (now - started_at)
+            // from the ops registry when the scanner hasn't published
+            // ``elapsed`` yet (still in connecting/early-enumeration).
+            let elapsedStr = p.elapsed || '';
+            if (!elapsedStr && _opsLive && _opsLive.started_at) {
+                const secs = Math.max(0, Math.round(Date.now()/1000 - _opsLive.started_at));
+                elapsedStr = secs + 's';
+            }
+            // Speed string — show "—" instead of "0/s" while the scanner
+            // hasn't measured a rate yet so the user doesn't read it as
+            // "broken / stuck at zero".
+            const fps = Number(p.files_per_second);
+            const speedStr = (Number.isFinite(fps) && fps > 0) ? (fps + '/s') : '—';
+
             document.getElementById('sp-files').textContent = formatNum(displayCount);
             document.getElementById('sp-size').textContent = p.total_size_formatted || formatSize(p.total_size);
-            document.getElementById('sp-speed').textContent = p.files_per_second || '0';
+            document.getElementById('sp-speed').textContent = (Number.isFinite(fps) && fps > 0) ? fps : '—';
             document.getElementById('sp-errors').textContent = p.errors || '0';
-            document.getElementById('scan-elapsed').textContent = p.elapsed || '';
+            document.getElementById('scan-elapsed').textContent = elapsedStr;
             const dir = p.current_dir || '';
             document.getElementById('sp-dir').textContent = dir.length > 60 ? '...' + dir.slice(-57) : dir;
             // Issue #135 — phase label (MFT okunuyor / DB'ye yaziliyor /
@@ -2661,9 +2722,9 @@ async function pollScanProgress(sourceId) {
             if (titleEl) {
                 let phaseLabel = 'Tarama Devam Ediyor';
                 if (p.phase === 'enumeration') {
-                    phaseLabel = 'MFT okunuyor (' + formatNum(p.file_count || 0) + ' kayit)';
+                    phaseLabel = 'MFT okunuyor (' + formatNum(displayCount) + ' kayit)';
                 } else if (p.phase === 'insert') {
-                    phaseLabel = "DB'ye yaziliyor (" + formatNum(p.file_count || 0) + ' dosya)';
+                    phaseLabel = "DB'ye yaziliyor (" + formatNum(displayCount) + ' dosya)';
                 } else if (p.phase === 'analysis') {
                     phaseLabel = 'Analiz calisiyor';
                 } else if (p.phase === 'completed') {
@@ -2691,7 +2752,8 @@ async function pollScanProgress(sourceId) {
                 document.getElementById('gsp-label').textContent = p.status === 'generating_report' ? 'Rapor...' : 'Tarama...';
                 document.getElementById('gsp-count').textContent = formatNum(displayCount) + ' dosya';
                 document.getElementById('gsp-bar').style.width = w + '%';
-                document.getElementById('gsp-detail').textContent = `${p.total_size_formatted || formatSize(p.total_size)} | ${p.files_per_second || 0}/s | ${p.elapsed || ''}`;
+                document.getElementById('gsp-detail').textContent =
+                    `${p.total_size_formatted || formatSize(p.total_size)} | ${speedStr} | ${elapsedStr || '—'}`;
             }
 
             // Issue #123: throttle mid-scan auto-refresh to >= 15 minutes.
