@@ -539,6 +539,9 @@ body.sidebar-open { overflow: hidden; }
     .sidebar.narrow ~ .main { margin-left: 0; }
     .main { margin-left: 0 !important; padding-top: 60px; }
 }
+/* Issue #181 Track B2 — shared partial-scan banner used on every dashboard
+   page while a scan is in progress. Matches the ov-partial-banner style. */
+.partial-scan-banner { display:none; margin-bottom:14px; padding:10px 16px; border-radius:8px; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.45); color:#fbbf24; font-size:13px; font-weight:500; }
 </style>
 </head>
 <body>
@@ -785,6 +788,7 @@ body.sidebar-open { overflow: hidden; }
             <select id="treemap-source" onchange="loadTreemap()" style="width:200px"><option value="">Kaynak secin...</option></select>
         </div>
     </div>
+    <div id="treemap-partial-banner" class="partial-scan-banner"></div>
     <div id="treemap-container">
         <div class="treemap-controls">
             <label>Renk:</label>
@@ -815,6 +819,7 @@ body.sidebar-open { overflow: hidden; }
             <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(document.getElementById('freq-source').value, event)">PDF Indir</button>
         </div>
     </div>
+    <div id="freq-partial-banner" class="partial-scan-banner"></div>
     <!-- Gorsel mod (issue #84) -->
     <div id="freq-visual-host">
         <div class="cards" id="freq-cards"></div>
@@ -833,6 +838,7 @@ body.sidebar-open { overflow: hidden; }
         <div><h2>Dosya Turleri</h2><div class="desc">Uzanti bazli dosya analizi</div></div>
         <div class="actions"><select id="types-source" onchange="loadTypes()" style="width:200px"><option value="">Kaynak secin...</option></select><button class="btn-export" onclick="exportXLS(document.getElementById('types-source').value, event)" style="margin-left:8px">XLS Indir</button><button class="btn-export" style="background:var(--danger);margin-left:4px" onclick="exportPDF(document.getElementById('types-source').value, event)">PDF Indir</button></div>
     </div>
+    <div id="types-partial-banner" class="partial-scan-banner"></div>
     <div class="chart-grid">
         <div class="chart-box"><h4>Uzanti Dagilimi (Boyut)</h4><canvas id="types-pie-chart"></canvas></div>
         <div class="chart-box"><h4>Uzanti Dagilimi (Sayi)</h4><canvas id="types-count-chart"></canvas></div>
@@ -846,6 +852,7 @@ body.sidebar-open { overflow: hidden; }
         <div><h2>Boyut Dagilimi</h2><div class="desc">Dosya boyutu kategorileri</div></div>
         <div class="actions"><select id="sizes-source" onchange="loadSizes()" style="width:200px"><option value="">Kaynak secin...</option></select><button class="btn-export" onclick="exportXLS(document.getElementById('sizes-source').value, event)" style="margin-left:8px">XLS Indir</button><button class="btn-export" style="background:var(--danger);margin-left:4px" onclick="exportPDF(document.getElementById('sizes-source').value, event)">PDF Indir</button></div>
     </div>
+    <div id="sizes-partial-banner" class="partial-scan-banner"></div>
     <div class="cards" id="sizes-cards"></div>
     <div class="chart-grid">
         <div class="chart-box chart-full"><h4>Boyut Kategorileri</h4><canvas id="sizes-chart"></canvas></div>
@@ -858,6 +865,7 @@ body.sidebar-open { overflow: hidden; }
     <div class="page-header">
         <div><h2>Kullanici Aktivite</h2><div class="desc">Dosya erisim aktiviteleri ve sahiplik analizleri</div></div>
     </div>
+    <div id="users-partial-banner" class="partial-scan-banner"></div>
     <div class="cards" id="user-cards"></div>
     <div class="chart-grid">
         <div class="chart-box"><h4>Sahip Dagilimi (Boyut)</h4><canvas id="users-donut-chart"></canvas></div>
@@ -876,6 +884,7 @@ body.sidebar-open { overflow: hidden; }
     <div class="page-header">
         <div><h2>Anomaliler</h2><div class="desc">Suppheli dosya erisim aktiviteleri</div></div>
     </div>
+    <div id="anomalies-partial-banner" class="partial-scan-banner"></div>
     <div class="cards" id="anomaly-cards"></div>
     <div class="table-wrap"><table id="anomaly-table"></table></div>
 </div>
@@ -1040,6 +1049,7 @@ body.sidebar-open { overflow: hidden; }
         </div>
     </div>
     <!-- Gorsel mod (issue #84) -->
+    <div id="naming-partial-banner" class="partial-scan-banner"></div>
     <div id="naming-visual-host">
     <!-- Skor ve ozet kartlar -->
     <div class="cards" id="naming-summary-cards"></div>
@@ -1564,6 +1574,7 @@ body.sidebar-open { overflow: hidden; }
         </div>
     </div>
     <div id="ext-anomaly-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);color:var(--warning);font-size:13px"></div>
+    <div id="ext-anomaly-partial-banner" class="partial-scan-banner"></div>
     <div class="cards" id="ext-anomaly-summary"></div>
     <div class="panel" style="margin-top:20px">
         <h3 class="panel-title">Anomali Listesi</h3>
@@ -2638,6 +2649,11 @@ Chart.defaults.font.family = "'Segoe UI', sans-serif";
 // NAVIGATION
 // ═══════════════════════════════════════════════════
 function showPage(name) {
+    // Issue #181 Track B2: tear down any running partial-data poll when
+    // navigating away from a page that was mid-scan.
+    if (typeof _psv2StopPoll === 'function' && _psv2PollPage && _psv2PollPage !== name) {
+        _psv2StopPoll();
+    }
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     const page = document.getElementById('page-' + name);
@@ -3402,7 +3418,61 @@ function updatePartialBanner(sourceId, ov) {
     }
 }
 
-async function loadOverview() {
+// ═══════════════════════════════════════════════════
+// PARTIAL SUMMARY v2 — Live data during scan (#181 Track B2)
+// Shared helpers used by every dashboard page's loadXxx() function.
+// ═══════════════════════════════════════════════════
+let _psv2PollTimer = null;       // single global poll timer
+let _psv2PollPage  = null;       // page name currently being polled
+let _psv2PollSid   = null;       // source ID string currently being polled
+const _psv2PrevWasPartial = {};  // pageName → bool (was last render from partial?)
+
+async function _fetchPartialSummaryV2(sid) {
+    // Returns the v2 JSON dict when a scan is in progress, null otherwise.
+    // Never throws — a missing endpoint is treated as "no partial data".
+    try {
+        const r = await fetch(API + '/sources/' + sid + '/partial-summary', { cache: 'no-store' });
+        if (!r.ok) return null;
+        return await r.json();
+    } catch (e) { return null; }
+}
+
+function _psv2ShowBanner(bannerId, state, progress) {
+    const el = document.getElementById(bannerId);
+    if (!el) return;
+    const filesStr = (progress && progress.files_so_far) ? formatNum(progress.files_so_far) + ' dosya' : '';
+    const rateStr  = (progress && progress.rate_per_sec)  ? ', ' + formatNum(progress.rate_per_sec) + '/sn'  : '';
+    const stateMap = { mft_phase: 'MFT okuma', db_writing: 'DB yazma', enrich: 'Zenginlestirme' };
+    const stateStr = stateMap[state] || state || 'tarama';
+    el.textContent = '\u26A0 Kismi veri \u2014 Tarama devam ediyor (' + stateStr + (filesStr ? ', ' + filesStr : '') + rateStr + ')';
+    el.style.display = 'block';
+}
+
+function _psv2HideBanner(bannerId) {
+    const el = document.getElementById(bannerId);
+    if (el) el.style.display = 'none';
+}
+
+function _psv2StartPoll(sid, pageName, loaderFn) {
+    // Don't restart if already polling the same source + page.
+    if (_psv2PollTimer && _psv2PollPage === pageName && _psv2PollSid === String(sid)) return;
+    _psv2StopPoll();
+    _psv2PollPage = pageName;
+    _psv2PollSid  = String(sid);
+    _psv2PollTimer = setInterval(async () => {
+        const curPage = document.querySelector('.page.active');
+        if (!curPage || curPage.id !== 'page-' + pageName) { _psv2StopPoll(); return; }
+        try { await loaderFn(); } catch (e) { /* ignore transient poll errors */ }
+    }, 5000);
+}
+
+function _psv2StopPoll() {
+    if (_psv2PollTimer) { clearInterval(_psv2PollTimer); _psv2PollTimer = null; }
+    _psv2PollPage = null;
+    _psv2PollSid  = null;
+}
+
+
     if (!sources.length) await loadSources();
     const sid = document.getElementById('overview-source').value;
 
@@ -3654,6 +3724,46 @@ async function confirmInsightArchive(insightType, sourceId) {
 async function loadFrequency() {
     const sid = document.getElementById('freq-source').value;
     if (!sid) return;
+
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    const ps = await _fetchPartialSummaryV2(sid);
+    const wasPartial = !!_psv2PrevWasPartial['frequency'];
+    if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+        _psv2PrevWasPartial['frequency'] = true;
+        _psv2ShowBanner('freq-partial-banner', ps.scan_state, ps.progress);
+        const ab = (ps.summary && ps.summary.age_buckets) || {};
+        const bucketOrder = ['<30d', '30-60d', '60-90d', '90-180d', '180-365d', '>365d'];
+        const bucketDays  = [0, 30, 60, 90, 180, 365];
+        const labels = bucketOrder.map(k => ab.hasOwnProperty(k) ? k : null).filter(Boolean);
+        if (labels.length) {
+            const counts = labels.map(k => ab[k] || 0);
+            const barColors = bucketDays.map(d => d >= 365 ? '#ef4444' : d >= 180 ? '#f59e0b' : d >= 90 ? '#eab308' : '#10b981');
+            document.getElementById('freq-cards').innerHTML = labels.map((k, i) => {
+                const d = bucketDays[i] || 0;
+                const c = counts[i];
+                const color = d >= 365 ? 'var(--danger)' : d >= 180 ? 'var(--warning)' : d >= 90 ? '#eab308' : 'var(--success)';
+                return `<div class="card" style="border-top:3px solid ${color}"><div class="card-label">${escapeHtml(k)}</div><div class="card-value" style="font-size:22px">${formatNum(c)}</div><div class="card-sub">Kismi veri</div></div>`;
+            }).join('');
+            destroyChart('freq-chart');
+            chartInstances['freq-chart'] = new Chart(document.getElementById('freq-chart'), {
+                type: 'bar', data: { labels, datasets: [{ label: 'Dosya Sayisi', data: counts, backgroundColor: barColors.map(c=>c+'99'), borderColor: barColors, borderWidth: 1, borderRadius: 6, yAxisID: 'y' }] },
+                options: { responsive: true, plugins: { legend: { display: true } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
+            });
+            document.getElementById('freq-table-wrap').style.display = 'none';
+        } else {
+            document.getElementById('freq-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>';
+        }
+        _psv2StartPoll(sid, 'frequency', loadFrequency);
+        return;
+    }
+
+    if (wasPartial && ps && ps.scan_state === 'completed') {
+        notify('Tarama tamamlandi, Erisim Sikligi guncellendi', 'success');
+    }
+    _psv2PrevWasPartial['frequency'] = false;
+    _psv2HideBanner('freq-partial-banner');
+    _psv2StopPoll();
+
     const data = await api(`/reports/frequency/${sid}`);
     const freq = data.frequency || [];
 
@@ -3810,6 +3920,44 @@ function _attachFrequencyViewToggle() {
 async function loadTypes() {
     const sid = document.getElementById('types-source').value;
     if (!sid) return;
+
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    const ps = await _fetchPartialSummaryV2(sid);
+    const wasPartial = !!_psv2PrevWasPartial['types'];
+    if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+        _psv2PrevWasPartial['types'] = true;
+        _psv2ShowBanner('types-partial-banner', ps.scan_state, ps.progress);
+        const byExt = (ps.summary && ps.summary.by_extension) || [];
+        const top = byExt.slice(0, 15);
+        destroyChart('types-pie-chart');
+        if (top.length) {
+            chartInstances['types-pie-chart'] = new Chart(document.getElementById('types-pie-chart'), {
+                type: 'doughnut', data: { labels: top.map(t=>'.'+escapeHtml(t.ext||'')), datasets: [{ data: top.map(t=>t.size_bytes||0), backgroundColor: COLORS, borderWidth: 0 }] },
+                options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } } } }
+            });
+        }
+        destroyChart('types-count-chart');
+        if (top.length) {
+            chartInstances['types-count-chart'] = new Chart(document.getElementById('types-count-chart'), {
+                type: 'bar', data: { labels: top.map(t=>'.'+escapeHtml(t.ext||'')), datasets: [{ label: 'Dosya Sayisi', data: top.map(t=>t.count||0), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
+                options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
+            });
+        }
+        document.getElementById('types-table').innerHTML = `
+            <thead><tr><th>Uzanti</th><th>Sayi</th><th>Toplam Boyut</th></tr></thead>
+            <tbody>${byExt.slice(0,30).map(t => `<tr><td><strong>.${escapeHtml(t.ext||'')}</strong></td><td>${formatNum(t.count||0)}</td><td>${formatSize(t.size_bytes||0)}</td></tr>`).join('')}</tbody>
+        `;
+        _psv2StartPoll(sid, 'types', loadTypes);
+        return;
+    }
+
+    if (wasPartial && ps && ps.scan_state === 'completed') {
+        notify('Tarama tamamlandi, Dosya Turleri guncellendi', 'success');
+    }
+    _psv2PrevWasPartial['types'] = false;
+    _psv2HideBanner('types-partial-banner');
+    _psv2StopPoll();
+
     const data = await api(`/reports/types/${sid}`);
     const types = data.types || [];
     const top = types.slice(0, 15);
@@ -3850,6 +3998,47 @@ async function loadTypes() {
 async function loadSizes() {
     const sid = document.getElementById('sizes-source').value;
     if (!sid) return;
+
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    const ps = await _fetchPartialSummaryV2(sid);
+    const wasPartial = !!_psv2PrevWasPartial['sizes'];
+    if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+        _psv2PrevWasPartial['sizes'] = true;
+        _psv2ShowBanner('sizes-partial-banner', ps.scan_state, ps.progress);
+        const sb = (ps.summary && ps.summary.size_buckets) || {};
+        const bucketOrder = ['<1MB', '1-10MB', '10-100MB', '100-1GB', '>1GB'];
+        const labels = bucketOrder.filter(k => sb.hasOwnProperty(k));
+        if (labels.length) {
+            const counts = labels.map(k => sb[k] || 0);
+            document.getElementById('sizes-cards').innerHTML = labels.map((k, i) => `
+                <div class="card" style="border-top:3px solid ${COLORS[i%COLORS.length]}">
+                    <div class="card-label">${escapeHtml(k)}</div>
+                    <div class="card-value" style="font-size:22px">${formatNum(counts[i])}</div>
+                    <div class="card-sub">Kismi veri</div>
+                </div>`).join('');
+            destroyChart('sizes-chart');
+            chartInstances['sizes-chart'] = new Chart(document.getElementById('sizes-chart'), {
+                type: 'bar', data: { labels, datasets: [{ label: 'Dosya Sayisi', data: counts, backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 6 }] },
+                options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
+            });
+            document.getElementById('sizes-table').innerHTML = `
+                <thead><tr><th>Kategori</th><th>Dosya Sayisi</th></tr></thead>
+                <tbody>${labels.map((k, i) => `<tr><td>${escapeHtml(k)}</td><td>${formatNum(counts[i])}</td></tr>`).join('')}</tbody>
+            `;
+        } else {
+            document.getElementById('sizes-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>';
+        }
+        _psv2StartPoll(sid, 'sizes', loadSizes);
+        return;
+    }
+
+    if (wasPartial && ps && ps.scan_state === 'completed') {
+        notify('Tarama tamamlandi, Boyut Dagilimi guncellendi', 'success');
+    }
+    _psv2PrevWasPartial['sizes'] = false;
+    _psv2HideBanner('sizes-partial-banner');
+    _psv2StopPoll();
+
     const data = await api(`/reports/sizes/${sid}`);
     const sizes = data.sizes || [];
 
@@ -3887,6 +4076,44 @@ async function loadSizes() {
 async function loadTreemap() {
     const sid = document.getElementById('treemap-source').value;
     if (!sid) return;
+
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    const ps = await _fetchPartialSummaryV2(sid);
+    const wasPartial = !!_psv2PrevWasPartial['treemap'];
+    if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+        _psv2PrevWasPartial['treemap'] = true;
+        _psv2ShowBanner('treemap-partial-banner', ps.scan_state, ps.progress);
+        const dirs = (ps.summary && ps.summary.by_directory) || [];
+        if (dirs.length) {
+            treemapData = {
+                name: 'Root',
+                children: dirs.map(d => ({
+                    name: d.path || '?',
+                    extension: '',
+                    value: d.size_bytes || d.count || 1,
+                    count: d.count || 0,
+                    size: d.size_bytes || 0,
+                    avg: d.count ? Math.round((d.size_bytes || 0) / d.count) : 0,
+                })),
+            };
+            treemapZoomPath = null;
+            renderTreemap();
+        } else {
+            d3.select('#treemap-svg').selectAll('*').remove();
+            d3.select('#treemap-svg').append('text').attr('x','50%').attr('y','50%').attr('text-anchor','middle').attr('fill','#64748b').text('Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek');
+        }
+        _psv2StartPoll(sid, 'treemap', loadTreemap);
+        return;
+    }
+
+    // scan completed or no partial data → full load.
+    if (wasPartial && ps && ps.scan_state === 'completed') {
+        notify('Tarama tamamlandi, Treemap Harita guncellendi', 'success');
+    }
+    _psv2PrevWasPartial['treemap'] = false;
+    _psv2HideBanner('treemap-partial-banner');
+    _psv2StopPoll();
+
     try {
         const data = await api(`/reports/full/${sid}`);
         treemapData = buildTreeFromTypes(data.types || [], data.summary || {});
@@ -3894,6 +4121,7 @@ async function loadTreemap() {
         renderTreemap();
     } catch(e) { console.error(e); }
 }
+
 
 function buildTreeFromTypes(types, summary) {
     // Build a tree: root -> extensions -> files (simulated by count/size)
@@ -3980,6 +4208,63 @@ function treemapZoomRoot() { treemapZoomPath = null; renderTreemap(); }
 // USERS
 // ═══════════════════════════════════════════════════
 async function loadUsers() {
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    // Users page has no dedicated source select; use the first available source.
+    const srcSelect = document.getElementById('freq-source') || document.getElementById('types-source') || document.getElementById('overview-source');
+    const psSid = srcSelect ? srcSelect.value : (sources.length ? sources[0].id : '');
+    if (psSid) {
+        const ps = await _fetchPartialSummaryV2(psSid);
+        const wasPartial = !!_psv2PrevWasPartial['users'];
+        if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+            _psv2PrevWasPartial['users'] = true;
+            _psv2ShowBanner('users-partial-banner', ps.scan_state, ps.progress);
+            const byOwner = (ps.summary && ps.summary.by_owner) || [];
+            if (byOwner.length) {
+                const totalSize = byOwner.reduce((s, o) => s + (o.size_bytes || 0), 0);
+                const totalFiles = byOwner.reduce((s, o) => s + (o.count || 0), 0);
+                document.getElementById('user-cards').innerHTML = `
+                    <div class="card accent"><div class="card-label">Dosya Sahipleri</div><div class="card-value">${byOwner.length}</div></div>
+                    <div class="card success"><div class="card-label">Toplam Boyut</div><div class="card-value" style="font-size:18px">${formatSize(totalSize)}</div></div>
+                    <div class="card purple"><div class="card-label">Toplam Dosya</div><div class="card-value">${formatNum(totalFiles)}</div></div>
+                    <div class="card warning"><div class="card-label">Veri Kaynagi</div><div class="card-value" style="font-size:14px">Kismi Veri</div><div class="card-sub">Tarama devam ediyor</div></div>
+                `;
+                const topBySize = byOwner.slice(0, 8);
+                destroyChart('users-donut-chart');
+                if (topBySize.length) {
+                    chartInstances['users-donut-chart'] = new Chart(document.getElementById('users-donut-chart'), {
+                        type: 'doughnut', data: { labels: topBySize.map(o => o.owner || 'Bilinmiyor'), datasets: [{ data: topBySize.map(o => o.size_bytes || 0), backgroundColor: COLORS.slice(0, topBySize.length), borderWidth: 0 }] },
+                        options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } },
+                            tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + formatSize(ctx.raw) } } } }
+                    });
+                }
+                destroyChart('users-top-chart');
+                const topByCount = byOwner.slice(0, 10);
+                if (topByCount.length) {
+                    chartInstances['users-top-chart'] = new Chart(document.getElementById('users-top-chart'), {
+                        type: 'bar', data: { labels: topByCount.map(o => o.owner || 'Bilinmiyor'), datasets: [{ label: 'Dosya Sayisi', data: topByCount.map(o => o.count || 0), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
+                        options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
+                    });
+                }
+                document.getElementById('users-table').innerHTML = `
+                    <thead><tr><th>Sahip</th><th>Dosya Sayisi</th><th>Toplam Boyut</th></tr></thead>
+                    <tbody>${byOwner.map(o => `<tr><td><strong>${escapeHtml(o.owner||'Bilinmiyor')}</strong></td><td>${formatNum(o.count||0)}</td><td>${formatSize(o.size_bytes||0)}</td></tr>`).join('')}</tbody>
+                `;
+                document.getElementById('users-heatmap').innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:12px">Heatmap tarama tamamlandiktan sonra goruntulenecek</div>';
+            } else {
+                document.getElementById('user-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>';
+            }
+            _psv2StartPoll(psSid, 'users', loadUsers);
+            return;
+        }
+
+        if (wasPartial && ps && ps.scan_state === 'completed') {
+            notify('Tarama tamamlandi, Kullanici Aktivite guncellendi', 'success');
+        }
+        _psv2PrevWasPartial['users'] = false;
+        _psv2HideBanner('users-partial-banner');
+        _psv2StopPoll();
+    }
+
     try {
         const data = await api('/users/overview', { silent: true });
 
@@ -4233,6 +4518,44 @@ async function loadUserEfficiency(username) {
 // ANOMALIES
 // ═══════════════════════════════════════════════════
 async function loadAnomalies() {
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    const srcSelect = document.getElementById('freq-source') || document.getElementById('types-source') || document.getElementById('overview-source');
+    const psSid = srcSelect ? srcSelect.value : (sources.length ? sources[0].id : '');
+    if (psSid) {
+        const ps = await _fetchPartialSummaryV2(psSid);
+        const wasPartial = !!_psv2PrevWasPartial['anomalies'];
+        if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+            _psv2PrevWasPartial['anomalies'] = true;
+            _psv2ShowBanner('anomalies-partial-banner', ps.scan_state, ps.progress);
+            const anom = (ps.summary && ps.summary.anomalies_so_far) || {};
+            const naming = anom.naming || 0;
+            const extension = anom.extension || 0;
+            const ransomware = anom.ransomware || 0;
+            document.getElementById('anomaly-cards').innerHTML = `
+                <div class="card danger"><div class="card-label">Adlandirma</div><div class="card-value">${formatNum(naming)}</div><div class="card-sub">Kismi veri</div></div>
+                <div class="card warning"><div class="card-label">Uzanti Anomalisi</div><div class="card-value">${formatNum(extension)}</div><div class="card-sub">Kismi veri</div></div>
+                <div class="card accent"><div class="card-label">Ransomware Belirtisi</div><div class="card-value">${formatNum(ransomware)}</div><div class="card-sub">Kismi veri</div></div>
+            `;
+            document.getElementById('anomaly-table').innerHTML = `
+                <thead><tr><th>Tur</th><th>Sayim</th><th>Not</th></tr></thead>
+                <tbody>
+                    <tr><td>Adlandirma</td><td>${formatNum(naming)}</td><td style="color:var(--text-muted)">Tarama tamamlandiktan sonra detay goruntulenecek</td></tr>
+                    <tr><td>Uzanti Anomalisi</td><td>${formatNum(extension)}</td><td style="color:var(--text-muted)">Tarama tamamlandiktan sonra detay goruntulenecek</td></tr>
+                    <tr><td>Ransomware Belirtisi</td><td>${formatNum(ransomware)}</td><td style="color:var(--text-muted)">Tarama tamamlandiktan sonra detay goruntulenecek</td></tr>
+                </tbody>
+            `;
+            _psv2StartPoll(psSid, 'anomalies', loadAnomalies);
+            return;
+        }
+
+        if (wasPartial && ps && ps.scan_state === 'completed') {
+            notify('Tarama tamamlandi, Anomaliler guncellendi', 'success');
+        }
+        _psv2PrevWasPartial['anomalies'] = false;
+        _psv2HideBanner('anomalies-partial-banner');
+        _psv2StopPoll();
+    }
+
     try {
         const data = await api('/anomalies', { silent: true });
         const alerts = Array.isArray(data) ? data : [];
@@ -4797,6 +5120,33 @@ async function loadNaming() {
         _attachNamingViewToggle();
         return;
     }
+
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    const ps = await _fetchPartialSummaryV2(sourceId);
+    const wasPartial = !!_psv2PrevWasPartial['naming'];
+    if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+        _psv2PrevWasPartial['naming'] = true;
+        _psv2ShowBanner('naming-partial-banner', ps.scan_state, ps.progress);
+        const namingCount = (ps.summary && ps.summary.anomalies_so_far && ps.summary.anomalies_so_far.naming) || 0;
+        document.getElementById('naming-summary-cards').innerHTML = `
+            <div class="card danger"><div class="card-label">Adlandirma Ihlalleri</div><div class="card-value">${formatNum(namingCount)}</div><div class="card-sub">Kismi veri</div></div>
+            <div class="card warning"><div class="card-label">Detay</div><div class="card-value" style="font-size:14px">Tarama devam ediyor</div><div class="card-sub">Tarama bitince tam rapor goruntulenecek</div></div>
+        `;
+        const reqTable = document.getElementById('naming-req-table');
+        if (reqTable) reqTable.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Tarama tamamlandiktan sonra kural detaylari goruntulenecek</div>';
+        const bpTable = document.getElementById('naming-bp-table');
+        if (bpTable) bpTable.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Tarama tamamlandiktan sonra en iyi uygulama detaylari goruntulenecek</div>';
+        _attachNamingViewToggle();
+        _psv2StartPoll(sourceId, 'naming', loadNaming);
+        return;
+    }
+
+    if (wasPartial && ps && ps.scan_state === 'completed') {
+        notify('Tarama tamamlandi, Adlandirma Uyumu guncellendi', 'success');
+    }
+    _psv2PrevWasPartial['naming'] = false;
+    _psv2HideBanner('naming-partial-banner');
+    _psv2StopPoll();
 
     try {
         const data = await api(`/reports/mit-naming/${sourceId}`);
@@ -7741,6 +8091,29 @@ async function loadExtensionAnomalies() {
         return;
     }
     if (xlsxBtn) xlsxBtn.style.display = '';
+
+    // Issue #181 Track B2: try partial summary first while scan is running.
+    const ps = await _fetchPartialSummaryV2(sourceId);
+    const wasPartial = !!_psv2PrevWasPartial['extension-anomalies'];
+    if (ps && ps.scan_state && ps.scan_state !== 'completed') {
+        _psv2PrevWasPartial['extension-anomalies'] = true;
+        _psv2ShowBanner('ext-anomaly-partial-banner', ps.scan_state, ps.progress);
+        const extCount = (ps.summary && ps.summary.anomalies_so_far && ps.summary.anomalies_so_far.extension) || 0;
+        summary.innerHTML = `
+            <div class="card warning"><div class="card-label">Tahmini Uzanti Anomalisi</div><div class="card-value">${formatNum(extCount)}</div><div class="card-sub">Kismi veri</div></div>
+            <div class="card accent"><div class="card-label">Detay</div><div class="card-value" style="font-size:14px">Tarama devam ediyor</div><div class="card-sub">Tarama bitince detay goruntulenecek</div></div>
+        `;
+        renderEntityList('ext-anomaly-container', [], [], { emptyHtml: 'Tarama tamamlandiktan sonra detayli liste goruntulenecek' });
+        _psv2StartPoll(sourceId, 'extension-anomalies', loadExtensionAnomalies);
+        return;
+    }
+
+    if (wasPartial && ps && ps.scan_state === 'completed') {
+        notify('Tarama tamamlandi, Yanlis Uzantili Dosyalar guncellendi', 'success');
+    }
+    _psv2PrevWasPartial['extension-anomalies'] = false;
+    _psv2HideBanner('ext-anomaly-partial-banner');
+    _psv2StopPoll();
 
     try {
         const qs = new URLSearchParams({ source_id: sourceId, limit: '500' });
