@@ -160,6 +160,37 @@ Write-Host "  [OK] $dlSize MB indirildi" -ForegroundColor Green
 # --- 3. Dizin yapisi + kaynak kopyala ---
 Write-Host "[3/6] Kurulum dizini: $InstallDir" -ForegroundColor Yellow
 
+# Issue #172 — service-aware update. If the FileActivity Windows service
+# (issue #151) is running, its nssm.exe supervisor holds an exclusive
+# handle to bin\nssm.exe and the cleanup loop below fails with
+# "Access to the path 'nssm.exe' is denied". Stop the service first,
+# wait for nssm to release its handles, remember the state so we can
+# restart it after install. Idempotent: if no service exists this is a
+# no-op.
+$svcWasRunning = $false
+$existingSvc = Get-Service -Name "FileActivity" -ErrorAction SilentlyContinue
+if ($existingSvc -and $existingSvc.Status -eq "Running") {
+    Write-Host "  FileActivity servisi durduruluyor (update icin)..." -ForegroundColor Yellow
+    try {
+        Stop-Service -Name "FileActivity" -Force -ErrorAction Stop
+        # nssm.exe needs ~1-2s after Stop-Service to fully release handles.
+        # Poll up to 20s — long enough for the supervisor to die even on
+        # slow disks; short enough that the operator notices a hang.
+        $deadline = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            $nssmProc = Get-Process -Name "nssm" -ErrorAction SilentlyContinue
+            if (-not $nssmProc) { break }
+        }
+        $svcWasRunning = $true
+        Write-Host "  [OK] Servis durduruldu" -ForegroundColor Green
+    } catch {
+        Write-Host "  [UYARI] Servis durdurulamadi: $_" -ForegroundColor Yellow
+        Write-Host "          Manuel: Stop-Service FileActivity, ardindan update.cmd tekrar deneyin." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 # Calisan process varsa durdur (guncelleme sirasinda dosya kilidi olmasin)
 Get-Process -Name "python","pythonw" -ErrorAction SilentlyContinue | Where-Object {
     try { $_.Path -and $_.Path.StartsWith($InstallDir) } catch { $false }
@@ -359,6 +390,37 @@ Write-Host "    $InstallDir\start_dashboard.cmd   - Dashboard'u baslat" -Foregro
 Write-Host "    $InstallDir\fa.cmd <komut>        - CLI (scan, source, restore ...)" -ForegroundColor Cyan
 Write-Host "    $InstallDir\update.cmd            - En son master'a guncelle" -ForegroundColor Cyan
 Write-Host ""
+
+# Issue #172 — if we stopped the service before cleanup, just restart
+# it now. We skip the install prompt entirely: the service already
+# exists with its NSSM config, all we need is the new code to run.
+if ($svcWasRunning) {
+    Write-Host ""
+    Write-Host "  FileActivity servisi yeniden baslatiliyor (yeni kod ile)..." -ForegroundColor Yellow
+    try {
+        Start-Service -Name "FileActivity" -ErrorAction Stop
+        # Give it a moment to actually transition to Running. Same poll
+        # budget as install_service.ps1 [4/4] post-#163.
+        $deadline = (Get-Date).AddSeconds(15)
+        do {
+            Start-Sleep -Seconds 1
+            $svcNow = Get-Service -Name "FileActivity" -ErrorAction SilentlyContinue
+        } while ((Get-Date) -lt $deadline -and $svcNow.Status -ne "Running")
+        if ($svcNow -and $svcNow.Status -eq "Running") {
+            Write-Host "  [OK] Servis calisiyor" -ForegroundColor Green
+        } else {
+            $statusText = if ($svcNow) { $svcNow.Status } else { "<bulunamadi>" }
+            Write-Host "  [UYARI] Servis Running degil. Status: $statusText" -ForegroundColor Yellow
+            Write-Host "          Loglara bakin: $InstallDir\logs\service.err" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  [UYARI] Servis baslatilamadi: $_" -ForegroundColor Yellow
+    }
+    Write-Host ""
+    Write-Host "  Update tamamlandi. Dashboard: http://localhost:$DashPort" -ForegroundColor Yellow
+    Write-Host ""
+    return
+}
 
 # --- Issue #151: Servis modu (NSSM) opt-in ---
 # Default H to preserve current behavior; user must explicitly choose service mode.
