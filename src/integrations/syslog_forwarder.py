@@ -1,9 +1,14 @@
-"""Syslog/CEF forwarder for SIEM integration (issue #50).
+"""Syslog/CEF/ECS-JSON forwarder for SIEM integration (issue #50).
 
 Pushes FILE ACTIVITY security-relevant events (ransomware alerts, audit chain
 breaks, archive/scan failures) to a downstream syslog collector or SIEM
-(Splunk, Elastic, Sentinel, QRadar, ...) using either RFC 5424 or CEF
-formatting over UDP, TCP, or TCP+TLS.
+(Splunk, Elastic, Sentinel, QRadar, Wazuh, ...) using RFC 5424, CEF, or
+ECS-JSON formatting over UDP, TCP, or TCP+TLS.
+
+ECS-JSON (``format: ecs_json``) emits a syslog-framed JSON line whose fields
+follow the `Elastic Common Schema <https://www.elastic.co/guide/en/ecs/current/ecs-file.html>`_
+``file.*`` field set so that Wazuh / Elastic SIEM can ingest events with zero
+decoder configuration.
 
 Design notes
 ------------
@@ -23,6 +28,7 @@ Design notes
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import socket
@@ -82,6 +88,25 @@ _CEF_SEVERITY = {
     "notice": 4,
     "info": 3,
     "debug": 1,
+}
+
+# ECS file.* field mapping: our payload key → dotted ECS path.
+# Keys listed here are "lifted" into the nested ``file`` / ``file.hash``
+# sub-document.  Any key NOT in this table is forwarded verbatim inside
+# ``labels`` so no data is silently discarded.
+_ECS_FILE_FIELDS: dict[str, str] = {
+    "file_path": "file.path",
+    "file_name": "file.name",
+    "file_size": "file.size",
+    "mtime": "file.mtime",
+    "ctime": "file.ctime",
+    "atime": "file.accessed",
+    "owner_sid": "file.uid",
+    "owner": "file.owner",
+    "extension": "file.extension",
+    "sha256": "file.hash.sha256",
+    "is_hidden": "file.attributes",   # mapped to ["hidden"] list
+    "fork_name": "file.fork_name",    # NTFS ADS
 }
 
 _DEFAULT_QUEUE_MAX = 10000
@@ -401,6 +426,8 @@ class SyslogForwarder:
     def _format(self, severity: str, event_class: str, payload: dict) -> bytes:
         if self.fmt == "cef":
             return self._format_cef(severity, event_class, payload)
+        if self.fmt == "ecs_json":
+            return self._format_ecs_json(severity, event_class, payload)
         return self._format_rfc5424(severity, event_class, payload)
 
     def _format_rfc5424(self, severity: str, event_class: str,
@@ -457,4 +484,82 @@ class SyslogForwarder:
             f"{sev_code}|{extension}"
         )
         line = f"<{priority}>{ts} {self.hostname} {cef}"
+        return line.encode("utf-8", errors="replace")
+
+    def _format_ecs_json(self, severity: str, event_class: str,
+                          payload: dict) -> bytes:
+        """Produce a syslog-framed ECS JSON line.
+
+        The JSON body maps our payload keys to their Elastic Common Schema
+        ``file.*`` equivalents so Wazuh / Elastic SIEM can ingest events with
+        zero decoder configuration.
+
+        Wire format::
+
+            <priority>1 <timestamp> <hostname> FILE_ACTIVITY - - - <json>
+
+        The syslog header follows RFC 5424 §6 (without structured-data) so
+        standard syslog collectors accept the line even when ECS parsing is
+        not available.
+        """
+        sev_code = _SEVERITIES[severity]
+        priority = self.facility * 8 + sev_code
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+        # ---- ECS document ------------------------------------------------
+        doc: dict[str, Any] = {
+            "@timestamp": ts,
+            "event": {
+                "dataset": "file_activity.scanner",
+                "kind": "event",
+                "category": ["file"],
+                "action": event_class,
+                "severity": sev_code,
+            },
+            "log": {
+                "level": severity,
+            },
+            "host": {
+                "name": self.hostname,
+            },
+            "message": "",
+        }
+
+        file_doc: dict[str, Any] = {}
+        hash_doc: dict[str, Any] = {}
+        labels: dict[str, Any] = {}
+
+        for k, v in (payload or {}).items():
+            if k == "msg":
+                doc["message"] = "" if v is None else str(v)
+                continue
+
+            ecs_path = _ECS_FILE_FIELDS.get(k)
+            if ecs_path is None:
+                # Unmapped key goes into labels so no data is lost.
+                labels[k] = v
+                continue
+
+            if ecs_path == "file.attributes":
+                # is_hidden=True → file.attributes: ["hidden"].
+                # is_hidden=False intentionally omits the field (no attributes
+                # to report) which is consistent with the ECS spec behaviour.
+                if v:
+                    file_doc["attributes"] = ["hidden"]
+            elif ecs_path == "file.hash.sha256":
+                hash_doc["sha256"] = v
+            else:
+                # Strip the leading "file." prefix.
+                field_name = ecs_path[len("file."):]
+                file_doc[field_name] = v
+
+        if hash_doc:
+            file_doc["hash"] = hash_doc
+        if file_doc:
+            doc["file"] = file_doc
+        if labels:
+            doc["labels"] = labels
+
+        json_body = json.dumps(doc, default=str, separators=(",", ":"))
+        line = f"<{priority}>1 {ts} {self.hostname} FILE_ACTIVITY - - - {json_body}"
         return line.encode("utf-8", errors="replace")

@@ -405,3 +405,125 @@ def test_stop_is_idempotent():
         assert fwd.emit("info", "x", {"msg": "after"}) is False
     finally:
         cap.stop()
+
+
+def test_ecs_json_format():
+    """Live UDP capture: ecs_json format produces valid ECS-shaped JSON."""
+    import json as _json
+
+    cap = _UDPCapture().start()
+    fwd = SyslogForwarder(_make_cfg(cap.port, fmt="ecs_json"))
+    try:
+        ok = fwd.emit(
+            "critical",
+            "file_event",
+            {
+                "file_path": "C:\\Users\\alice\\secret.docx",
+                "file_name": "secret.docx",
+                "file_size": 4096,
+                "sha256": "abc123def456",
+                "owner": "alice",
+                "owner_sid": "S-1-5-21-x",
+                "extension": "docx",
+                "is_hidden": False,
+                "mtime": "2026-04-28T07:00:00Z",
+                "ctime": "2026-04-28T06:00:00Z",
+                "atime": "2026-04-28T08:00:00Z",
+                "fork_name": "",
+                "msg": "File scanned",
+                "extra_custom": "custom_value",
+            },
+        )
+        assert ok is True
+        assert cap.wait_for(1)
+
+        raw = cap.received[0].decode("utf-8")
+        # Syslog header: local0(16)*8 + critical(2) = 130
+        assert raw.startswith("<130>1 ")
+        assert " test-host FILE_ACTIVITY - - - " in raw
+
+        # Extract JSON body (everything after the last " - ")
+        json_start = raw.index("{")
+        doc = _json.loads(raw[json_start:])
+
+        # Standard ECS event fields
+        assert doc["event"]["dataset"] == "file_activity.scanner"
+        assert doc["event"]["kind"] == "event"
+        assert doc["event"]["category"] == ["file"]
+        assert doc["event"]["action"] == "file_event"
+        assert doc["event"]["severity"] == 2  # critical
+
+        # log.level
+        assert doc["log"]["level"] == "critical"
+
+        # host.name
+        assert doc["host"]["name"] == "test-host"
+
+        # ECS file.* mapping
+        f = doc["file"]
+        assert f["path"] == "C:\\Users\\alice\\secret.docx"
+        assert f["name"] == "secret.docx"
+        assert f["size"] == 4096
+        assert f["owner"] == "alice"
+        assert f["uid"] == "S-1-5-21-x"
+        assert f["extension"] == "docx"
+        assert f["mtime"] == "2026-04-28T07:00:00Z"
+        assert f["ctime"] == "2026-04-28T06:00:00Z"
+        assert f["accessed"] == "2026-04-28T08:00:00Z"
+        assert f["fork_name"] == ""
+        assert f["hash"]["sha256"] == "abc123def456"
+
+        # is_hidden=False → no file.attributes key
+        assert "attributes" not in f
+
+        # message
+        assert doc["message"] == "File scanned"
+
+        # unmapped key lands in labels
+        assert doc["labels"]["extra_custom"] == "custom_value"
+    finally:
+        fwd.stop()
+        cap.stop()
+
+
+def test_ecs_json_is_hidden_true():
+    """is_hidden=True → file.attributes: ['hidden']."""
+    import json as _json
+
+    cap = _UDPCapture().start()
+    fwd = SyslogForwarder(_make_cfg(cap.port, fmt="ecs_json"))
+    try:
+        fwd.emit("info", "file_event", {"is_hidden": True, "msg": "hidden"})
+        assert cap.wait_for(1)
+        raw = cap.received[0].decode("utf-8")
+        doc = _json.loads(raw[raw.index("{"):])
+        assert doc["file"]["attributes"] == ["hidden"]
+    finally:
+        fwd.stop()
+        cap.stop()
+
+
+def test_ecs_json_rfc5424_cef_unchanged():
+    """Existing rfc5424 and cef formats are unaffected by ecs_json addition."""
+    cap = _UDPCapture().start()
+    fwd_rfc = SyslogForwarder(_make_cfg(cap.port, fmt="rfc5424"))
+    try:
+        fwd_rfc.emit("info", "check", {"msg": "ok"})
+        assert cap.wait_for(1)
+        line = cap.received[0].decode("utf-8")
+        assert line.startswith("<134>1 ")   # local0+info = 134
+    finally:
+        fwd_rfc.stop()
+        cap.stop()
+
+    cap2 = _UDPCapture().start()
+    fwd_cef = SyslogForwarder(_make_cfg(cap2.port, fmt="cef"))
+    try:
+        fwd_cef.emit("info", "check", {"msg": "ok"})
+        assert cap2.wait_for(1)
+        line2 = cap2.received[0].decode("utf-8")
+        assert "CEF:0|deepdarbe|FILE ACTIVITY" in line2
+    finally:
+        fwd_cef.stop()
+        cap2.stop()
+
