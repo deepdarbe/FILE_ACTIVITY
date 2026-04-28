@@ -2615,6 +2615,29 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         # Hizli yol: pre-computed summary varsa oradan hesapla
         kpi = db.get_scan_summary(scan_id)
+        # Issue #194 update #5 — self-heal stale summary_json. Customer
+        # observed Genel Bakis showing TOPLAM DOSYA: 0 while scan_runs
+        # had real totals AND scanned_files clearly populated (Treemap +
+        # Dosya Turleri rendered correctly off the same scan_id). The
+        # cached summary_json was written at a partial moment and never
+        # refreshed. If summary's total_files==0 but the scan_runs row
+        # has non-zero total_files, the cache is stale — bypass it and
+        # fall through to the live SQL path below, which always tells
+        # the truth.
+        if kpi and (kpi.get("total_files") or 0) == 0:
+            with db.get_read_cursor() as _cur:
+                _row = _cur.execute(
+                    "SELECT total_files FROM scan_runs WHERE id=?",
+                    (scan_id,),
+                ).fetchone()
+            if _row and (_row["total_files"] or 0) > 0:
+                logger.info(
+                    "risk_score: summary_json shows total_files=0 but "
+                    "scan_runs.total_files=%d for scan_id=%d — "
+                    "treating cache as stale, falling through",
+                    _row["total_files"], scan_id,
+                )
+                kpi = None
         if kpi:
             total = kpi.get("total_files", 0) or 1
             risky = kpi.get("risky_count", 0)
