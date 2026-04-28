@@ -1963,6 +1963,25 @@ let scanPollingInterval = null;
 const API = '/api';
 
 // ═══════════════════════════════════════════════════
+// SECURITY — XSS escape helper (security audit 2026-04-28, H-1)
+//
+// Every untrusted leaf value spliced into an `innerHTML = `...${x}...``
+// template literal MUST go through escapeHtml(). Filenames, owners,
+// source.unc_path, etc. flow from the filesystem and could contain
+// `<script>` or `<img onerror=...>` — we cannot trust them. Numeric ids,
+// counts and known-internal tokens are exempt (use String(n) if needed).
+//
+// Function declaration (not expression) so it is hoisted within this
+// script block — call sites further down the file are safe.
+// ═══════════════════════════════════════════════════
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+// ═══════════════════════════════════════════════════
 // UTILITY
 // ═══════════════════════════════════════════════════
 function downloadFile(url) {
@@ -1995,7 +2014,9 @@ async function api(path, opts = {}) {
 function notify(msg, type='info') {
     const el = document.createElement('div');
     el.className = `notification ${type}`;
-    el.innerHTML = `<span>${{success:'✅',error:'❌',info:'ℹ️',warning:'⚠️'}[type]||'ℹ️'}</span> ${msg}`;
+    // Security audit H-1: msg flows from server errors / filenames / etc.
+    // Escape to prevent stored XSS through notification toasts.
+    el.innerHTML = `<span>${{success:'✅',error:'❌',info:'ℹ️',warning:'⚠️'}[type]||'ℹ️'}</span> ${escapeHtml(msg)}`;
     el.onclick = () => el.remove();
     document.getElementById('notifications').appendChild(el);
     setTimeout(() => el.remove(), 5000);
@@ -2521,7 +2542,7 @@ function populateSourceSelect(id) {
     const placeholder = (id === 'pii-source')
         ? '<option value="">Tum kaynaklar</option>'
         : '<option value="">Kaynak secin...</option>';
-    sel.innerHTML = placeholder + sources.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+    sel.innerHTML = placeholder + sources.map(s => `<option value="${s.id}">${escapeHtml(s.name)}</option>`).join('');
     if (cur) sel.value = cur;
     else if (sources.length === 1 && id !== 'pii-source') sel.value = sources[0].id;
 }
@@ -2532,13 +2553,13 @@ function renderSources() {
     c.innerHTML = sources.map(s => `
         <div class="source-card">
             <div class="source-card-header">
-                <div class="name">📁 ${s.name}</div>
+                <div class="name">📁 ${escapeHtml(s.name)}</div>
                 <span class="badge ${s.enabled ? 'badge-success' : 'badge-warning'}">${s.enabled ? 'Aktif' : 'Pasif'}</span>
             </div>
             <div class="source-card-body">
-                <div class="info-row"><span class="label">Yol</span><span class="value">${s.unc_path}</span></div>
-                <div class="info-row"><span class="label">Arsiv</span><span class="value">${s.archive_dest || '-'}</span></div>
-                <div class="info-row"><span class="label">Son Tarama</span><span class="value">${s.last_scanned_at ? s.last_scanned_at.substring(0,19) : 'Hic'}</span></div>
+                <div class="info-row"><span class="label">Yol</span><span class="value">${escapeHtml(s.unc_path)}</span></div>
+                <div class="info-row"><span class="label">Arsiv</span><span class="value">${escapeHtml(s.archive_dest || '-')}</span></div>
+                <div class="info-row"><span class="label">Son Tarama</span><span class="value">${escapeHtml(s.last_scanned_at ? s.last_scanned_at.substring(0,19) : 'Hic')}</span></div>
                 <div class="info-row"><span class="label">Izleme</span><span class="value" id="watcher-status-${s.id}"><span class="watcher-dot inactive"></span> <span style="font-size:11px;color:var(--text-muted)">Durduruldu</span></span></div>
             </div>
             <div class="source-card-actions">
@@ -3237,14 +3258,14 @@ async function loadOverview() {
             if (insights.length) {
                 recEl.innerHTML = insights.map(i => `
                     <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-secondary);border-radius:8px;border-left:3px solid ${sevColors[i.severity]||'var(--border)'}">
-                        <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${sevColors[i.severity]||'var(--border)'}22;color:${sevColors[i.severity]||'var(--text-muted)'};flex-shrink:0">${(i.severity||'info').toUpperCase()}</span>
+                        <span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${sevColors[i.severity]||'var(--border)'}22;color:${sevColors[i.severity]||'var(--text-muted)'};flex-shrink:0">${escapeHtml((i.severity||'info').toUpperCase())}</span>
                         <div style="flex:1;min-width:0">
-                            <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${i.title}</div>
-                            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${i.description}</div>
+                            <div style="font-size:13px;font-weight:600;color:var(--text-primary)">${escapeHtml(i.title)}</div>
+                            <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${escapeHtml(i.description)}</div>
                         </div>
                         ${i.impact_size ? `<span style="font-size:12px;color:var(--text-muted);flex-shrink:0">${formatSize(i.impact_size)}</span>` : ''}
-                        <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${i.category||''}', '${i.insight_type||''}', ${sid})" style="flex-shrink:0">Incele</button>
-                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
+                        <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${escapeHtml(i.category||'')}', '${escapeHtml(i.insight_type||'')}', ${sid})" style="flex-shrink:0">Incele</button>
+                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${escapeHtml(i.category)}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
                     </div>
                 `).join('');
             } else {
@@ -3285,7 +3306,7 @@ async function applyInsight(category, sourceId) {
         // Step 2: Show enhanced confirmation modal
         const allFiles = preview.sample || [];
         const sampleHtml = allFiles.map((f, i) =>
-            `<tr><td style="font-size:11px">${i+1}</td><td style="max-width:250px;word-break:break-all;font-size:11px">${f.file_name || ''}</td><td style="max-width:300px;word-break:break-all;font-size:11px" title="${f.file_path}">${f.file_path || ''}</td><td>${formatSize(f.file_size)}</td><td style="font-size:11px">${f.owner || '-'}</td></tr>`
+            `<tr><td style="font-size:11px">${i+1}</td><td style="max-width:250px;word-break:break-all;font-size:11px">${escapeHtml(f.file_name || '')}</td><td style="max-width:300px;word-break:break-all;font-size:11px" title="${escapeHtml(f.file_path || '')}">${escapeHtml(f.file_path || '')}</td><td>${formatSize(f.file_size)}</td><td style="font-size:11px">${escapeHtml(f.owner || '-')}</td></tr>`
         ).join('');
 
         // Duplike kategorisi icin ozel yonlendirme
@@ -3300,10 +3321,10 @@ async function applyInsight(category, sourceId) {
                 <div class="cards" style="margin-bottom:16px">
                     <div class="card accent"><div class="card-label">Dosya Sayisi</div><div class="card-value">${formatNum(preview.file_count)}</div></div>
                     <div class="card warning"><div class="card-label">Toplam Boyut</div><div class="card-value">${preview.total_size_formatted}</div></div>
-                    <div class="card purple"><div class="card-label">Kategori</div><div class="card-value" style="font-size:14px">${category}</div></div>
+                    <div class="card purple"><div class="card-label">Kategori</div><div class="card-value" style="font-size:14px">${escapeHtml(category)}</div></div>
                 </div>
                 ${dupRedirect}
-                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Tip: <strong>${insightType}</strong> | Tum dosyalar asagida listelenmistir (ilk ${allFiles.length} dosya)${preview.file_count > allFiles.length ? ` - toplam ${preview.file_count} dosya` : ''}</div>
+                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Tip: <strong>${escapeHtml(insightType)}</strong> | Tum dosyalar asagida listelenmistir (ilk ${allFiles.length} dosya)${preview.file_count > allFiles.length ? ` - toplam ${preview.file_count} dosya` : ''}</div>
                 ${allFiles.length ? `
                 <div style="max-height:350px;overflow-y:auto;margin-bottom:16px;border:1px solid var(--border);border-radius:var(--radius)">
                     <table style="width:100%;font-size:12px">
@@ -3314,7 +3335,7 @@ async function applyInsight(category, sourceId) {
                 </div>` : ''}
                 <div style="display:flex;gap:12px;justify-content:flex-end">
                     <button class="btn btn-outline" onclick="closeModal('modal-insight-confirm')">Iptal</button>
-                    <button class="btn btn-primary" onclick="confirmInsightArchive('${insightType}', ${sourceId})" style="background:var(--danger)">Onayla ve Arsivle (${formatNum(preview.file_count)} dosya)</button>
+                    <button class="btn btn-primary" onclick="confirmInsightArchive('${escapeHtml(insightType)}', ${sourceId})" style="background:var(--danger)">Onayla ve Arsivle (${formatNum(preview.file_count)} dosya)</button>
                 </div>
             </div>
         `;
@@ -3388,11 +3409,11 @@ async function loadFrequency() {
         const badgeColor = minD >= 365 ? 'var(--danger)' : minD >= 180 ? 'var(--warning)' : minD >= 90 ? '#eab308' : 'var(--success)';
         return `
         <div class="card clickable-row" style="border-top:3px solid ${badgeColor}"
-             onclick="showDrilldown('${f.label}', '/drilldown/frequency/${sid}?min_days=${minD}${maxParam}',
+             onclick="showDrilldown('${escapeHtml(f.label)}', '/drilldown/frequency/${sid}?min_days=${minD}${maxParam}',
              {source_id:${sid}, filter_type:'frequency', min_days:${minD}${maxD?`, max_days:${maxD}`:''}})">
-            <div class="card-label">${f.label} ${staleBadge(minD)}</div>
+            <div class="card-label">${escapeHtml(f.label)} ${staleBadge(minD)}</div>
             <div class="card-value" style="font-size:22px">${formatNum(f.file_count)}</div>
-            <div class="card-sub">${f.total_size_formatted} | ${total ? ((f.file_count/total*100).toFixed(1))+'%' : '0%'}</div>
+            <div class="card-sub">${escapeHtml(f.total_size_formatted)} | ${total ? ((f.file_count/total*100).toFixed(1))+'%' : '0%'}</div>
         </div>`;
     }).join('');
 
@@ -3431,7 +3452,7 @@ async function loadFrequency() {
             const minD = f.days || 0;
             const maxD = freq[i+1] ? freq[i+1].days : null;
             const maxParam = maxD ? `&max_days=${maxD}` : '';
-            return `<tr class="clickable-row" onclick="showDrilldown('${f.label}', '/drilldown/frequency/${sid}?min_days=${minD}${maxParam}', {source_id:${sid}, filter_type:'frequency', min_days:${minD}${maxD?`, max_days:${maxD}`:''}})"><td>${f.label}</td><td>${staleBadge(minD)}</td><td>${formatNum(f.file_count)}</td><td>${f.total_size_formatted}</td><td>${total ? (f.file_count/total*100).toFixed(1)+'%' : '-'}</td></tr>`;
+            return `<tr class="clickable-row" onclick="showDrilldown('${escapeHtml(f.label)}', '/drilldown/frequency/${sid}?min_days=${minD}${maxParam}', {source_id:${sid}, filter_type:'frequency', min_days:${minD}${maxD?`, max_days:${maxD}`:''}})"><td>${escapeHtml(f.label)}</td><td>${staleBadge(minD)}</td><td>${formatNum(f.file_count)}</td><td>${escapeHtml(f.total_size_formatted)}</td><td>${total ? (f.file_count/total*100).toFixed(1)+'%' : '-'}</td></tr>`;
         }).join('')}</tbody>
     `;
 
@@ -3663,7 +3684,7 @@ function renderTreemap() {
             tooltip.style.display = 'block';
             tooltip.style.left = (event.clientX + 12) + 'px';
             tooltip.style.top = (event.clientY - 10) + 'px';
-            tooltip.innerHTML = `<div class="tt-name">${d.data.name}</div>
+            tooltip.innerHTML = `<div class="tt-name">${escapeHtml(d.data.name)}</div>
                 <div class="tt-row"><span>Dosya Sayisi</span><span>${formatNum(d.data.count)}</span></div>
                 <div class="tt-row"><span>Toplam Boyut</span><span>${formatSize(d.data.size)}</span></div>
                 <div class="tt-row"><span>Ortalama</span><span>${formatSize(d.data.avg)}</span></div>`;
@@ -3740,11 +3761,12 @@ async function loadUsers() {
                 <thead><tr><th>Sahip</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Yuzde</th><th>Islem</th></tr></thead>
                 <tbody>${owners.length ? owners.map(o => {
                     const pct = totalSize > 0 ? ((o.total_size||0)/totalSize*100).toFixed(1) : '0';
-                    return `<tr class="clickable-row" onclick="drilldownOwner('${o.owner}', '${defaultSid}')">
-                        <td><strong>${o.owner || 'Bilinmiyor'}</strong></td>
+                    const ownerEsc = escapeHtml(o.owner || '');
+                    return `<tr class="clickable-row" onclick="drilldownOwner('${ownerEsc}', '${defaultSid}')">
+                        <td><strong>${escapeHtml(o.owner || 'Bilinmiyor')}</strong></td>
                         <td>${formatNum(o.file_count)}</td><td>${formatSize(o.total_size)}</td>
                         <td><div style="display:flex;align-items:center;gap:8px"><div style="flex:1;background:var(--bg-primary);border-radius:3px;height:6px;overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--accent);border-radius:3px"></div></div><span style="font-size:11px">${pct}%</span></div></td>
-                        <td style="display:flex;gap:4px"><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();drilldownOwner('${o.owner}', '${defaultSid}')">Dosyalar</button><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();showDrilldown('Arsivle: ${o.owner}', '/drilldown/owner/${defaultSid}?owner=${encodeURIComponent(o.owner)}', {source_id:${parseInt(defaultSid)||0}, filter_type:'owner', owner:'${o.owner}'})">Arsivle</button></td>
+                        <td style="display:flex;gap:4px"><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();drilldownOwner('${ownerEsc}', '${defaultSid}')">Dosyalar</button><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();showDrilldown('Arsivle: ${ownerEsc}', '/drilldown/owner/${defaultSid}?owner=${encodeURIComponent(o.owner||'')}', {source_id:${parseInt(defaultSid)||0}, filter_type:'owner', owner:'${ownerEsc}'})">Arsivle</button></td>
                     </tr>`;
                 }).join('') : '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Sahiplik verisi bulunamadi. config.yaml dosyasinda read_owner: true yapin.</td></tr>'}</tbody>
             `;
@@ -3775,11 +3797,11 @@ async function loadUsers() {
 
             document.getElementById('users-table').innerHTML = `
                 <thead><tr><th>Kullanici</th><th>Erisim</th><th>Islem</th></tr></thead>
-                <tbody>${topUsers.slice(0,20).map(u => `<tr><td><strong>${u.username}</strong></td><td>${formatNum(u.access_count||u.count||0)}</td>
+                <tbody>${topUsers.slice(0,20).map(u => { const userEsc = escapeHtml(u.username||''); return `<tr><td><strong>${userEsc}</strong></td><td>${formatNum(u.access_count||u.count||0)}</td>
                     <td style="display:flex;gap:4px">
-                        <button class="btn btn-sm btn-outline" onclick="loadUserDetail('${u.username}')">Detay</button>
-                        <button class="btn btn-sm btn-outline" style="border-color:var(--accent);color:var(--accent)" onclick="loadUserEfficiency('${u.username}')">Verimlilik</button>
-                    </td></tr>`).join('')}</tbody>
+                        <button class="btn btn-sm btn-outline" onclick="loadUserDetail('${userEsc}')">Detay</button>
+                        <button class="btn btn-sm btn-outline" style="border-color:var(--accent);color:var(--accent)" onclick="loadUserEfficiency('${userEsc}')">Verimlilik</button>
+                    </td></tr>`; }).join('')}</tbody>
             `;
         }
     } catch(e) { console.error(e); }
@@ -3822,21 +3844,21 @@ async function loadUserDetail(username) {
         const adBlock = ad.found || ad.email ? `
             <div style="background:var(--bg-primary);padding:12px;border-radius:8px;margin-bottom:16px;border-left:3px solid var(--accent)">
                 <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Active Directory</div>
-                ${ad.display_name ? `<div style="font-size:15px;font-weight:600">${ad.display_name}</div>` : ''}
-                ${ad.email ? `<div style="font-size:13px;color:var(--accent)"><a href="mailto:${ad.email}" style="color:inherit">${ad.email}</a></div>` : '<div style="font-size:12px;color:var(--text-muted)">E-posta bulunamadi</div>'}
-                <div style="font-size:10px;color:var(--text-muted);margin-top:4px" title="${adSourceLabel}">Kaynak: ${adSourceLabel}</div>
+                ${ad.display_name ? `<div style="font-size:15px;font-weight:600">${escapeHtml(ad.display_name)}</div>` : ''}
+                ${ad.email ? `<div style="font-size:13px;color:var(--accent)"><a href="mailto:${encodeURIComponent(ad.email)}" style="color:inherit">${escapeHtml(ad.email)}</a></div>` : '<div style="font-size:12px;color:var(--text-muted)">E-posta bulunamadi</div>'}
+                <div style="font-size:10px;color:var(--text-muted);margin-top:4px" title="${escapeHtml(adSourceLabel)}">Kaynak: ${escapeHtml(adSourceLabel)}</div>
             </div>
         ` : `
             <div style="background:var(--bg-primary);padding:12px;border-radius:8px;margin-bottom:16px;border-left:3px solid var(--text-muted)">
                 <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Active Directory</div>
                 <div style="font-size:13px;color:var(--text-muted)">AD bilgisi yok</div>
-                <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${adSourceLabel}</div>
+                <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(adSourceLabel)}</div>
             </div>
         `;
 
         const modalId = 'modal-user-detail';
         const body = `
-            <h3 style="margin:0 0 16px 0">Kullanici Detay: ${username}</h3>
+            <h3 style="margin:0 0 16px 0">Kullanici Detay: ${escapeHtml(username)}</h3>
             ${adBlock}
             <div class="cards">
                 <div class="card accent"><div class="card-label">Toplam Erisim</div><div class="card-value">${formatNum(s.total_access||0)}</div></div>
@@ -3882,17 +3904,17 @@ async function loadUserEfficiency(username) {
             (d.factors || []).map(f => `
                 <div style="margin-bottom:10px;padding:10px;background:var(--bg-primary);border-radius:6px">
                     <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">
-                        <strong>${f.label}</strong>
+                        <strong>${escapeHtml(f.label)}</strong>
                         <span style="color:var(--danger);font-weight:600">-${f.penalty} puan</span>
                     </div>
                     <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${formatNum(f.count)} ${f.name === 'dormant' ? 'gun' : 'dosya'} (max ceza: -${f.max})</div>
                 </div>
             `).join('');
 
-        const suggestionsHtml = (d.suggestions || []).map(s => `<li style="margin-bottom:6px">${s}</li>`).join('');
+        const suggestionsHtml = (d.suggestions || []).map(s => `<li style="margin-bottom:6px">${escapeHtml(s)}</li>`).join('');
 
         const body = `
-            <h3 style="margin:0 0 16px 0">Verimlilik Skoru: ${username}</h3>
+            <h3 style="margin:0 0 16px 0">Verimlilik Skoru: ${escapeHtml(username)}</h3>
 
             <div style="display:flex;gap:20px;align-items:center;background:var(--bg-primary);padding:20px;border-radius:8px;margin-bottom:20px">
                 <div style="flex:0 0 100px;text-align:center">
@@ -3900,7 +3922,7 @@ async function loadUserEfficiency(username) {
                     <div style="font-size:14px;color:var(--text-muted);margin-top:4px">/ 100</div>
                 </div>
                 <div style="flex:0 0 80px;text-align:center">
-                    <div style="font-size:48px;font-weight:700;color:${gradeColor};line-height:1">${grade}</div>
+                    <div style="font-size:48px;font-weight:700;color:${gradeColor};line-height:1">${escapeHtml(grade)}</div>
                     <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Sinif</div>
                 </div>
                 <div style="flex:1;font-size:12px;color:var(--text-muted)">
@@ -3961,7 +3983,7 @@ async function loadAnomalies() {
 
         document.getElementById('anomaly-table').innerHTML = `
             <thead><tr><th>Tur</th><th>Ciddiyet</th><th>Kullanici</th><th>Aciklama</th></tr></thead>
-            <tbody>${alerts.length ? alerts.map(a => `<tr><td>${a.alert_type||a.type||''}</td><td><span class="badge badge-${a.severity==='critical'?'danger':'warning'}">${a.severity}</span></td><td>${a.username||'-'}</td><td>${a.description||''}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-muted)">Anomali bulunamadi ✅</td></tr>'}</tbody>
+            <tbody>${alerts.length ? alerts.map(a => `<tr><td>${escapeHtml(a.alert_type||a.type||'')}</td><td><span class="badge badge-${a.severity==='critical'?'danger':'warning'}">${escapeHtml(a.severity||'')}</span></td><td>${escapeHtml(a.username||'-')}</td><td>${escapeHtml(a.description||'')}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-muted)">Anomali bulunamadi ✅</td></tr>'}</tbody>
         `;
     } catch(e) { console.error(e); }
 }
@@ -4015,10 +4037,10 @@ async function showOperationDetail(opId) {
         const files = detail.files || [];
         const filesHtml = files.length ? files.map(f => `
             <tr>
-                <td>${f.file_name}</td>
-                <td style="max-width:250px;word-break:break-all;font-size:11px">${f.original_path}</td>
+                <td>${escapeHtml(f.file_name)}</td>
+                <td style="max-width:250px;word-break:break-all;font-size:11px">${escapeHtml(f.original_path)}</td>
                 <td>${formatSize(f.file_size)}</td>
-                <td>${(f.archived_at||'').substring(0,19)}</td>
+                <td>${escapeHtml((f.archived_at||'').substring(0,19))}</td>
                 <td>${f.restored_at ? '<span class="badge badge-success">Geri Yuklendi</span>' : '<span class="badge badge-info">Arsivde</span>'}</td>
             </tr>
         `).join('') : '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya detayi bulunamadi</td></tr>';
@@ -4027,14 +4049,14 @@ async function showOperationDetail(opId) {
             <div style="padding:20px">
                 <h3 style="margin:0 0 16px 0">Islem Detayi #${detail.id}</h3>
                 <div class="cards" style="margin-bottom:16px">
-                    <div class="card accent"><div class="card-label">Tur</div><div class="card-value" style="font-size:16px">${detail.operation_type}</div></div>
+                    <div class="card accent"><div class="card-label">Tur</div><div class="card-value" style="font-size:16px">${escapeHtml(detail.operation_type)}</div></div>
                     <div class="card warning"><div class="card-label">Dosya Sayisi</div><div class="card-value">${formatNum(detail.total_files)}</div></div>
                     <div class="card purple"><div class="card-label">Toplam Boyut</div><div class="card-value">${formatSize(detail.total_size)}</div></div>
                 </div>
                 <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">
-                    <strong>Baslangic:</strong> ${detail.started_at || '-'} | <strong>Bitis:</strong> ${detail.completed_at || '-'}<br>
-                    <strong>Tetikleyen:</strong> ${detail.trigger_type || '-'} ${detail.trigger_detail ? '('+detail.trigger_detail+')' : ''} | <strong>Yapan:</strong> ${detail.performed_by || '-'}
-                    ${detail.error_message ? `<br><strong style="color:var(--danger)">Hata:</strong> ${detail.error_message}` : ''}
+                    <strong>Baslangic:</strong> ${escapeHtml(detail.started_at || '-')} | <strong>Bitis:</strong> ${escapeHtml(detail.completed_at || '-')}<br>
+                    <strong>Tetikleyen:</strong> ${escapeHtml(detail.trigger_type || '-')} ${detail.trigger_detail ? '('+escapeHtml(detail.trigger_detail)+')' : ''} | <strong>Yapan:</strong> ${escapeHtml(detail.performed_by || '-')}
+                    ${detail.error_message ? `<br><strong style="color:var(--danger)">Hata:</strong> ${escapeHtml(detail.error_message)}` : ''}
                 </div>
                 <div style="max-height:300px;overflow-y:auto">
                     <table style="width:100%;font-size:12px">
@@ -4093,9 +4115,9 @@ async function searchArchive() {
         <thead><tr><th style="width:30px"><input type="checkbox" onchange="toggleAllRestore(this.checked)"></th><th>ID</th><th>Dosya</th><th>Boyut</th><th>Tarih</th><th>Orijinal Yol</th><th>Durum</th><th>Islem</th></tr></thead>
         <tbody>${(data.results||[]).map(r => `<tr>
             <td>${!r.restored_at ? `<input type="checkbox" class="restore-check" data-id="${r.id}" onchange="updateRestoreSelection()">` : ''}</td>
-            <td>${r.id}</td><td>${r.file_name}</td><td>${formatSize(r.file_size)}</td>
-            <td>${(r.archived_at||'').substring(0,19)}</td>
-            <td style="max-width:300px;word-break:break-all">${r.original_path}</td>
+            <td>${r.id}</td><td>${escapeHtml(r.file_name)}</td><td>${formatSize(r.file_size)}</td>
+            <td>${escapeHtml((r.archived_at||'').substring(0,19))}</td>
+            <td style="max-width:300px;word-break:break-all">${escapeHtml(r.original_path)}</td>
             <td>${r.restored_at ? '<span class="badge badge-success">Geri Yuklendi</span>' : '<span class="badge badge-info">Arsivde</span>'}</td>
             <td>${!r.restored_at ? `<button class="btn btn-sm btn-success" onclick="restoreFile(${r.id})">Geri Yukle</button>` : ''}</td>
         </tr>`).join('')}</tbody>
@@ -4138,8 +4160,8 @@ async function previewBulkRestore() {
             body: JSON.stringify({ archive_ids: Array.from(restoreSelectedIds), confirm: false })
         });
 
-        const dirsHtml = (data.dirs_to_create || []).map(d => `<li style="font-size:11px;word-break:break-all">${d}</li>`).join('');
-        const conflictsHtml = (data.conflicts || []).map(c => `<li style="font-size:11px">${c.file_name} - ${c.original_path}</li>`).join('');
+        const dirsHtml = (data.dirs_to_create || []).map(d => `<li style="font-size:11px;word-break:break-all">${escapeHtml(d)}</li>`).join('');
+        const conflictsHtml = (data.conflicts || []).map(c => `<li style="font-size:11px">${escapeHtml(c.file_name)} - ${escapeHtml(c.original_path)}</li>`).join('');
 
         const modalContent = `
             <div style="padding:20px">
@@ -4206,7 +4228,7 @@ async function loadPolicies() {
     const data = await api('/policies', { silent: true }).catch(()=>[]);
     document.getElementById('policy-table').innerHTML = `
         <thead><tr><th>ID</th><th>Ad</th><th>Kurallar</th><th>Durum</th><th>Islem</th></tr></thead>
-        <tbody>${data.length ? data.map(p => `<tr><td>${p.id}</td><td><strong>${p.name}</strong></td><td style="max-width:300px;word-break:break-all;font-size:11px">${JSON.stringify(p.rules_json||{})}</td><td><span class="badge ${p.enabled?'badge-success':'badge-warning'}">${p.enabled?'Aktif':'Pasif'}</span></td><td><button class="btn btn-sm btn-danger" onclick="deletePolicy(${p.id})">Sil</button></td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Politika bulunamadi</td></tr>'}</tbody>
+        <tbody>${data.length ? data.map(p => `<tr><td>${p.id}</td><td><strong>${escapeHtml(p.name)}</strong></td><td style="max-width:300px;word-break:break-all;font-size:11px">${escapeHtml(JSON.stringify(p.rules_json||{}))}</td><td><span class="badge ${p.enabled?'badge-success':'badge-warning'}">${p.enabled?'Aktif':'Pasif'}</span></td><td><button class="btn btn-sm btn-danger" onclick="deletePolicy(${p.id})">Sil</button></td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Politika bulunamadi</td></tr>'}</tbody>
     `;
 }
 
@@ -4294,12 +4316,12 @@ async function loadDrilldownPage(url, page) {
         document.getElementById('dd-table').innerHTML = `
             <thead><tr><th>Dosya Adi</th><th>Uzanti</th><th>Boyut</th><th>Son Erisim</th><th>Son Degisiklik</th><th>Sahip</th></tr></thead>
             <tbody>${files.length ? files.map(f => `<tr>
-                <td title="${f.file_path||''}">${f.file_name||''}</td>
-                <td>${f.extension||'-'}</td>
+                <td title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
+                <td>${escapeHtml(f.extension||'-')}</td>
                 <td>${formatSize(f.file_size||0)}</td>
-                <td>${(f.last_access_time||'').substring(0,16)}</td>
-                <td>${(f.last_modify_time||'').substring(0,16)}</td>
-                <td>${f.owner||'-'}</td>
+                <td>${escapeHtml((f.last_access_time||'').substring(0,16))}</td>
+                <td>${escapeHtml((f.last_modify_time||'').substring(0,16))}</td>
+                <td>${escapeHtml(f.owner||'-')}</td>
             </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
         `;
 
@@ -4476,17 +4498,17 @@ async function loadInsights() {
             <div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid ${sevColors[i.severity] || 'var(--border-light)'};border-radius:var(--radius);padding:16px 20px;display:flex;align-items:flex-start;gap:14px">
                 <div style="font-size:22px;flex-shrink:0">${catIcons[i.category] || sevIcons[i.severity] || '📌'}</div>
                 <div style="flex:1;min-width:0">
-                    <div style="font-size:14px;font-weight:700;color:var(--text-primary)">${i.title}</div>
-                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${i.description}</div>
-                    ${i.action ? `<div style="font-size:11px;color:var(--accent-light);margin-top:6px;font-weight:600">→ ${i.action}</div>` : ''}
+                    <div style="font-size:14px;font-weight:700;color:var(--text-primary)">${escapeHtml(i.title)}</div>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${escapeHtml(i.description)}</div>
+                    ${i.action ? `<div style="font-size:11px;color:var(--accent-light);margin-top:6px;font-weight:600">→ ${escapeHtml(i.action)}</div>` : ''}
                 </div>
                 <div style="text-align:right;flex-shrink:0">
-                    <span style="display:inline-block;padding:2px 10px;border-radius:12px;font-size:10px;font-weight:700;background:${sevColors[i.severity] || 'var(--border)'}22;color:${sevColors[i.severity] || 'var(--text-muted)'}">${(i.severity||'info').toUpperCase()}</span>
+                    <span style="display:inline-block;padding:2px 10px;border-radius:12px;font-size:10px;font-weight:700;background:${sevColors[i.severity] || 'var(--border)'}22;color:${sevColors[i.severity] || 'var(--text-muted)'}">${escapeHtml((i.severity||'info').toUpperCase())}</span>
                     ${i.impact_size ? `<div style="font-size:12px;color:var(--text-muted);margin-top:6px">${formatSize(i.impact_size)}</div>` : ''}
                     ${i.file_count ? `<div style="font-size:11px;color:var(--text-muted)">${formatNum(i.file_count)} dosya</div>` : ''}
                     <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
-                        <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${i.category||''}', '${i.insight_type||''}', ${sid})">Incele</button>
-                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${i.category}', ${sid})">Uygula</button>` : ''}
+                        <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${escapeHtml(i.category||'')}', '${escapeHtml(i.insight_type||'')}', ${sid})">Incele</button>
+                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${escapeHtml(i.category)}', ${sid})">Uygula</button>` : ''}
                     </div>
                 </div>
             </div>
@@ -4543,8 +4565,8 @@ async function loadNaming() {
             reqTable.innerHTML = `
                 <thead><tr><th>Kod</th><th>Kural</th><th>Ihlal Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
                 <tbody>${reqs.map(r => `<tr>
-                    <td><strong>${r.code}</strong></td>
-                    <td>${r.label}</td>
+                    <td><strong>${escapeHtml(r.code)}</strong></td>
+                    <td>${escapeHtml(r.label)}</td>
                     <td>${formatNum(r.count)}</td>
                     <td>
                         <div style="display:flex;align-items:center;gap:8px">
@@ -4554,9 +4576,9 @@ async function loadNaming() {
                             <span style="font-size:11px;min-width:40px">${r.percentage}%</span>
                         </div>
                     </td>
-                    <td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='warning'?'badge-warning':'badge-info'}">${r.severity}</span></td>
-                    <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(r.samples||[]).slice(0,3).join('<br>')}</td>
-                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${r.code}', ${sourceId})">Dosyalari Gor</button></td>
+                    <td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(r.severity||'')}</span></td>
+                    <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(r.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
+                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(r.code)}', ${sourceId})">Dosyalari Gor</button></td>
                 </tr>`).join('')}</tbody>
             `;
         } else {
@@ -4570,8 +4592,8 @@ async function loadNaming() {
             bpTable.innerHTML = `
                 <thead><tr><th>Kod</th><th>Uygulama</th><th>Sapma Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
                 <tbody>${bps.map(b => `<tr>
-                    <td><strong>${b.code}</strong></td>
-                    <td>${b.label}</td>
+                    <td><strong>${escapeHtml(b.code)}</strong></td>
+                    <td>${escapeHtml(b.label)}</td>
                     <td>${formatNum(b.count)}</td>
                     <td>
                         <div style="display:flex;align-items:center;gap:8px">
@@ -4581,9 +4603,9 @@ async function loadNaming() {
                             <span style="font-size:11px;min-width:40px">${b.percentage}%</span>
                         </div>
                     </td>
-                    <td><span class="badge ${b.severity==='warning'?'badge-warning':'badge-info'}">${b.severity}</span></td>
-                    <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(b.samples||[]).slice(0,3).join('<br>')}</td>
-                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${b.code}', ${sourceId})">Dosyalari Gor</button></td>
+                    <td><span class="badge ${b.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(b.severity||'')}</span></td>
+                    <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(b.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
+                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(b.code)}', ${sourceId})">Dosyalari Gor</button></td>
                 </tr>`).join('')}</tbody>
             `;
         } else {
@@ -4762,17 +4784,17 @@ async function showNamingFiles(code, sourceId) {
         const filesHtml = files.length ? files.map((f, i) => `
             <tr>
                 <td>${i+1}</td>
-                <td style="max-width:200px;word-break:break-all;font-size:11px">${f.file_name}</td>
-                <td style="max-width:300px;word-break:break-all;font-size:11px" title="${f.file_path}">${f.file_path}</td>
-                <td>${f.file_size_formatted || formatSize(f.file_size)}</td>
-                <td>${f.owner || '-'}</td>
-                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${(f.directory||'').replace(/\\/g,'\\\\\\\\')}')">Konuma Git</button></td>
+                <td style="max-width:200px;word-break:break-all;font-size:11px">${escapeHtml(f.file_name)}</td>
+                <td style="max-width:300px;word-break:break-all;font-size:11px" title="${escapeHtml(f.file_path)}">${escapeHtml(f.file_path)}</td>
+                <td>${escapeHtml(f.file_size_formatted || formatSize(f.file_size))}</td>
+                <td>${escapeHtml(f.owner || '-')}</td>
+                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml((f.directory||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
             </tr>
         `).join('') : '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
 
         const modalContent = `
             <div style="padding:20px">
-                <h3 style="margin:0 0 16px 0">${code} Ihlali - ${data.total} Dosya</h3>
+                <h3 style="margin:0 0 16px 0">${escapeHtml(code)} Ihlali - ${data.total} Dosya</h3>
                 <div style="max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
                     <table style="width:100%;font-size:12px">
                         <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>#</th><th>Dosya Adi</th><th>Tam Yol</th><th>Boyut</th><th>Sahip</th><th>Islem</th></tr></thead>
@@ -4862,7 +4884,7 @@ function openFolder(path) {
             // Uzak istemci: daha gorunur ve uzun sureli bildirim.
             const el = document.createElement('div');
             el.className = 'notification warning';
-            el.innerHTML = `<span>⚠️</span> Yol panoya kopyalandi. Kendi Explorer'inda yapistirin: ${path}`;
+            el.innerHTML = `<span>⚠️</span> Yol panoya kopyalandi. Kendi Explorer'inda yapistirin: ${escapeHtml(path)}`;
             el.onclick = () => el.remove();
             document.getElementById('notifications').appendChild(el);
             setTimeout(() => el.remove(), 12000);
@@ -4935,12 +4957,12 @@ async function showInsightFiles(insightType, sourceId) {
     const filesHtml = files.length ? files.map((f, i) => `
         <tr>
             <td>${i+1}</td>
-            <td style="max-width:200px;word-break:break-all;font-size:11px">${f.file_name}</td>
-            <td style="max-width:250px;word-break:break-all;font-size:11px" title="${f.file_path}">${f.file_path}</td>
-            <td>${f.file_size_formatted || formatSize(f.file_size)}</td>
-            <td>${f.owner || '-'}</td>
-            <td>${(f.last_access_time||'').substring(0,10)}</td>
-            <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${(f.directory||'').replace(/\\/g,'\\\\\\\\')}')">Konuma Git</button></td>
+            <td style="max-width:200px;word-break:break-all;font-size:11px">${escapeHtml(f.file_name)}</td>
+            <td style="max-width:250px;word-break:break-all;font-size:11px" title="${escapeHtml(f.file_path)}">${escapeHtml(f.file_path)}</td>
+            <td>${escapeHtml(f.file_size_formatted || formatSize(f.file_size))}</td>
+            <td>${escapeHtml(f.owner || '-')}</td>
+            <td>${escapeHtml((f.last_access_time||'').substring(0,10))}</td>
+            <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml((f.directory||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
         </tr>
     `).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
 
@@ -4954,7 +4976,7 @@ async function showInsightFiles(insightType, sourceId) {
 
     const modalContent = `
         <div style="padding:20px">
-            <h3 style="margin:0 0 16px 0">${typeLabels[insightType] || insightType} - ${data.total} Dosya</h3>
+            <h3 style="margin:0 0 16px 0">${escapeHtml(typeLabels[insightType] || insightType)} - ${data.total} Dosya</h3>
             <div style="max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
                 <table style="width:100%;font-size:12px">
                     <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>#</th><th>Dosya Adi</th><th>Tam Yol</th><th>Boyut</th><th>Sahip</th><th>Son Erisim</th><th>Islem</th></tr></thead>
@@ -5161,12 +5183,12 @@ async function showOperationFiles(opId) {
         const files = data.files || [];
         const filesHtml = files.length ? files.map(f => `
             <tr>
-                <td>${f.file_name}</td>
-                <td style="max-width:200px;word-break:break-all;font-size:11px" title="${f.original_path}">${f.original_path}</td>
-                <td style="max-width:200px;word-break:break-all;font-size:11px" title="${f.archive_path||''}">${f.archive_path||'-'}</td>
-                <td>${f.file_size_formatted || formatSize(f.file_size)}</td>
-                <td>${f.owner || '-'}</td>
-                <td>${(f.archived_at||'').substring(0,19)}</td>
+                <td>${escapeHtml(f.file_name)}</td>
+                <td style="max-width:200px;word-break:break-all;font-size:11px" title="${escapeHtml(f.original_path)}">${escapeHtml(f.original_path)}</td>
+                <td style="max-width:200px;word-break:break-all;font-size:11px" title="${escapeHtml(f.archive_path||'')}">${escapeHtml(f.archive_path||'-')}</td>
+                <td>${escapeHtml(f.file_size_formatted || formatSize(f.file_size))}</td>
+                <td>${escapeHtml(f.owner || '-')}</td>
+                <td>${escapeHtml((f.archived_at||'').substring(0,19))}</td>
                 <td>${f.restored_at ? '<span class="badge badge-success">Geri Yuklendi</span>' : '<span class="badge badge-info">Arsivde</span>'}</td>
             </tr>
         `).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
@@ -5265,7 +5287,7 @@ async function loadDuplicates(page) {
                 <tbody>${groups.map((g, idx) => `
                     <tr class="dup-group-row" data-group="${idx}">
                         <td><span class="icon" style="cursor:pointer" onclick="toggleDupGroup(${idx})">▶</span></td>
-                        <td><strong>${g.file_name}</strong></td>
+                        <td><strong>${escapeHtml(g.file_name)}</strong></td>
                         <td>${formatSize(g.file_size)}</td>
                         <td><span class="badge badge-warning">${g.count} kopya</span></td>
                         <td style="color:var(--danger)">${formatSize(g.waste_size)}</td>
@@ -5278,10 +5300,10 @@ async function loadDuplicates(page) {
                                 <tbody>${(g.files||[]).map((f, fi) => `
                                     <tr>
                                         <td><input type="checkbox" class="dup-check" data-file-id="${f.id}" data-group="${idx}" onchange="updateDupSelection()"></td>
-                                        <td style="word-break:break-all;max-width:400px" title="${f.file_path}">${f.file_path}</td>
-                                        <td>${f.owner || '-'}</td>
-                                        <td>${(f.last_access_time||'').substring(0,10)}</td>
-                                        <td>${(f.last_modify_time||'').substring(0,10)}</td>
+                                        <td style="word-break:break-all;max-width:400px" title="${escapeHtml(f.file_path)}">${escapeHtml(f.file_path)}</td>
+                                        <td>${escapeHtml(f.owner || '-')}</td>
+                                        <td>${escapeHtml((f.last_access_time||'').substring(0,10))}</td>
+                                        <td>${escapeHtml((f.last_modify_time||'').substring(0,10))}</td>
                                     </tr>
                                 `).join('')}</tbody>
                             </table>
@@ -5510,7 +5532,7 @@ async function openQuarantineConfirmModal(sourceId, fileIds) {
                 <div>${skippedHeld} dosya legal hold nedeniyle atlanacak.</div>
                 <div>${skippedLast} dosya son kopya oldugu icin atlanacak (veri kaybi koruma).</div>
                 ${skippedMissing ? `<div>${skippedMissing} dosya disk uzerinde bulunamadi.</div>` : ''}
-                ${errors.length ? `<div style="margin-top:8px;color:var(--warning)">Uyarilar:<br>${errors.map(er => '- ' + (er.error || er) + (er.id ? ' (id=' + er.id + ')' : '')).join('<br>')}</div>` : ''}
+                ${errors.length ? `<div style="margin-top:8px;color:var(--warning)">Uyarilar:<br>${errors.map(er => escapeHtml('- ' + (er.error || er) + (er.id ? ' (id=' + er.id + ')' : ''))).join('<br>')}</div>` : ''}
             </div>
             <div style="background:rgba(220,38,38,0.08);border:1px solid var(--danger);border-radius:var(--radius);padding:12px;margin-bottom:14px;font-size:12px;color:var(--text-primary)">
                 <strong>Phase 1: Quarantine-only.</strong> Dosyalar fiziksel olarak silinmez —
@@ -5647,7 +5669,7 @@ async function loadQuarantine() {
         const qs = filter ? `?status=${encodeURIComponent(filter)}` : '';
         data = await api('/quarantine' + qs);
     } catch (e) {
-        host.innerHTML = `<div style="padding:20px;color:var(--danger)">Yukleme hatasi: ${e.message || e}</div>`;
+        host.innerHTML = `<div style="padding:20px;color:var(--danger)">Yukleme hatasi: ${escapeHtml(e.message || e)}</div>`;
         return;
     }
     if (banner) banner.style.display = data.enabled === false ? 'block' : 'none';
@@ -5783,15 +5805,15 @@ async function loadOperations() {
             const wasteGb = (delta.duplicate_waste_gb || 0).toFixed(4);
             return `<tr>
                 <td>${r.id}</td>
-                <td>${r.started_at || ''}</td>
-                <td><code>${r.operation || '-'}</code></td>
+                <td>${escapeHtml(r.started_at || '')}</td>
+                <td><code>${escapeHtml(r.operation || '-')}</code></td>
                 <td>${after.total_files ?? '-'} dosya</td>
                 <td style="color:var(--success)">${wasteGb} GB</td>
                 <td><button class="btn btn-sm btn-outline" onclick="showGainReportDetail(${r.id})">Detay</button></td>
             </tr>`;
         }).join('');
     } catch (e) {
-        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--danger)">Yukleme hatasi: ${e.message || e}</td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--danger)">Yukleme hatasi: ${escapeHtml(e.message || e)}</td></tr>`;
     }
 }
 
@@ -5995,7 +6017,7 @@ async function loadGrowth() {
                 <thead><tr><th>Kullanici</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Oran</th></tr></thead>
                 <tbody>${creators.map(c => `
                     <tr>
-                        <td><strong>${c.owner || 'Bilinmiyor'}</strong></td>
+                        <td><strong>${escapeHtml(c.owner || 'Bilinmiyor')}</strong></td>
                         <td>${formatNum(c.file_count)}</td>
                         <td>${formatSize(c.total_size)}</td>
                         <td>
@@ -7049,11 +7071,10 @@ async function getSecurityFlags() {
     return _securityFlagsCache;
 }
 
-function escapeHtml(s) {
-    return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+// escapeHtml() canonical definition lives at the top of this script block
+// (security audit 2026-04-28, H-1). Local duplicate removed — function
+// declarations are hoisted within the same <script> block, so all callers
+// here continue to resolve to the canonical version.
 
 function renderEntityList(containerId, items, columns, opts = {}) {
     const c = document.getElementById(containerId);

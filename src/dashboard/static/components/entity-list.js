@@ -287,6 +287,12 @@
 
         // ---- mount + bind ---------------------------------------------
 
+        // Security audit 2026-04-28, finding H-1: this innerHTML is safe
+        // because every leaf value spliced into _renderToolbar() /
+        // _renderTable() flows through _escape(). The one explicit escape
+        // hatch is column ``render`` callbacks (line ~253), which are
+        // documented as the caller's responsibility — keep them returning
+        // pre-escaped HTML.
         function _render() {
             container.innerHTML =
                 '<div class="' + ns + '-root" style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">' +
