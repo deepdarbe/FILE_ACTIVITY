@@ -67,7 +67,13 @@ database:
 # 'elasticsearch' option (ElasticsearchBackend); Phase 3 rewires the
 # dashboard query layer to call backend methods instead of raw SQL.
 storage:
-  backend: "sqlite"   # phase 1: only sqlite. phase 2: add 'elasticsearch'.
+  backend: "sqlite"
+  # Phase 2 (#114): switch to "elasticsearch" once the cluster is provisioned.
+  # elasticsearch:
+  #   hosts: ["https://es.internal:9200"]
+  #   api_key: "${FILEACTIVITY_ES_API_KEY}"
+  #   verify_certs: true
+  #   request_timeout: 30
 
 analytics:
   # DuckDB tabanli analitik motor. SQLite dosyasini salt-okunur ATTACH eder,

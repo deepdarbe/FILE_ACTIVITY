@@ -22,9 +22,10 @@ class StorageManager:
     dashboard endpoints to read from this instead of ``db.execute(...)``.
 
     The active backend is selected from ``config.storage.backend``;
-    default is ``"sqlite"``. Unknown backends raise ``ValueError``;
-    Phase 2's ``"elasticsearch"`` raises ``NotImplementedError`` (the
-    contract is here, the impl isn't).
+    default is ``"sqlite"``. Unknown backends raise ``ValueError``.
+    Phase 2 (#114) wires the ``"elasticsearch"`` option; the ES client
+    is imported lazily so SQLite-only deployments don't need the
+    ``elasticsearch`` package.
     """
 
     def __init__(self, db: Any, config: dict) -> None:
@@ -38,9 +39,11 @@ class StorageManager:
 
             self.backend = SqliteBackend(db, config or {})
         elif backend_name == "elasticsearch":
-            raise NotImplementedError(
-                "Elasticsearch backend lands in #114 Phase 2"
-            )
+            # Lazy import so SQLite-only deployments don't pay for
+            # the ``elasticsearch`` client import.
+            from .elasticsearch_backend import ElasticsearchBackend
+
+            self.backend = ElasticsearchBackend(db, config or {})
         else:
             raise ValueError(
                 f"Unknown storage.backend: {backend_name!r}"
