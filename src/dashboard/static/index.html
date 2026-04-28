@@ -6480,11 +6480,25 @@ async function showGainReportDetail(opId) {
                 <pre style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;max-height:280px;overflow:auto">${_escapeHtml(JSON.stringify({before, after, delta}, null, 2))}</pre>
             </details>
             <div class="modal-actions">
+                <button class="btn btn-outline" onclick="downloadOperationXlsx(${detail.id})">XLS indir</button>
                 <button class="btn btn-primary" onclick="closeModal('modal-operation-detail')">Kapat</button>
             </div>
         </div>
     `;
     modal.classList.add('active');
+}
+
+function downloadOperationXlsx(opId) {
+    // Issue #83 — link to /api/operations/{id}/export.xlsx. The endpoint
+    // streams a single-sheet Metric / Before / After / Delta workbook.
+    try {
+        window.location.href = `/api/operations/${opId}/export.xlsx`;
+    } catch (e) {
+        if (typeof notify === 'function') {
+            notify('XLS indirilemedi: ' + (e && e.message ? e.message : e),
+                   'error');
+        }
+    }
 }
 
 function _escapeHtml(s) {

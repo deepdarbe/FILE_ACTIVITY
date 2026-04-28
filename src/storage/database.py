@@ -986,22 +986,49 @@ class Database:
         )
 
         # Gain reports (issue #83 Phase 1) — before/after/delta metric
-        # snapshots captured around any write operation.
+        # snapshots captured around any write operation. Schema is the
+        # operator-friendly "neydik / ne olduk / kazanim" trail used by
+        # /api/operations/* and the "Operasyon Gecmisi" dashboard page.
+        #
+        # Issue #83 (Phase 1.2 — autonomous pass) extended the row with
+        # ``source_id``, ``audit_event_id`` and ``quarantine_path`` so
+        # the history list can filter by source and link directly to
+        # the audit event + quarantine bucket. Older databases that
+        # already have the table get the columns added below via
+        # idempotent ALTER TABLEs.
         cur.execute("""
             CREATE TABLE IF NOT EXISTS gain_reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 operation TEXT NOT NULL,
+                source_id INTEGER,
                 scan_id INTEGER,
                 started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 completed_at TIMESTAMP,
                 before_json TEXT NOT NULL,
                 after_json TEXT NOT NULL,
-                delta_json TEXT NOT NULL
+                delta_json TEXT NOT NULL,
+                audit_event_id INTEGER,
+                quarantine_path TEXT
             )
         """)
+        # Backfill columns for pre-existing tables (idempotent).
+        for ddl in (
+            "ALTER TABLE gain_reports ADD COLUMN source_id INTEGER",
+            "ALTER TABLE gain_reports ADD COLUMN audit_event_id INTEGER",
+            "ALTER TABLE gain_reports ADD COLUMN quarantine_path TEXT",
+        ):
+            try:
+                cur.execute(ddl)
+            except sqlite3.OperationalError:
+                # "duplicate column name" — already migrated.
+                pass
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_gain_op "
             "ON gain_reports(operation, started_at DESC)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gain_reports_source "
+            "ON gain_reports(source_id, completed_at)"
         )
 
         # Quarantine log (issue #83 Phase 1).

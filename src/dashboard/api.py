@@ -2905,6 +2905,66 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 raise HTTPException(403, str(e))
         return result.to_dict()
 
+    # --- UNIFIED DELETE (issue #83 spec) ---
+    # POST /api/reports/duplicates/{source_id}/delete is the unified
+    # safety-first entry point. Body shape:
+    #   {"file_ids": [...], "mode": "quarantine"|"hard",
+    #    "dry_run": true|false, "confirm": true|false}
+    # Default ``dry_run=true``; if ``confirm`` is missing OR explicitly
+    # false the server FORCES ``dry_run=true`` so a misclick can never
+    # cause a real delete. Hard delete additionally requires
+    # ``duplicates.hard_delete_allowed=true`` in config.
+    @app.post("/api/reports/duplicates/{source_id}/delete")
+    async def duplicates_delete(source_id: int, request: Request):
+        """Unified duplicate-delete entry. Quarantine-first, dry-run by
+        default. See :meth:`DuplicateCleaner.execute` for the contract.
+        """
+        from src.archiver.duplicate_cleaner import DuplicateCleaner
+        _get_source(db, source_id)
+        body = await request.json()
+        file_ids = body.get("file_ids") or []
+        if not isinstance(file_ids, list):
+            raise HTTPException(400, "file_ids must be a list")
+        mode = (body.get("mode") or "quarantine").lower()
+        if mode not in ("quarantine", "hard"):
+            raise HTTPException(
+                400, "mode must be 'quarantine' or 'hard'"
+            )
+        # Default dry_run=true; confirm missing → force dry_run.
+        confirm = bool(body.get("confirm", False))
+        dry_run_in = body.get("dry_run", True)
+        dry_run = bool(dry_run_in) if dry_run_in is not None else True
+        if not confirm:
+            dry_run = True
+        safety_token = body.get("safety_token") or None
+        moved_by = body.get("moved_by") or "operator"
+        cleaner = DuplicateCleaner(db, config)
+        with _track_op(
+            "archive",
+            f"Duplicate delete (mode={mode}, dry_run={dry_run}): "
+            f"{len(file_ids)} dosya",
+            metadata={
+                "source_id": source_id,
+                "file_count": len(file_ids),
+                "mode": mode,
+                "dry_run": dry_run,
+            },
+        ):
+            try:
+                return cleaner.execute(
+                    file_ids=[int(i) for i in file_ids],
+                    mode=mode,
+                    confirm=confirm,
+                    dry_run=dry_run,
+                    safety_token=safety_token,
+                    moved_by=moved_by,
+                    source_id=source_id,
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            except RuntimeError as e:
+                raise HTTPException(403, str(e))
+
     # --- QUARANTINE BROWSER + LIFECYCLE (issue #110 Phase 2) ---
     # Read-only listing + manual purge + restore endpoints. The daily
     # auto-purge job runs from task_scheduler.py — these handlers just
@@ -3060,12 +3120,30 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/operations/history")
     async def operations_history(limit: int = Query(50, ge=1, le=500),
-                                  operation: Optional[str] = None):
+                                  page: int = Query(1, ge=1, le=10000),
+                                  operation: Optional[str] = None,
+                                  source_id: Optional[int] = None):
+        """List gain_reports rows. Supports filtering by ``operation``
+        and ``source_id`` plus 1-based ``page`` pagination.
+        """
         from src.storage.gain_reporter import GainReporter
         reporter = GainReporter(db, config)
-        return {"reports": reporter.list_reports(
-            limit=limit, operation=operation
-        )}
+        rows = reporter.list_reports(
+            limit=limit, operation=operation,
+            source_id=source_id, page=page,
+        )
+        try:
+            total = reporter.count_reports(
+                operation=operation, source_id=source_id,
+            )
+        except Exception:
+            total = len(rows)
+        return {
+            "reports": rows,
+            "page": page,
+            "limit": limit,
+            "total": total,
+        }
 
     @app.get("/api/operations/{op_id}")
     async def operation_detail(op_id: int):
@@ -3075,6 +3153,47 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if report is None:
             raise HTTPException(404, "Operation report not found")
         return report
+
+    @app.get("/api/operations/{op_id}/export.xlsx")
+    async def operation_detail_xlsx(op_id: int):
+        """Export a gain_report as a single-sheet XLSX. Three columns —
+        Metric / Before / After / Delta — one row per snapshot key.
+        """
+        from src.storage.gain_reporter import GainReporter
+        reporter = GainReporter(db, config)
+        report = reporter.get_report(op_id)
+        if report is None:
+            raise HTTPException(404, "Operation report not found")
+        before = report.get("before") or {}
+        after = report.get("after") or {}
+        delta = report.get("delta") or {}
+        # Stable ordering: union of keys, sorted, with the well-known
+        # operator-friendly metrics surfaced first.
+        priority = [
+            "total_files", "total_size_gb", "duplicate_groups",
+            "duplicate_files", "duplicate_waste_gb",
+            "total_size_bytes", "duplicate_waste_bytes",
+        ]
+        keys = list(dict.fromkeys(
+            [k for k in priority if k in before or k in after or k in delta]
+            + sorted(set(before.keys()) | set(after.keys()) | set(delta.keys()))
+        ))
+        rows = []
+        for k in keys:
+            rows.append([
+                k,
+                before.get(k, ""),
+                after.get(k, ""),
+                delta.get(k, ""),
+            ])
+        # Header row carries the operation context up top so the
+        # spreadsheet is self-describing.
+        headers = ["Metric", "Before", "After", "Delta"]
+        filename = (
+            f"operation_{op_id}_{report.get('operation', 'gain')}.xlsx"
+        )
+        sheet_title = f"op_{op_id}"[:31]
+        return _xlsx_response(rows, headers, filename, sheet_title)
 
     @app.post("/api/archive/selective")
     async def archive_selective(request: Request):
