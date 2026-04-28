@@ -1,35 +1,64 @@
 version: 2
+# Dependabot config: weekly Monday 09:00 Europe/Istanbul scan across all
+# ecosystems used in this repo. The pip block uses a single entry rooted
+# at "/" — Dependabot auto-discovers every requirements*.txt at that path
+# (requirements.txt, requirements-accel.txt, requirements-mcp.txt,
+# requirements-dev.txt, requirements-playground.txt) so we don't have to
+# enumerate them individually and keep the config in sync as files move.
+# Open-PR limit of 5 per ecosystem caps weekly noise.
 updates:
-  # Python requirements.txt: haftalik guncelleme taramasi
+  # Python dependencies (all requirements*.txt at repo root)
   - package-ecosystem: pip
-    directory: /
+    directory: "/"
     schedule:
       interval: weekly
       day: monday
-      time: "04:00"
+      time: "09:00"
       timezone: Europe/Istanbul
     open-pull-requests-limit: 5
     labels:
       - dependencies
-      - python
+    reviewers:
+      - deepdarbe
     commit-message:
       prefix: deps
       include: scope
     groups:
-      # Hep birlikte gidenler icin tek PR (patch upgrade gruplamasi)
+      # Group patch-level bumps into a single PR to reduce review load.
       patch-updates:
         update-types:
           - patch
 
-  # GitHub Actions workflow versiyonlari
+  # GitHub Actions workflow versions
   - package-ecosystem: github-actions
-    directory: /
+    directory: "/"
     schedule:
-      interval: monthly
-    open-pull-requests-limit: 3
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 5
     labels:
       - dependencies
-      - ci
+    reviewers:
+      - deepdarbe
     commit-message:
       prefix: ci
+      include: scope
+
+  # Docker base image for the test container (docker/Dockerfile.test, #92)
+  - package-ecosystem: docker
+    directory: "/docker"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/Istanbul
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    reviewers:
+      - deepdarbe
+    commit-message:
+      prefix: docker
       include: scope

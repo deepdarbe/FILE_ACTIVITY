@@ -1,0 +1,54 @@
+name: CodeQL
+
+# CodeQL static-analysis scan for Python (server, CLI, dev_server) and
+# JavaScript (the dashboard HTML/JS). Runs on every push/PR to master and
+# on a weekly schedule so we catch advisories that land between commits.
+#
+# `continue-on-error: true` is intentional for the initial rollout — we
+# don't yet know what existing findings look like and we don't want to
+# block PR merges on a noisy first scan. Flip to `false` once the
+# baseline is clean (or after explicit findings are triaged / dismissed).
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    # Mondays 06:00 UTC ~= 09:00 Europe/Istanbul, matching dependabot cadence.
+    - cron: "0 6 * * 1"
+
+# Cancel an in-flight CodeQL run for the same ref when a new commit lands —
+# the older SHA's findings would be stale anyway.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  security-events: write
+  actions: read
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    # Advisory until baseline findings are triaged. See header comment.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
