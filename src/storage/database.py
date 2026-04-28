@@ -1145,6 +1145,33 @@ class Database:
             END;
         """)
 
+        # Perceptual image hashes (issue #144 Phase 2).
+        # Stores pHash, dHash, and aHash for image files.  One row per
+        # file_id; idempotent on repeated scans (REPLACE INTO).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS image_hashes (
+                file_id     INTEGER PRIMARY KEY
+                                REFERENCES scanned_files(id) ON DELETE CASCADE,
+                scan_id     INTEGER NOT NULL,
+                phash       CHAR(16),
+                dhash       CHAR(16),
+                ahash       CHAR(16),
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_image_hash_scan "
+            "ON image_hashes(scan_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_image_hash_phash "
+            "ON image_hashes(phash)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_image_hash_dhash "
+            "ON image_hashes(dhash)"
+        )
+
         conn.commit()
         cur.close()
         logger.info("Veritabani tablolari olusturuldu")
@@ -3618,3 +3645,110 @@ class Database:
                 return {"status": "ok", "server_time": str(row["server_time"])}
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    # ──────────────────────────────────────────────
+    # Perceptual image hashes (issue #144 Phase 2)
+    # ──────────────────────────────────────────────
+
+    def insert_image_hashes(self, rows: list) -> int:
+        """Idempotent upsert of image hash rows.
+
+        Args:
+            rows: List of dicts with keys:
+                ``file_id``, ``scan_id``, ``phash``, ``dhash``, ``ahash``.
+
+        Returns:
+            Number of rows written.
+        """
+        if not rows:
+            return 0
+        written = 0
+        BATCH = 500
+        for i in range(0, len(rows), BATCH):
+            batch = rows[i: i + BATCH]
+            with self.get_cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT OR REPLACE INTO image_hashes
+                        (file_id, scan_id, phash, dhash, ahash, computed_at)
+                    VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
+                    """,
+                    [
+                        (
+                            r["file_id"],
+                            r["scan_id"],
+                            r.get("phash"),
+                            r.get("dhash"),
+                            r.get("ahash"),
+                        )
+                        for r in batch
+                    ],
+                )
+                written += cur.rowcount
+        return written
+
+    def find_similar_images(
+        self,
+        scan_id: int,
+        hash_type: str = "phash",
+        hash_value: Optional[str] = None,
+        max_distance: int = 5,
+    ) -> list:
+        """Return image_hashes rows for a scan, optionally filtered by
+        Hamming proximity to ``hash_value``.
+
+        When ``hash_value`` is given only rows whose ``hash_type``
+        column differs from it by at most ``max_distance`` bits are
+        returned (pure-Python post-filter; the SQL fetches all rows for
+        the scan so the caller can do its own grouping too).
+
+        Args:
+            scan_id: The scan to query.
+            hash_type: ``"phash"``, ``"dhash"``, or ``"ahash"``.
+            hash_value: Hex hash to measure distance from, or None to
+                return all rows.
+            max_distance: Hamming distance threshold (inclusive).
+
+        Returns:
+            List of dicts: ``file_id``, ``scan_id``, ``file_path``,
+            ``file_size``, ``phash``, ``dhash``, ``ahash``,
+            ``computed_at``.
+        """
+        if hash_type not in ("phash", "dhash", "ahash"):
+            hash_type = "phash"
+
+        with self.get_cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT ih.file_id, ih.scan_id, ih.phash, ih.dhash, ih.ahash,
+                       ih.computed_at, sf.file_path, sf.file_size
+                FROM image_hashes ih
+                JOIN scanned_files sf ON sf.id = ih.file_id
+                WHERE ih.scan_id = ?
+                  AND ih.{hash_type} IS NOT NULL
+                ORDER BY sf.file_path
+                """,  # noqa: S608
+                (scan_id,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+        if hash_value is None:
+            return rows
+
+        from src.analyzer.image_hash import hamming_distance
+
+        max_distance = max(0, int(max_distance))
+        return [
+            r for r in rows
+            if hamming_distance(r.get(hash_type, ""), hash_value) <= max_distance
+        ]
+
+    def count_image_hashes(self, scan_id: int) -> int:
+        """Return the number of image hash rows for a scan."""
+        with self.get_cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM image_hashes WHERE scan_id = ?",
+                (scan_id,),
+            )
+            row = cur.fetchone()
+            return int(row["cnt"]) if row else 0

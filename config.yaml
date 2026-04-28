@@ -175,6 +175,15 @@ scanner:
     flush_rows: 50000         # buffer bu satira ulasinca flush et
     flush_seconds: 30         # son flush bu sn'den eski ise flush et
     staging_dir: "data/staging"
+  # Issue #144 Phase 2 — perceptual hash for images.
+  # pHash + dHash + aHash ile gorsel duplikasyon tespiti.
+  # Varsayilan kapali (perf cost: her gorsel icin PIL acma + hash hesaplama).
+  # Etkinlestirmek icin: scanner.compute_image_hashes: true
+  # Yukleme: pip install imagehash>=4.3  (requirements-accel.txt)
+  compute_image_hashes: false
+  # pHash hesaplamasinda max dosya boyutu (MB). Bu degerin ustundeki
+  # gorseller atlanir (4 GB TIFF = 5+ dakika). Varsayilan 200 MB.
+  image_hash_max_mb: 200
 
 analysis:
   frequency_buckets:          # erişim sıklığı analiz günleri

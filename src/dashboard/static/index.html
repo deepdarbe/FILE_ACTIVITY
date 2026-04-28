@@ -625,6 +625,7 @@ body.sidebar-open { overflow: hidden; }
         <div class="nav-label">Raporlar <span class="chev">&#9660;</span></div>
         <div class="nav-item" onclick="showPage('chargeback')" title="Chargeback / Cost Center"><span class="icon">💵</span> <span>Chargeback / Cost Center</span></div>
         <div class="nav-item" onclick="showPage('forecast')" title="Kapasite Tahmini"><span class="icon">🔮</span> <span>Kapasite Tahmini</span></div>
+        <div class="nav-item" onclick="showPage('image-duplicates')" title="Gorsel Duplikasyonlar"><span class="icon">🖼️</span> <span>Gorsel Duplikasyonlar</span></div>
     </div>
     <div class="nav-section" data-group="Entegrasyonlar">
         <div class="nav-label">Entegrasyonlar <span class="chev">&#9660;</span></div>
@@ -1407,6 +1408,53 @@ body.sidebar-open { overflow: hidden; }
         <button class="btn btn-primary" id="cb-owner-submit-btn" onclick="submitChargebackOwnerForm(this)">Ekle</button>
     </div>
 </div>
+</div>
+
+<!-- ============ RAPORLAR > GORSEL DUPLIKASYONLAR (issue #144 Phase 2) ============ -->
+<div class="page" id="page-image-duplicates">
+    <div class="page-header">
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Raporlar &raquo; Gorsel Duplikasyonlar</div>
+            <h2>Gorsel Duplikasyonlar</h2>
+            <div class="desc">Ayni gorselin farkli isim / boyutla yuklenmis kopyalarini bul — pHash / dHash / aHash ile algilama (issue #144 Phase 2)</div>
+        </div>
+        <div class="actions">
+            <select id="imgdup-source" onchange="loadImageDuplicates()" style="width:200px">
+                <option value="">Kaynak secin...</option>
+            </select>
+            <select id="imgdup-hash-type" onchange="loadImageDuplicates()" style="width:130px">
+                <option value="phash" selected>pHash</option>
+                <option value="dhash">dHash</option>
+                <option value="ahash">aHash</option>
+            </select>
+            <label style="font-size:12px;color:var(--text-muted)">
+                Esik:
+                <input id="imgdup-threshold" type="range" min="0" max="10" value="5"
+                       oninput="document.getElementById('imgdup-threshold-val').textContent=this.value;loadImageDuplicates()"
+                       style="width:80px;vertical-align:middle">
+                <span id="imgdup-threshold-val">5</span>
+            </label>
+            <button class="btn btn-outline" id="imgdup-xlsx-btn" onclick="exportImageDuplicatesXlsx(event)" style="display:none">Excel Export</button>
+        </div>
+    </div>
+
+    <!-- Off-feature banner (shown when compute_image_hashes=false) -->
+    <div id="imgdup-feature-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(245,158,11,0.08);border:1px solid var(--warning);border-radius:var(--radius);color:var(--warning);font-size:13px">
+        <strong>Gorsel hash hesaplama devre disi.</strong>
+        Etkinlestirmek icin <code>config.yaml</code> icinde <code>scanner.compute_image_hashes: true</code> yapin ve yeni bir tarama calistirin.
+        Bu sayfa mevcut DB'de hash varsa gosterir.
+    </div>
+
+    <!-- KPI cards -->
+    <div class="cards" id="imgdup-kpi-cards"></div>
+
+    <!-- Groups table -->
+    <div class="panel" style="margin-top:20px">
+        <h3 class="panel-title">Benzer Gorsel Gruplari</h3>
+        <div id="imgdup-container">
+            <div style="color:var(--text-muted);font-size:13px;padding:20px">Kaynak secin...</div>
+        </div>
+    </div>
 </div>
 
 <!-- ============ GUVENLIK > YETIM SID'LER (issue #81) ============ -->
@@ -2562,7 +2610,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, 'image-duplicates': loadImageDuplicates, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -8514,6 +8562,130 @@ async function exportForecastXlsx(ev) {
         };
     }
 })();
+
+// ============================================================
+// Gorsel Duplikasyonlar (issue #144 Phase 2)
+// ============================================================
+let _imgdupScanId = null;
+
+async function loadImageDuplicates() {
+    const page = document.getElementById('page-image-duplicates');
+    if (!page) return;
+
+    const sourceEl = document.getElementById('imgdup-source');
+    const hashType = document.getElementById('imgdup-hash-type')?.value || 'phash';
+    const threshold = parseInt(document.getElementById('imgdup-threshold')?.value || '5', 10);
+    const container = document.getElementById('imgdup-container');
+    const kpiCards = document.getElementById('imgdup-kpi-cards');
+    const xlsxBtn = document.getElementById('imgdup-xlsx-btn');
+    const featureBanner = document.getElementById('imgdup-feature-banner');
+
+    // Populate source dropdown once
+    if (sourceEl && sourceEl.options.length <= 1) {
+        try {
+            const srcs = await api('/sources');
+            (srcs.sources || []).forEach(s => {
+                const o = document.createElement('option');
+                o.value = s.id;
+                o.textContent = s.name;
+                sourceEl.appendChild(o);
+            });
+        } catch (e) { /* ignore */ }
+    }
+
+    // Show feature banner based on flag
+    if (featureBanner) {
+        try {
+            const flags = await api('/security/feature-flags');
+            featureBanner.style.display = flags?.image_duplicates?.enabled ? 'none' : 'block';
+        } catch (e) { featureBanner.style.display = 'none'; }
+    }
+
+    const sourceId = sourceEl?.value;
+
+    // Resolve scan_id for selected source
+    let scanId = null;
+    if (sourceId) {
+        try {
+            const status = await api(`/reports/status/${sourceId}`);
+            scanId = status?.latest_scan_id || null;
+        } catch (e) { /* ignore */ }
+    }
+    _imgdupScanId = scanId;
+
+    const qp = new URLSearchParams({ hash_type: hashType, max_distance: threshold });
+    if (scanId) qp.set('scan_id', scanId);
+
+    if (container) container.innerHTML = '<div style="color:var(--text-muted);padding:20px">Yukleniyor...</div>';
+
+    try {
+        const data = await api(`/security/image-duplicates?${qp}`);
+
+        // KPI cards
+        if (kpiCards) {
+            kpiCards.innerHTML = `
+                <div class="card"><div class="card-label">Taranan Gorsel</div><div class="card-value">${data.total_images ?? 0}</div></div>
+                <div class="card"><div class="card-label">Duplikasyon Grubu</div><div class="card-value">${(data.groups || []).length}</div></div>
+                <div class="card"><div class="card-label">Hash Turu</div><div class="card-value">${(data.hash_type || 'phash').toUpperCase()}</div></div>
+                <div class="card"><div class="card-label">Esik (Hamming)</div><div class="card-value">${data.max_distance ?? 5}</div></div>
+            `;
+        }
+
+        if (xlsxBtn) xlsxBtn.style.display = (data.groups || []).length > 0 ? '' : 'none';
+
+        // Groups table
+        if (container) {
+            const groups = data.groups || [];
+            if (!groups.length) {
+                container.innerHTML = '<div style="color:var(--text-muted);padding:20px">Duplikasyon bulunamadi.</div>';
+                return;
+            }
+            let html = '<table class="data-table"><thead><tr><th>Grup</th><th>Hash</th><th>Dosya Yolu</th><th>Boyut</th></tr></thead><tbody>';
+            groups.forEach((g, gi) => {
+                (g.files || []).forEach((f, fi) => {
+                    const rowClass = gi % 2 === 0 ? '' : ' style="background:rgba(255,255,255,0.03)"';
+                    html += `<tr${rowClass}>`;
+                    if (fi === 0) html += `<td rowspan="${g.files.length}" style="vertical-align:top;font-weight:600">${gi + 1}</td>`;
+                    html += `<td style="font-family:monospace;font-size:11px">${(g.hash || '').slice(0, 12)}…</td>`;
+                    html += `<td style="font-size:12px;word-break:break-all">${_esc(f.file_path || '')}</td>`;
+                    html += `<td style="white-space:nowrap">${_fmtSize(f.file_size || 0)}</td>`;
+                    html += '</tr>';
+                });
+            });
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+    } catch (e) {
+        if (container) container.innerHTML = `<div style="color:var(--danger);padding:20px">Hata: ${e.message || e}</div>`;
+    }
+}
+
+async function exportImageDuplicatesXlsx(evt) {
+    if (evt) evt.preventDefault();
+    const hashType = document.getElementById('imgdup-hash-type')?.value || 'phash';
+    const threshold = document.getElementById('imgdup-threshold')?.value || '5';
+    const qp = new URLSearchParams({ hash_type: hashType, max_distance: threshold });
+    if (_imgdupScanId) qp.set('scan_id', _imgdupScanId);
+    const btn = document.getElementById('imgdup-xlsx-btn');
+    const origText = btn?.textContent;
+    if (btn) btn.textContent = 'Hazirlaniyor...';
+    try {
+        await fetchAndDownload(`/api/security/image-duplicates/export.xlsx?${qp}`, null, 'image_duplicates.xlsx');
+    } finally {
+        if (btn && origText) btn.textContent = origText;
+    }
+}
+
+function _fmtSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(1) + ' GB';
+}
+
+function _esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
 </script>
 

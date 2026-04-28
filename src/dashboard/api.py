@@ -4423,6 +4423,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         scanner_cfg = (config or {}).get("scanner", {}) or {}
         ransom = sec.get("ransomware", {}) or {}
         orphan = sec.get("orphan_sid", {}) or {}
+        scanner_cfg = (config or {}).get("scanner", {}) or {}
         return {
             "ransomware": {
                 "enabled": bool(ransom.get("enabled", False)),
@@ -4442,7 +4443,118 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     scanner_cfg.get("detect_wrong_extensions", False)
                 ),
             },
+            # Image duplicate detection (issue #144 Phase 2). Read-side
+            # is always available; compute is opt-in via config.
+            "image_duplicates": {
+                "enabled": bool(scanner_cfg.get("compute_image_hashes", False)),
+            },
         }
+
+    # ─────────────────────────────────────────────────────────────────
+    # Image duplicate detection (issue #144 Phase 2)
+    # ─────────────────────────────────────────────────────────────────
+
+    @app.get("/api/security/image-duplicates")
+    async def image_duplicates(
+        scan_id: Optional[int] = None,
+        hash_type: str = Query("phash", pattern="^(phash|dhash|ahash)$"),
+        max_distance: int = Query(5, ge=0, le=64),
+    ):
+        """Return groups of near-duplicate images for a scan.
+
+        Near-duplicate = Hamming distance between perceptual hashes
+        <= max_distance (default 5).
+        """
+        from src.analyzer.image_hash import find_duplicate_groups
+
+        if scan_id is None:
+            with db.get_cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM scan_runs WHERE status = 'completed' "
+                    "ORDER BY completed_at DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                scan_id = row["id"] if row else None
+
+        if scan_id is None:
+            return {
+                "scan_id": None,
+                "hash_type": hash_type,
+                "max_distance": max_distance,
+                "total_images": 0,
+                "groups": [],
+                "reason": "no_completed_scan",
+            }
+
+        rows = db.find_similar_images(scan_id, hash_type=hash_type)
+        total_images = len(rows)
+        raw_groups = find_duplicate_groups(rows, hash_type=hash_type, max_distance=max_distance)
+
+        groups = []
+        for members in raw_groups:
+            rep_hash = members[0].get(hash_type, "")
+            groups.append({
+                "hash": rep_hash,
+                "count": len(members),
+                "files": [
+                    {
+                        "file_id": m.get("file_id"),
+                        "file_path": m.get("file_path", ""),
+                        "file_size": m.get("file_size", 0),
+                        hash_type: m.get(hash_type, ""),
+                    }
+                    for m in members
+                ],
+            })
+
+        return {
+            "scan_id": scan_id,
+            "hash_type": hash_type,
+            "max_distance": max_distance,
+            "total_images": total_images,
+            "groups": groups,
+        }
+
+    @app.get("/api/security/image-duplicates/export.xlsx")
+    async def image_duplicates_export_xlsx(
+        scan_id: Optional[int] = None,
+        hash_type: str = Query("phash", pattern="^(phash|dhash|ahash)$"),
+        max_distance: int = Query(5, ge=0, le=64),
+    ):
+        """XLSX export of near-duplicate image groups."""
+        from src.analyzer.image_hash import find_duplicate_groups
+
+        if scan_id is None:
+            with db.get_cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM scan_runs WHERE status = 'completed' "
+                    "ORDER BY completed_at DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                scan_id = row["id"] if row else None
+
+        rows_data: list[list] = []
+        if scan_id is not None:
+            all_rows = db.find_similar_images(scan_id, hash_type=hash_type)
+            raw_groups = find_duplicate_groups(
+                all_rows, hash_type=hash_type, max_distance=max_distance
+            )
+            for g_idx, members in enumerate(raw_groups, start=1):
+                for m in members:
+                    rows_data.append([
+                        g_idx,
+                        m.get("file_path", ""),
+                        m.get("file_size", 0),
+                        m.get(hash_type, ""),
+                    ])
+
+        filename = f"image_duplicates_scan{scan_id}_{hash_type}.xlsx"
+        return _xlsx_response(
+            rows_data,
+            headers=["Group #", "File Path", "File Size (bytes)", hash_type.upper()],
+            filename=filename,
+            sheet_title="Image Duplicates",
+        )
 
     @app.get("/api/security/orphan-sids/{source_id}/export.xlsx")
     async def orphan_sid_export_xlsx(source_id: int):
