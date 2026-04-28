@@ -662,17 +662,65 @@ class FileScanner:
         PARTIAL_SLOW_THRESHOLD_SECONDS = 30.0
         partial_thread: threading.Thread | None = None
 
+        # Issue #181 Track B1 — partial summary v2 builder.
+        # Config-gated: ``scanner.partial_summary_schema`` defaults to 2.
+        # When 2 (default) the v2 builder maintains running counters on
+        # the writer thread and we flush them via ``flush_to_db`` at the
+        # same cadence as v1's compute. When 1 we keep the v1 GROUP BY
+        # path so legacy deployments can opt out.
+        partial_schema_version = int(
+            self.config.get("partial_summary_schema", 2) or 2,
+        )
+        v2_builder = None
+        if partial_schema_version == 2:
+            try:
+                from src.analyzer.partial_summary_v2 import (
+                    PartialSummaryV2Builder,
+                )
+                v2_builder = PartialSummaryV2Builder(
+                    self.db, scan_id, source_id,
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "partial_summary_v2 init failed (falling back to v1): %s",
+                    e,
+                )
+                v2_builder = None
+                partial_schema_version = 1
+        # Stash on the instance so post-scan phases (extension check,
+        # size enrich) can still poke the same counters / flush state.
+        self._v2_builder = v2_builder
+
         def _run_partial_summary(captured_scan_id: int) -> None:
             """Compute + persist a partial summary in a worker thread.
 
-            Doubles ``partial_interval_seconds`` on the enclosing scope
-            if the compute takes more than 30 sec — mutable via a
-            list-wrapped slot since closures + nonlocal don't reach
-            this far without a wrapper.
+            v2 path: render + flush the in-memory builder. Cheap (no DB
+            read), so the slow-threshold doubling never trips.
+
+            v1 path (legacy): re-runs the GROUP BY queries on a
+            read-only cursor. Doubles ``partial_interval_seconds`` if the
+            compute takes more than 30 sec.
             """
             try:
-                from src.analyzer.partial_summary import compute_partial_summary
                 t0 = time.time()
+                if v2_builder is not None:
+                    rate = 0.0
+                    elapsed_s = max(0.001, t0 - start_time)
+                    rate = float(file_count) / elapsed_s
+                    active_dir = progress.get("current_dir", "") or ""
+                    v2_builder.flush_to_db(
+                        scan_state="db_writing",
+                        rate_per_sec=rate,
+                        active_dir=active_dir,
+                    )
+                    dt = time.time() - t0
+                    logger.debug(
+                        "partial_summary_v2 scan=%d files=%d elapsed=%.3fs",
+                        captured_scan_id, file_count, dt,
+                    )
+                    return
+
+                from src.analyzer.partial_summary import compute_partial_summary
                 payload = compute_partial_summary(self.db, captured_scan_id)
                 self.db.save_scan_partial_summary(captured_scan_id, payload)
                 dt = time.time() - t0
@@ -791,6 +839,17 @@ class FileScanner:
                     # to bulk_insert_scanned_files inside append() otherwise).
                     if len(batch) >= self.batch_size:
                         stager.append(batch)
+                        # Issue #181 Track B1 — feed the v2 builder
+                        # immediately after the stager accepts the
+                        # batch. Same writer thread, so no lock needed.
+                        # Falls back silently when v2 is disabled.
+                        if v2_builder is not None:
+                            try:
+                                v2_builder.absorb_batch(batch)
+                            except Exception as e:  # pragma: no cover
+                                logger.debug(
+                                    "v2_builder.absorb_batch failed: %s", e,
+                                )
                         batch = []
                         # Issue #153 Lever A — signal the manual
                         # checkpointer that we just released the writer
@@ -905,6 +964,14 @@ class FileScanner:
             # Kalan batch'i yaz + stager buffer'ini bosalt
             if batch:
                 stager.append(batch)
+                # Issue #181 — final batch needs to flow through v2 too.
+                if v2_builder is not None:
+                    try:
+                        v2_builder.absorb_batch(batch)
+                    except Exception as e:  # pragma: no cover
+                        logger.debug(
+                            "v2_builder.absorb_batch (final) failed: %s", e,
+                        )
             try:
                 stager.flush()
             except Exception as e:
@@ -923,6 +990,11 @@ class FileScanner:
             try:
                 if batch:
                     stager.append(batch)
+                    if v2_builder is not None:
+                        try:
+                            v2_builder.absorb_batch(batch)
+                        except Exception:  # pragma: no cover
+                            pass
                 stager.flush()
             except Exception as flush_err:
                 logger.warning(
@@ -981,7 +1053,18 @@ class FileScanner:
             # the main MFT/SMB walk never blocks on libmagic.
             if self.config.get("detect_wrong_extensions", False):
                 try:
-                    self._run_extension_check(scan_id)
+                    ext_result = self._run_extension_check(scan_id)
+                    # Issue #181 Track B1 — fold the anomaly count into
+                    # the v2 builder so the dashboard's anomalies card
+                    # lights up before the scan completes.
+                    if v2_builder is not None and isinstance(ext_result, dict):
+                        try:
+                            v2_builder.increment_anomaly(
+                                "extension",
+                                int(ext_result.get("anomalies", 0) or 0),
+                            )
+                        except Exception:  # pragma: no cover
+                            pass
                 except Exception as e:
                     logger.warning(
                         "Extension-check pasi basarisiz (scan_id=%d): %s",
@@ -995,10 +1078,47 @@ class FileScanner:
             # KPI was BOYUT showing 0 B).
             try:
                 self._run_size_enrich(scan_id)
+                # Issue #181 Track B1 — after enrich, size + age buckets
+                # finally have data to populate. Flush the v2 dict with
+                # the ``enrich`` scan_state so the dashboard knows it's
+                # safe to render the BOYUT/YAS cards.
+                if v2_builder is not None:
+                    try:
+                        elapsed_so_far = max(
+                            0.001, time.time() - start_time,
+                        )
+                        v2_builder.flush_to_db(
+                            scan_state="enrich",
+                            rate_per_sec=float(file_count) / elapsed_so_far,
+                            active_dir=progress.get("current_dir", "") or "",
+                        )
+                    except Exception as e:  # pragma: no cover
+                        logger.debug(
+                            "v2_builder enrich flush failed: %s", e,
+                        )
             except Exception as e:
                 logger.warning(
                     "Size-enrich pasi basarisiz (scan_id=%d): %s",
                     scan_id, e,
+                )
+
+        # Issue #181 Track B1 — final flush at scan completion. Always
+        # runs (even on failure / cancel) so the dashboard's last
+        # snapshot reflects the actual end state and scan_state moves
+        # off ``db_writing`` regardless.
+        if v2_builder is not None:
+            try:
+                final_state = "completed" if status == "completed" else "db_writing"
+                v2_builder.increment_errors(int(errors))
+                elapsed_final = max(0.001, time.time() - start_time)
+                v2_builder.flush_to_db(
+                    scan_state=final_state,
+                    rate_per_sec=float(file_count) / elapsed_final,
+                    active_dir=progress.get("current_dir", "") or "",
+                )
+            except Exception as e:  # pragma: no cover
+                logger.debug(
+                    "v2_builder final flush failed: %s", e,
                 )
 
         # Son ilerleme durumunu guncelle

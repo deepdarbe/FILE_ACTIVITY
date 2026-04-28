@@ -2426,6 +2426,157 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"status": "ok", "scan_id": scan_id,
                 "total_files": summary.get("total_files")}
 
+    # ──────────────────────────────────────────────
+    # Issue #181 Track B1 — partial summary v2
+    #
+    # Live aggregates for every dashboard page during an in-flight scan.
+    # The v2 schema is a strict superset of v1 — old rows go through
+    # ``_v1_to_v2`` so callers can pretend they always speak v2.
+    #
+    # Cache: parse JSON once per ``(source_id, partial_updated_at)`` —
+    # the timestamp is the cache buster, so a fresh write invalidates
+    # automatically. 16-entry LRU keeps memory bounded for the
+    # multi-source case.
+    # ──────────────────────────────────────────────
+
+    _v2_partial_cache: dict = {}
+    _v2_partial_cache_order: list = []
+    _v2_partial_cache_lock = threading.Lock()
+    _V2_PARTIAL_CACHE_MAX = 16
+
+    def _v2_cache_get(key):
+        with _v2_partial_cache_lock:
+            return _v2_partial_cache.get(key)
+
+    def _v2_cache_put(key, value):
+        with _v2_partial_cache_lock:
+            if key in _v2_partial_cache:
+                # Refresh ordering.
+                try:
+                    _v2_partial_cache_order.remove(key)
+                except ValueError:
+                    pass
+            _v2_partial_cache[key] = value
+            _v2_partial_cache_order.append(key)
+            while len(_v2_partial_cache_order) > _V2_PARTIAL_CACHE_MAX:
+                drop = _v2_partial_cache_order.pop(0)
+                _v2_partial_cache.pop(drop, None)
+
+    def _load_partial_summary_v2_for_source(source_id: int):
+        """Return (payload_dict, partial_updated_at) for the most recent
+        scan of ``source_id`` — completed OR running. Returns
+        ``(None, None)`` when no scan exists yet, so the caller can 404.
+
+        Reads ``scan_runs.partial_summary_json`` directly via the
+        read-only cursor so it never contends with the writer lock.
+        Migrates v1 payloads on the fly via ``_v1_to_v2``.
+        """
+        # Prefer the latest scan (running OR completed) — operators want
+        # the live aggregate during a scan, but if no scan is running we
+        # still want them to see the v2 dict from the last completed
+        # scan so the dashboard pages aren't all-zeros after the scan
+        # finishes.
+        try:
+            with db.get_read_cursor() as cur:
+                row = cur.execute(
+                    "SELECT id, partial_summary_json, partial_updated_at "
+                    "FROM scan_runs WHERE source_id = ? "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (source_id,),
+                ).fetchone()
+        except Exception as e:
+            logger.debug("partial-summary-v2 read failed src=%d: %s",
+                         source_id, e)
+            return None, None
+        if not row:
+            return None, None
+        scan_id_local = row.get("id")
+        blob = row.get("partial_summary_json")
+        updated_at = row.get("partial_updated_at")
+        if not blob:
+            # No partial snapshot yet — return an empty v2 envelope so
+            # frontend pages render zeros instead of breaking.
+            from src.analyzer.partial_summary_v2 import _empty_v2_payload
+            empty = _empty_v2_payload()
+            empty["scan_id"] = scan_id_local
+            return empty, updated_at
+
+        # Cache hit?
+        cache_key = (source_id, updated_at)
+        cached = _v2_cache_get(cache_key)
+        if cached is not None:
+            return cached, updated_at
+
+        try:
+            d = json.loads(blob)
+        except Exception:
+            from src.analyzer.partial_summary_v2 import _empty_v2_payload
+            d = _empty_v2_payload()
+        # Migrate v1 -> v2 on the fly so callers always see the v2 shape.
+        if d.get("schema_version") != 2:
+            from src.analyzer.partial_summary_v2 import _v1_to_v2
+            d = _v1_to_v2(d)
+        d["scan_id"] = scan_id_local
+        d["partial_updated_at"] = updated_at
+        _v2_cache_put(cache_key, d)
+        return d, updated_at
+
+    @app.get("/api/sources/{source_id}/partial-summary")
+    async def partial_summary_v2_for_source(source_id: int):
+        """Issue #181 Track B1 — return the v2 partial summary for a source.
+
+        Most dashboard pages don't carry a scan_id (Sources, Extensions,
+        Owners, Anomalies, ...). They pass ``source_id`` and we resolve
+        the latest scan internally.
+
+        404 when no scan exists yet for the source.
+        """
+        _get_source(db, source_id)
+        payload, _updated_at = _load_partial_summary_v2_for_source(source_id)
+        if payload is None:
+            raise HTTPException(404, "No scan exists yet for this source")
+        return payload
+
+    @app.get("/api/scans/{scan_id}/partial-summary")
+    async def partial_summary_v2_for_scan(scan_id: int):
+        """Issue #181 Track B1 — return the v2 partial summary for a specific scan.
+
+        Used by tooling that already has a scan_id. Migrates legacy
+        rows through ``_v1_to_v2`` so the response always has a
+        ``schema_version: 2`` field.
+        """
+        try:
+            with db.get_read_cursor() as cur:
+                row = cur.execute(
+                    "SELECT partial_summary_json, partial_updated_at "
+                    "FROM scan_runs WHERE id = ?",
+                    (scan_id,),
+                ).fetchone()
+        except Exception as e:
+            logger.debug("partial-summary-v2 scan read failed scan=%d: %s",
+                         scan_id, e)
+            raise HTTPException(404, "Scan not found")
+        if not row:
+            raise HTTPException(404, "Scan not found")
+        blob = row.get("partial_summary_json")
+        if not blob:
+            from src.analyzer.partial_summary_v2 import _empty_v2_payload
+            empty = _empty_v2_payload()
+            empty["scan_id"] = scan_id
+            empty["partial_updated_at"] = row.get("partial_updated_at")
+            return empty
+        try:
+            d = json.loads(blob)
+        except Exception:
+            from src.analyzer.partial_summary_v2 import _empty_v2_payload
+            d = _empty_v2_payload()
+        if d.get("schema_version") != 2:
+            from src.analyzer.partial_summary_v2 import _v1_to_v2
+            d = _v1_to_v2(d)
+        d["scan_id"] = scan_id
+        d["partial_updated_at"] = row.get("partial_updated_at")
+        return d
+
     @app.get("/api/risk-score/{source_id}")
     async def risk_score(source_id: int):
         """Supervisor risk score - TEK optimized sorgu (6 yerine 2)."""
