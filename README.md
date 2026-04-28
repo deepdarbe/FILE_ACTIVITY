@@ -2,6 +2,8 @@
 
 **Windows File Share Analysis, Archiving & Compliance System**
 
+[![CodeQL](https://github.com/deepdarbe/FILE_ACTIVITY/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/deepdarbe/FILE_ACTIVITY/actions/workflows/codeql.yml)
+
 [🇹🇷 Türkçe](#-türkçe) | [🇬🇧 English](#-english)
 
 ---
