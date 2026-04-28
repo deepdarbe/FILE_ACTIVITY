@@ -36,8 +36,19 @@ class AnalyticsEngine:
         self.enabled = bool(config.get("enabled", True))
         self.memory_limit = config.get("memory_limit", "512MB")
         self.threads = int(config.get("threads", 4))
+        # Issue #185 — `_lock` retained for API compat; the per-query
+        # connection model below means concurrent queries don't actually
+        # need to serialize, but a few callers still pass through it.
         self._lock = threading.Lock()
-        self._conn = None
+        # Issue #185 — DuckDB connection is no longer kept alive between
+        # queries. A long-lived ATTACH on a SQLite file shows up as a
+        # permanent SQLite reader and prevents `wal_checkpoint(TRUNCATE)`
+        # from ever shrinking the WAL. Customer prod observed WAL stuck
+        # at 13 GB / 74 GB at multiple points. Each query now gets its
+        # own DuckDB connection that ATTACHes, runs, and is closed —
+        # the SQLite reader is released between queries so the
+        # checkpointer can truncate.
+        self._conn = None  # kept for `close()` API compat; not used at runtime
         self.available = False
         self._init_error: Optional[str] = None
 
@@ -51,34 +62,57 @@ class AnalyticsEngine:
             return
 
         try:
-            self._open()
+            # Validate that DuckDB can ATTACH the SQLite file at boot
+            # (catches missing extension / bad path early). Connection
+            # is closed immediately — no lingering reader.
+            self._smoke_test_attach()
             self.available = True
             logger.info(
-                "AnalyticsEngine hazir (DuckDB %s, memory=%s, threads=%d)",
+                "AnalyticsEngine hazir (DuckDB %s, memory=%s, threads=%d, "
+                "per-query connection)",
                 duckdb.__version__, self.memory_limit, self.threads
             )
         except Exception as e:
             self._init_error = str(e)
             logger.warning("AnalyticsEngine baslatilamadi, SQLite fallback kullanilacak: %s", e)
 
-    def _open(self):
-        """DuckDB baglantisini ac, SQLite'i salt-okunur ATTACH et."""
+    def _smoke_test_attach(self):
+        """Open + ATTACH + close once to verify the runtime is healthy.
+
+        Run at __init__ so `available=True` only when DuckDB + sqlite
+        extension + the actual DB file are all reachable. The connection
+        opened here is closed before this method returns.
+        """
+        conn = self._make_attached_conn()
+        try:
+            conn.execute("SELECT 1 FROM sqlite_db.scan_runs LIMIT 0")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _make_attached_conn(self):
+        """Open a fresh DuckDB :memory: connection and ATTACH the SQLite
+        file as ``sqlite_db`` (read-only). Caller MUST close it.
+
+        Issue #185 — Per-query lifecycle means the SQLite reader window
+        opened by the sqlite_scanner extension is short — between calls
+        the checkpointer can run TRUNCATE.
+        """
         conn = duckdb.connect(database=":memory:")
         # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         conn.execute(f"SET memory_limit='{self.memory_limit}'")
         # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         conn.execute(f"SET threads={self.threads}")
 
-        # sqlite_scanner extension'i yukle (duckdb paketiyle beraber gelir)
         try:
             conn.execute("INSTALL sqlite")
         except Exception:
-            # Offline ortamda zaten bundled olabilir; ignore
+            # Bundled in offline / corp env — ignore.
             pass
         conn.execute("LOAD sqlite")
 
-        # SQLite'i salt-okunur attach et. Bazi surumlerde parametre adi
-        # READ_ONLY, digerlerinde read_only olabilir; ikincide fallback dene.
         # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         attach_sql_variants = [
             f"ATTACH '{self.db_path}' AS sqlite_db (TYPE SQLITE, READ_ONLY)",
@@ -95,27 +129,45 @@ class AnalyticsEngine:
         if last_err is not None:
             conn.close()
             raise last_err
-
-        self._conn = conn
+        return conn
 
     @contextmanager
     def _cursor(self):
-        """Thread-safe cursor. DuckDB tek baglanti + lock ile yeterli;
-        ATTACH/schema durumunu yeniden kurmak pahali oldugu icin tek baglanti
-        tutulur."""
-        if not self.available or self._conn is None:
-            raise RuntimeError("AnalyticsEngine kullanilamaz durumda")
-        with self._lock:
-            yield self._conn
+        """Yield a fresh, short-lived DuckDB connection with SQLite ATTACHed.
 
-    def close(self):
-        if self._conn is not None:
+        Issue #185 — Each call opens its OWN DuckDB connection, ATTACHes
+        the SQLite DB, yields, then closes. This releases the SQLite
+        reader between queries so `wal_checkpoint(TRUNCATE)` can shrink
+        the WAL. The previous long-lived `self._conn` model was the root
+        cause of the 13–74 GB WAL leak in customer prod.
+
+        Concurrency: each call gets an independent connection — multiple
+        queries run in parallel without serialization. The legacy
+        `self._lock` is no longer used at the cursor layer (there is no
+        shared mutable engine state to protect; each connection isolates
+        its own ATTACH state).
+
+        Cost: DuckDB :memory: connect + ATTACH on a SQLite file is
+        ~50–150 ms in our observation — invisible on dashboard pages
+        that issue at most a couple of queries per request.
+        """
+        if not self.available:
+            raise RuntimeError("AnalyticsEngine kullanilamaz durumda")
+        conn = self._make_attached_conn()
+        try:
+            yield conn
+        finally:
             try:
-                self._conn.close()
+                conn.close()
             except Exception:
                 pass
-            self._conn = None
+
+    def close(self):
+        """No-op now (kept for API compat). Per-query connections clean
+        themselves up in `_cursor`'s `finally`.
+        """
         self.available = False
+        self._conn = None
 
     # ──────────────────────────────────────────────
     # Duplicate raporu (DuckDB tek-gecis CTE)
