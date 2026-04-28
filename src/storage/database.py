@@ -11,6 +11,7 @@ import os
 import sqlite3
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -97,7 +98,11 @@ class Database:
             self._local.conn.row_factory = dict_factory
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA foreign_keys=ON")
-            self._local.conn.execute("PRAGMA busy_timeout=5000")
+            # Issue #174 — bumped from 5s to 60s. Under heavy reader contention
+            # during a multi-million-row scan, the writer would otherwise hit
+            # "database is locked" within seconds and the scanner would abort.
+            # 60s tolerates the worst checkpoint windows we have observed.
+            self._local.conn.execute("PRAGMA busy_timeout=60000")
 
             # Issue #153 Lever B — tuned defaults for "slow during scan"
             # pain. Order matters: synchronous + cache_size first so the
@@ -1361,24 +1366,60 @@ class Database:
     # ──────────────────────────────────────────────
 
     def bulk_insert_scanned_files(self, files: list):
-        """Toplu dosya ekleme - executemany ile yuksek performans."""
+        """Toplu dosya ekleme - executemany ile yuksek performans.
+
+        Issue #174 — wrapped in a retry loop with exponential backoff. On a
+        multi-million-row scan, a single batch hitting "database is locked"
+        used to abort the entire scan; now we retry up to 5 times (1s, 2s,
+        4s, 8s, 16s — total ~31s on top of the 60s busy_timeout). The
+        ``OperationalError`` re-raises only after all retries are exhausted
+        so callers still see real failures.
+        """
         if not files:
             return
-        with self.get_conn() as conn:
-            conn.executemany(
-                """INSERT INTO scanned_files
-                   (source_id, scan_id, file_path, relative_path, file_name,
-                    extension, file_size, creation_time, last_access_time,
-                    last_modify_time, owner, attributes)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [(
-                    f["source_id"], f["scan_id"], f["file_path"],
-                    f["relative_path"], f["file_name"], f.get("extension"),
-                    f["file_size"], f.get("creation_time"),
-                    f.get("last_access_time"), f.get("last_modify_time"),
-                    f.get("owner"), f.get("attributes")
-                ) for f in files]
-            )
+        rows = [(
+            f["source_id"], f["scan_id"], f["file_path"],
+            f["relative_path"], f["file_name"], f.get("extension"),
+            f["file_size"], f.get("creation_time"),
+            f.get("last_access_time"), f.get("last_modify_time"),
+            f.get("owner"), f.get("attributes")
+        ) for f in files]
+        sql = (
+            "INSERT INTO scanned_files "
+            "(source_id, scan_id, file_path, relative_path, file_name, "
+            "extension, file_size, creation_time, last_access_time, "
+            "last_modify_time, owner, attributes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+        )
+        backoff = 1.0
+        last_err: Optional[Exception] = None
+        for attempt in range(1, 6):
+            try:
+                with self.get_conn() as conn:
+                    conn.executemany(sql, rows)
+                if attempt > 1:
+                    logger.info(
+                        "bulk_insert_scanned_files succeeded on attempt %d "
+                        "(after %d retries)", attempt, attempt - 1,
+                    )
+                return
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "database is locked" not in msg and "busy" not in msg:
+                    raise
+                last_err = e
+                if attempt < 5:
+                    logger.warning(
+                        "bulk_insert_scanned_files locked (attempt %d/5), "
+                        "retry in %.1fs: %s", attempt, backoff, e,
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
+        logger.error(
+            "bulk_insert_scanned_files exhausted retries (5x): %s", last_err,
+        )
+        if last_err is not None:
+            raise last_err
 
     def get_scanned_files_count(self, source_id: int, scan_id: Optional[int] = None) -> int:
         with self.get_cursor() as cur:
