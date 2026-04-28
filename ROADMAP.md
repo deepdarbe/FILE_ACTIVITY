@@ -4,8 +4,62 @@
 > is, where it's going, and how the work is organised. Mirrored by a pinned
 > GitHub issue that tracks the live backlog.
 
-**Last updated**: 2026-04-21 — research + gap analysis phase. Content will
-be refined as research agents return findings.
+**Last updated**: 2026-04-28 — post customer prod-test wave, v1.9.0 (post-rc1).
+See "Recent wave (2026-04-28)" below for what shipped this round.
+
+---
+
+## Recent wave (2026-04-28) — customer prod-test bug fixes
+
+Customer ran prod test on a 3.1M-file `E:\` NTFS volume. The session
+delivered **24 PRs** that took the product from "scan returns 0 files"
+to "scan completes end-to-end with full size data + UI clarity":
+
+### Critical bug fixes
+- **#164** — MFT FRN sequence-number mask. NTFS FRNs carry a sequence
+  number in the upper 16 bits; the parser keyed records by full FRN
+  but `reconstruct_paths` seeded `cache = {root_frn: ""}` with the
+  bare integer 5, so on any volume with churn every parent chain
+  failed and **0 files emitted from 3.1M MFT entries**. Now masks to
+  the lower-48 segment number on parse.
+- **#174 / PR #176** — Scan abort + WAL leak. After #164 unblocked
+  emit, the DuckDB ATTACH(READ_WRITE) ingest path raced the dashboard
+  reader for the writer lock and aborted scans at ~100k of 3.1M rows
+  with `database is locked`. Three fixes: `parquet_staging.enabled`
+  flipped to `false` by default, `busy_timeout` 5 s → 60 s,
+  `bulk_insert_scanned_files` retries 5× with 1/2/4/8/16 s backoff.
+
+### Customer-visible features
+- **#175 / PR #179** — Post-walk size + timestamp enrich. MFT
+  enumeration is path-only by design; this pass `os.stat()`s every
+  row and bulk-UPDATEs `file_size` / `last_modify_time`. Default ON.
+  Customer's BOYUT KPI no longer stuck at "0 B".
+- **#177 / PR #178** — Persistent scan summary banner + edge-triggered
+  completion toasts. Banner no longer unmounts when scan ends; eight
+  named scan states map to coloured banners; source cards show
+  delta-vs-previous counts.
+- **#172 / PR #173** — `setup-source.ps1` is now service-aware:
+  `Stop-Service` before cleanup so a running NSSM supervisor doesn't
+  hold `bin\nssm.exe`. Operators no longer have to manually stop the
+  service before `update.cmd`.
+
+### Earlier in the same wave
+PR #163 (NSSM stderr noise), #167 (#114 Phase 2 ElasticsearchBackend
+MVP), #168 (#144 Phase 1 wrong-extension via libmagic), #169 (#145
+W3C PROV + DCAT v3 endpoints), #170 (#133 db cleanup endpoint M-3),
+#171 (#144 Phase 2 perceptual image hash via imagehash).
+
+### Issues opened retrospectively for traceability
+#165, #166 (covering #164 + #163), #172, #174, #175, #177.
+
+### What changed in delegation
+- **GitHub Copilot coding-agent** delivered #170 + #171 + #178
+  autonomously — first wave where Copilot + Claude split the queue
+  reliably.
+- **Worktree-isolated subagents** delivered #167 (Phase 2 ES backend),
+  #168 (extension check), #169 (PROV+DCAT), #179 (size enrich).
+- Main thread stayed on critical fixes (#164, #173, #176) and the
+  merge / rebase / conflict-resolve loop.
 
 ---
 
@@ -27,11 +81,13 @@ dashboards that never hang.
 
 ---
 
-## Current state (as of v1.7.0-dev)
+## Current state (as of v1.9.0, post 2026-04-28 customer prod-test wave)
 
 ### What works
-- **Scanner**: Python `os.walk` based, multi-threaded workers,
-  configurable exclusion patterns, long-path support (`\\?\`)
+- **Scanner**: NTFS MFT backend (issue #32, FRN-mask hardened in #164)
+  plus parallel `os.scandir` for SMB shares. Wrong-extension detection
+  (#168) + perceptual image-hash dedup (#171) + post-walk size enrich
+  (#179). Cross-platform `os.walk` fallback for non-NTFS hosts.
 - **Storage**: SQLite (OLTP) + DuckDB read-only ATTACH (OLAP) +
   `scan_runs.summary_json` / `insights_json` cache for instant
   Overview rendering
