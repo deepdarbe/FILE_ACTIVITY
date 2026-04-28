@@ -134,8 +134,20 @@ const REPORT_URL = './audit-report.json';
 const $ = (id) => document.getElementById(id);
 let lastReport = null;
 
+// Security audit 2026-04-28, finding L-3 (rolled into H-1) — escape every
+// untrusted leaf value spliced into innerHTML. The audit-report.json file
+// is generated from index.html's onclick handler arguments; those args can
+// contain attacker-controlled strings if a future regression introduces
+// one. Cheap to escape, expensive to leave open.
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
 function kpi(label, value, cls) {
-  return `<div class="kpi ${cls||''}"><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div></div>`;
+  return `<div class="kpi ${cls||''}"><div class="kpi-label">${escapeHtml(label)}</div><div class="kpi-value">${escapeHtml(value)}</div></div>`;
 }
 
 function render(report) {
@@ -157,7 +169,7 @@ function render(report) {
   if (orphans.length) {
     $('orphans-block').hidden = false;
     $('orphans').innerHTML = orphans
-      .map(n => `<li><code>${n}</code></li>`).join('');
+      .map(n => `<li><code>${escapeHtml(n)}</code></li>`).join('');
   } else {
     $('orphans-block').hidden = true;
   }
@@ -165,7 +177,7 @@ function render(report) {
   if (typos.length) {
     $('typos-block').hidden = false;
     $('typos').innerHTML = typos
-      .map(t => `<li>line ${t.line}: <code>${(t.snippet||'').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c])}</code></li>`).join('');
+      .map(t => `<li>line ${escapeHtml(t.line)}: <code>${escapeHtml(t.snippet||'')}</code></li>`).join('');
   } else {
     $('typos-block').hidden = true;
   }
@@ -185,7 +197,8 @@ function applyFilter() {
       return hay.indexOf(q) >= 0;
     })
     .map(r => {
-      const fn = r.function || '<expression>';
+      const fnRaw = r.function || '<expression>';
+      const fn = escapeHtml(fnRaw);
       let badge = '';
       if (!r.function) {
         badge = '<span class="badge builtin">expr</span>';
@@ -198,8 +211,8 @@ function applyFilter() {
       }
       const cls = orphanSet.has(r.function) ? 'row-orphan'
                 : (!r.is_app_function ? 'row-builtin' : '');
-      const args = (r.args||'').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
-      return `<tr class="${cls}"><td>${r.line}</td><td><code>${fn}</code>${badge}</td><td><code>${args}</code></td></tr>`;
+      const args = escapeHtml(r.args||'');
+      return `<tr class="${cls}"><td>${escapeHtml(r.line)}</td><td><code>${fn}</code>${badge}</td><td><code>${args}</code></td></tr>`;
     })
     .join('');
   $('rows').innerHTML = rows || '<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:24px">No matches</td></tr>';
@@ -217,7 +230,7 @@ async function runAudit() {
     render(data);
     $('status').textContent = `Loaded ${data.handlers_count} handlers`;
   } catch (e) {
-    $('status').innerHTML = `<span style="color:var(--danger)">${e.message}</span>`;
+    $('status').innerHTML = `<span style="color:var(--danger)">${escapeHtml(e.message)}</span>`;
   } finally {
     $('run-btn').disabled = false;
   }

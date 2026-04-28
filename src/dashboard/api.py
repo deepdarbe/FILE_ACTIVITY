@@ -656,6 +656,42 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             content={"detail": "Internal Server Error"},
         )
 
+    # ─────────────────────────────────────────────────────────────────
+    # Security audit 2026-04-28, finding H-1 — CSP + hardening headers.
+    #
+    # Defence-in-depth against the stored-XSS surface in index.html:
+    # paired with the frontend ``escapeHtml()`` sweep, the browser will
+    # refuse to execute injected ``<script>`` even if a future regression
+    # forgets to escape a leaf value. ``frame-ancestors 'none'`` plus
+    # ``X-Frame-Options: DENY`` block clickjacking; ``nosniff`` keeps the
+    # browser from MIME-sniffing JSON into HTML. ``Referrer-Policy:
+    # no-referrer`` avoids leaking dashboard URLs (which sometimes carry
+    # ids/owners) to outbound CDNs.
+    #
+    # ``script-src`` allows ``'unsafe-inline'`` because index.html embeds
+    # ~6k lines of inline JS. Tightening to nonces is a Phase 3 follow-up.
+    # ``cdn.jsdelivr.net`` is whitelisted because the dashboard pulls
+    # d3 + chart.js from there; remove this line if you self-host them.
+    # ─────────────────────────────────────────────────────────────────
+    @app.middleware("http")
+    async def _csp_middleware(request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "font-src 'self' data:; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'"
+        )
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
     # Issue #125 — process-local operations registry.
     if operations_registry is not None:
         app.state.operations = operations_registry
