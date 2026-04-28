@@ -840,13 +840,23 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 # Wire the shared cancel_event so /api/scan/{id}/stop can
                 # break out of the main scan loop at the next batch.
                 scanner.cancel_event = cancel_event
-                # Issue #135 — give the scanner a handle to the operations
-                # registry + the op_id we just opened. The MFT backend
-                # uses this to emit incremental progress every 50k records
-                # during enumeration so the dashboard banner doesn't sit
-                # at 0 for the entire MFT walk.
-                scanner.ops_registry = registry
-                scanner.op_id = op_id
+                # Issue #137 (replacing #135 ops_registry/op_id coupling) —
+                # feed mid-walk MFT counters into the operations registry so
+                # /api/scan/progress/{id} can surface a ``live_count`` while
+                # the scanner is still in the (silent-to-the-DB) MFT collection
+                # phase. Tracker outage MUST NOT break the scan — wrap the
+                # whole callback in try/except.
+                if registry is not None and op_id:
+                    def _mft_progress(stage: str, processed: int) -> None:
+                        try:
+                            registry.progress(
+                                op_id,
+                                label=f"MFT okuma: {processed:,} kayit",
+                                processed=processed,
+                            )
+                        except Exception as e:  # pragma: no cover
+                            logger.debug("ops.progress(scan) failed: %s", e)
+                    scanner.progress_callback = _mft_progress
                 _active_scanners[source_id] = scanner
                 result = scanner.scan_source(src.id, src.name, src.unc_path)
                 _scan_results[source_id] = result
@@ -1007,6 +1017,30 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         is_running = source_id in _scan_threads and _scan_threads[source_id].is_alive()
         result = _scan_results.get(source_id)
 
+        # Issue #137 — surface the live row counter from the operations
+        # registry so the Sources page card and DOSYA KPI can stay in
+        # sync with the ops banner during the MFT collection phase.
+        # During that phase the DB scan_runs row + the in-memory
+        # ``progress["file_count"]`` are still 0 (the scanner hasn't
+        # iterated MFT records into batches yet) — but the MFT backend
+        # already reports a structured ``processed`` counter to the
+        # registry. Expose it as ``live_count`` and let the frontend
+        # prefer whichever number is larger.
+        live_count: Optional[int] = None
+        ops = getattr(app.state, "operations", None)
+        if ops is not None:
+            try:
+                live_op = ops.find_active_op_by_metadata(source_id=source_id)
+                if live_op is not None:
+                    val = (live_op.metadata or {}).get("processed")
+                    if val is not None:
+                        try:
+                            live_count = int(val)
+                        except (TypeError, ValueError):
+                            live_count = None
+            except Exception as e:  # pragma: no cover - defensive only
+                logger.debug("live_count lookup failed: %s", e)
+
         if result and not is_running:
             # Tarama bitti, sonucu dondur
             payload = {
@@ -1015,6 +1049,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 "phase": "completed",
                 "phase_pct": 100,
                 "finished": True,
+                "live_count": live_count,
             }
             if "total_size" in result and "total_size_bytes" not in payload:
                 payload["total_size_bytes"] = result.get("total_size")
@@ -1039,6 +1074,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 "scan_id": scan_id,
                 "total_size_bytes": progress.get("total_size", 0),
                 "finished": False,
+                "live_count": live_count,
             }
 
         return {
@@ -1049,6 +1085,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "total_size": 0,
             "total_size_bytes": 0,
             "finished": False,
+            "live_count": live_count,
         }
 
     # --- COMPATIBILITY REPORT API ---

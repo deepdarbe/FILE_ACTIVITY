@@ -524,12 +524,14 @@ class FileScanner:
         # to be marked ``status='cancelled'``. Default-constructed (not
         # set) so the very first scan runs to completion.
         self.cancel_event: threading.Event = threading.Event()
-        # Issue #135 — operations-tracker handle for incremental progress
-        # during MFT enumeration. Set by /api/scan/{source_id} after the
-        # tracker call returns. Either may be None; the backend handles
-        # that defensively.
-        self.ops_registry: object | None = None
-        self.op_id: str | None = None
+        # Issue #137 — optional ``callable(stage: str, processed: int)``.
+        # When set, the scanner forwards it to backends that report
+        # mid-walk live counters (currently only ``NtfsMftBackend`` —
+        # the MFT collection phase produces a record count well before
+        # any DB row is written). The dashboard wires this to
+        # ``OperationsRegistry.progress(op_id, processed=N, label=...)``
+        # so the Sources page card and DOSYA KPI track the ops banner.
+        self.progress_callback = None
 
     def _select_backend(self, path: str) -> ScannerBackend:
         """Return the walk backend to use for ``path``.
@@ -552,8 +554,7 @@ class FileScanner:
         try:
             mft = NtfsMftBackend(
                 self._full_config,
-                ops_registry=self.ops_registry,
-                op_id=self.op_id,
+                progress_callback=self.progress_callback,
             )
             if mft.is_supported(path):
                 logger.debug("Scanner backend: ntfs_mft for %s", path)
