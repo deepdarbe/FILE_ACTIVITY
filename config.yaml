@@ -157,6 +157,15 @@ scanner:
     - ".DS_Store"
   read_owner: true            # dosya sahiplik bilgisi topla (biraz yavaşlatır)
   incremental: true           # sadece değişen dosyaları tara
+  # Issue #144 Phase 1 — yanlis-uzanti tespiti (Czkawka kalibi).
+  # python-magic + libmagic gerektirir; default kapali (her dosya icin
+  # libmagic.from_file() cagrisi tarama suresini uzatir). Acildiginda
+  # tarama tamamlandiktan sonra ayri bir pas calisir (ana MFT/SMB
+  # walk'u bloklamaz). libmagic kurulu degilse modul tek bir WARNING
+  # log atip no-op'a duser; tarama normal sekilde devam eder.
+  # Kurulum:
+  #   pip install -r requirements-accel.txt
+  detect_wrong_extensions: false
   parquet_staging:
     # Tarama sirasinda satirlari Parquet dosyasina biriktirir, sonra DuckDB
     # uzerinden tek INSERT ile SQLite'a ingest eder. 100k+ satirli scan'lerde

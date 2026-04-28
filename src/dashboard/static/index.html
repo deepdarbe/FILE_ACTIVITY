@@ -601,6 +601,7 @@ body.sidebar-open { overflow: hidden; }
         <div class="nav-item" onclick="showPage('orphan-sids')" title="Yetim SID'ler"><span class="icon">👤</span> <span>Yetim SID'ler</span></div>
         <div class="nav-item" onclick="showPage('ransomware')" title="Ransomware Uyarilari"><span class="icon">🛡️</span> <span>Ransomware Uyarilari</span></div>
         <div class="nav-item" onclick="showPage('acl')" title="ACL Analizi"><span class="icon">🔐</span> <span>ACL Analizi</span></div>
+        <div class="nav-item" onclick="showPage('extension-anomalies')" title="Yanlis Uzantili Dosyalar"><span class="icon">⚠️</span> <span>Yanlis Uzantili Dosyalar</span></div>
     </div>
     <div class="nav-section" data-group="Islemler">
         <div class="nav-label">Islemler <span class="chev">&#9660;</span></div>
@@ -1422,6 +1423,39 @@ body.sidebar-open { overflow: hidden; }
     <div class="panel" style="margin-top:20px">
         <h3 class="panel-title">Uyari Akisi</h3>
         <div id="ransomware-container"></div>
+    </div>
+</div>
+
+<!-- ============ GUVENLIK > YANLIS UZANTILI DOSYALAR (issue #144 Phase 1) ============ -->
+<div class="page" id="page-extension-anomalies">
+    <div class="page-header">
+        <div>
+            <h2>Yanlis Uzantili Dosyalar</h2>
+            <div class="desc">Guvenlik &rsaquo; Uzanti ile MIME uyumsuzlugu (Czkawka kalibi) — fidye/payload tespiti</div>
+        </div>
+        <div class="actions">
+            <select id="ext-anomaly-source" onchange="loadExtensionAnomalies()" style="width:200px">
+                <option value="">Kaynak secin...</option>
+            </select>
+            <select id="ext-anomaly-severity" onchange="loadExtensionAnomalies()" style="width:160px">
+                <option value="">Tum ciddiyetler</option>
+                <option value="critical">Kritik</option>
+                <option value="high">Yuksek</option>
+                <option value="medium">Orta</option>
+                <option value="low">Dusuk</option>
+            </select>
+            <button class="btn btn-outline" id="ext-anomaly-xlsx-btn" onclick="exportExtensionAnomaliesXlsx(event)" style="display:none">Excel Export</button>
+        </div>
+    </div>
+    <div id="ext-anomaly-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius);color:var(--warning);font-size:13px"></div>
+    <div class="cards" id="ext-anomaly-summary"></div>
+    <div class="panel" style="margin-top:20px">
+        <h3 class="panel-title">Anomali Listesi</h3>
+        <div id="ext-anomaly-toolbar" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--text-secondary)">
+            <span id="ext-anomaly-selcount">0 secili</span>
+            <button class="btn btn-sm btn-outline" onclick="extAnomalyOpenSelected()" title="Secili dosyalarin klasorunu ac (max 5)">Hedefe Git</button>
+        </div>
+        <div id="ext-anomaly-container"></div>
     </div>
 </div>
 
@@ -2495,7 +2529,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -2523,10 +2557,10 @@ async function loadSources() {
 }
 
 function populateAllSourceSelects() {
-    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source','fc-source'].forEach(id => populateSourceSelect(id));
+    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','ext-anomaly-source','pii-source','cb-source','fc-source'].forEach(id => populateSourceSelect(id));
     // Auto-select first source if only one
     if (sources.length === 1) {
-        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','pii-source','cb-source','fc-source'].forEach(id => {
+        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','ext-anomaly-source','pii-source','cb-source','fc-source'].forEach(id => {
             const sel = document.getElementById(id);
             if (sel && !sel.value) sel.value = sources[0].id;
         });
@@ -7361,6 +7395,145 @@ async function exportAclXlsx(ev) {
         } else {
             await fetchAndDownload(`${API}/security/acl/sprawl/export.xlsx`, signal, 'acl_sprawl.xlsx');
         }
+    });
+}
+
+// ─── EXTENSION ANOMALIES (issue #144 Phase 1) ─────────
+// Wrong-extension detection (Czkawka pattern). Lists files whose
+// declared extension doesn't match the libmagic-detected MIME type.
+// Highlights "executable disguised as document" as critical.
+
+let _extAnomalySelection = new Set();   // selected file_paths
+let _extAnomalyRows = [];               // last fetched rows
+
+async function loadExtensionAnomalies() {
+    const flags = await getSecurityFlags();
+    const banner = document.getElementById('ext-anomaly-banner');
+    if (!flags.extension_anomalies || !flags.extension_anomalies.enabled) {
+        banner.style.display = 'block';
+        banner.textContent = 'Bu ozellik kapali — config.yaml > scanner.detect_wrong_extensions: true ile aciliyor (libmagic gerektirir).';
+    } else {
+        banner.style.display = 'none';
+    }
+
+    const sourceId = document.getElementById('ext-anomaly-source')?.value;
+    const severity = document.getElementById('ext-anomaly-severity')?.value || '';
+    const summary = document.getElementById('ext-anomaly-summary');
+    const xlsxBtn = document.getElementById('ext-anomaly-xlsx-btn');
+    if (!sourceId) {
+        summary.innerHTML = '';
+        renderEntityList('ext-anomaly-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
+        if (xlsxBtn) xlsxBtn.style.display = 'none';
+        return;
+    }
+    if (xlsxBtn) xlsxBtn.style.display = '';
+
+    try {
+        const qs = new URLSearchParams({ source_id: sourceId, limit: '500' });
+        if (severity) qs.set('severity', severity);
+        const data = await api(`/security/extension-anomalies?${qs.toString()}`);
+        const bs = data.by_severity || {};
+        summary.innerHTML = `
+            <div class="card danger"><div class="card-label">Kritik</div><div class="card-value">${formatNum(bs.critical || 0)}</div></div>
+            <div class="card warning"><div class="card-label">Yuksek</div><div class="card-value">${formatNum(bs.high || 0)}</div></div>
+            <div class="card accent"><div class="card-label">Orta</div><div class="card-value">${formatNum(bs.medium || 0)}</div></div>
+            <div class="card success"><div class="card-label">Dusuk</div><div class="card-value">${formatNum(bs.low || 0)}</div></div>
+        `;
+        const items = data.items || [];
+        _extAnomalyRows = items;
+        _extAnomalySelection = new Set();
+        _extAnomalyUpdateSelCount();
+
+        const sevColors = { critical: 'var(--danger)', high: 'var(--danger)', medium: 'var(--warning)', low: 'var(--info)' };
+        renderEntityList('ext-anomaly-container', items, [
+            {
+                field: 'id',
+                label: '<input type="checkbox" onclick="extAnomalyToggleAll(this)">',
+                render: (item) => `<input type="checkbox" class="ext-anomaly-row-chk" data-path="${escapeHtml(item.file_path)}" onchange="extAnomalyToggleRow(this)">`,
+            },
+            {
+                field: 'file_path', label: 'Dosya Yolu',
+                render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v || '')}</span>`,
+            },
+            { field: 'declared_ext', label: 'Beyan Edilen' },
+            {
+                field: 'detected_mime', label: 'Tespit Edilen MIME',
+                render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px;color:var(--text-muted)">${escapeHtml(v || '')}</span>`,
+            },
+            {
+                field: 'severity', label: 'Ciddiyet',
+                render: (i, v) => {
+                    const c = sevColors[(v || '').toLowerCase()] || 'var(--text-muted)';
+                    return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${c}22;color:${c}">${escapeHtml((v || '').toUpperCase())}</span>`;
+                },
+            },
+            {
+                field: 'detected_at', label: 'Tespit',
+                render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v || '')}</span>`,
+            },
+        ], { emptyHtml: '<span style="color:var(--success)">Anomali bulunamadi — tum uzantilar MIME ile uyumlu</span>' });
+    } catch (e) {
+        notify('Uzanti anomalileri alinamadi: ' + (e.message || e), 'error');
+    }
+}
+
+function extAnomalyToggleRow(chk) {
+    const p = chk.getAttribute('data-path');
+    if (!p) return;
+    if (chk.checked) _extAnomalySelection.add(p);
+    else _extAnomalySelection.delete(p);
+    _extAnomalyUpdateSelCount();
+}
+
+function extAnomalyToggleAll(headerChk) {
+    const boxes = document.querySelectorAll('.ext-anomaly-row-chk');
+    _extAnomalySelection = new Set();
+    boxes.forEach(c => {
+        c.checked = headerChk.checked;
+        if (headerChk.checked) {
+            const p = c.getAttribute('data-path');
+            if (p) _extAnomalySelection.add(p);
+        }
+    });
+    _extAnomalyUpdateSelCount();
+}
+
+function _extAnomalyUpdateSelCount() {
+    const el = document.getElementById('ext-anomaly-selcount');
+    if (el) el.textContent = _extAnomalySelection.size + ' secili';
+}
+
+function extAnomalyOpenSelected() {
+    const sel = Array.from(_extAnomalySelection);
+    if (!sel.length) { notify('Once en az bir dosya secin', 'warning'); return; }
+    if (sel.length > 5) {
+        notify('Hedefe Git en fazla 5 dosya icin acilabilir', 'warning');
+        return;
+    }
+    // Open the parent folder in the browser via /api/open-folder if it
+    // exists; otherwise just copy to clipboard with a notify hint.
+    sel.forEach(p => {
+        // Best-effort: try a generic explorer open endpoint
+        api('/system/open-folder', { method: 'POST', body: JSON.stringify({ path: p }), silent: true })
+            .catch(() => {
+                // Fallback — just log; the path is in the table for manual copy
+                console.log('[ext-anomaly] hedef:', p);
+            });
+    });
+    notify(`${sel.length} dosyanin klasoru acilmaya calisildi`, 'info');
+}
+
+async function exportExtensionAnomaliesXlsx(ev) {
+    const sourceId = document.getElementById('ext-anomaly-source')?.value;
+    if (!sourceId) { notify('Once kaynak secin', 'warning'); return; }
+    const severity = document.getElementById('ext-anomaly-severity')?.value || '';
+    await withButtonLoading(ev.target, async (signal) => {
+        const qs = severity ? `?severity=${encodeURIComponent(severity)}` : '';
+        await fetchAndDownload(
+            `${API}/security/extension-anomalies/${sourceId}/export.xlsx${qs}`,
+            signal,
+            `extension_anomalies_${sourceId}.xlsx`,
+        );
     });
 }
 

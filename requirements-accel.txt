@@ -21,3 +21,26 @@
 # PyPI; on Windows install via vcpkg or use the stdlib fallback (which
 # is what `compliance.pii.engine: "auto"` selects automatically).
 hyperscan>=0.8.2
+
+# ──────────────────────────────────────────────────────────────────────
+# libmagic-based MIME detection (issue #144 Phase 1)
+#
+# Powers ExtensionChecker — surfaces "wrong extension" findings (e.g.
+# rapor.pdf whose magic bytes are application/zip, the canonical
+# ransomware/payload disguise). When this dep is missing the scanner
+# logs ONE WARNING and the feature degrades to a no-op; the rest of the
+# scan continues normally. Default OFF in config.yaml; flip
+# scanner.detect_wrong_extensions: true to enable.
+#
+# Platform notes:
+#   * Linux: install python-magic + ensure system libmagic1 is present
+#       sudo apt install libmagic1   # Debian / Ubuntu
+#       sudo dnf install file-libs   # RHEL / Fedora
+#   * Windows: prefer python-magic-bin which bundles a libmagic.dll;
+#       installing python-magic alone fails because the DLL is missing.
+#   * macOS: brew install libmagic, then python-magic.
+#
+# We pin both. pip will pick the right one (python-magic-bin only ships
+# Windows wheels; on Linux/macOS pip falls through to python-magic).
+python-magic>=0.4.27; sys_platform != "win32"
+python-magic-bin>=0.4.14; sys_platform == "win32"
