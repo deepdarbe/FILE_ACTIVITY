@@ -15,7 +15,12 @@
         'Get-FileActivityAudit',
         'Test-FileActivityAuditChain',
         'Set-FileActivityBaseUrl',
-        'Get-FileActivityBaseUrl'
+        'Get-FileActivityBaseUrl',
+        # Issue #151: service control cmdlets
+        'Start-FileActivityService',
+        'Stop-FileActivityService',
+        'Restart-FileActivityService',
+        'Get-FileActivityServiceStatus'
     )
     CmdletsToExport = @()
     VariablesToExport = @()
