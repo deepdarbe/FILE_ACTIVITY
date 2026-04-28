@@ -2102,9 +2102,17 @@ class Database:
     # File Audit Events
     # ──────────────────────────────────────────────
 
-    def insert_audit_event(self, source_id, event_time, event_type, username,
-                           file_path, file_name, details=None, detected_by='watcher'):
-        """file_audit_events satiri ekle, lastrowid dondur (chain icin lazim)."""
+    def _insert_audit_event_unchained(self, source_id, event_time, event_type, username,
+                                      file_path, file_name, details=None, detected_by='watcher'):
+        """Raw audit event INSERT — bypasses the hash chain.
+
+        H-3 (issue #158): private. Direct callers bypass the tamper-evident
+        log. New code MUST call ``insert_audit_event`` (the public wrapper)
+        which auto-routes to the chained variant when
+        ``audit.chain_enabled`` is true. CI guard test
+        ``tests/test_audit_chain_no_unchained_callsites.py`` rejects external
+        references to this name.
+        """
         with self.get_cursor() as cur:
             cur.execute("""
                 INSERT INTO file_audit_events
@@ -2113,6 +2121,43 @@ class Database:
             """, (source_id, event_time, event_type, username, file_path, file_name,
                   json.dumps(details) if details else None, detected_by))
             return cur.lastrowid
+
+    def insert_audit_event(self, *args, **kwargs):
+        """Public audit-event entry. When ``audit.chain_enabled`` is true,
+        automatically routes to the hash-chained variant; otherwise falls
+        back to the unchained raw INSERT.
+
+        H-3 (issue #158): the hash chain (issue #38) is only useful if
+        every audit write goes through it. By making this wrapper the sole
+        public entry, flipping ``audit.chain_enabled: true`` immediately
+        covers ALL existing call sites (scanner, archiver, dashboard,
+        retention, …) without code changes. Direct callers of the private
+        ``_insert_audit_event_unchained`` are flagged by CI grep guard.
+        """
+        if self._audit_chain_enabled():
+            # Map the positional/keyword shape of the legacy non-chained
+            # API to the dict shape expected by ``insert_audit_event_chained``.
+            event_data = self._kwargs_to_event_data(args, kwargs)
+            return self.insert_audit_event_chained(event_data)
+        return self._insert_audit_event_unchained(*args, **kwargs)
+
+    @staticmethod
+    def _kwargs_to_event_data(args, kwargs):
+        """Translate ``insert_audit_event(source_id, event_time, event_type,
+        username, file_path, file_name, details=None, detected_by='watcher')``
+        positional/keyword args into the ``event_data`` dict that
+        ``insert_audit_event_chained`` consumes."""
+        names = (
+            "source_id", "event_time", "event_type", "username",
+            "file_path", "file_name", "details", "detected_by",
+        )
+        out: dict = {}
+        for i, val in enumerate(args):
+            if i >= len(names):
+                break
+            out[names[i]] = val
+        out.update(kwargs)
+        return out
 
     def get_audit_events(self, source_id=None, event_type=None, username=None,
                          days=7, page=1, page_size=100):
@@ -2324,9 +2369,15 @@ class Database:
             "operations": rows
         }
 
-    def insert_audit_event_simple(self, source_id, event_type, username,
-                                   file_path, details=None, detected_by='system'):
-        """Basitletirilmis audit event ekleme (event_time otomatik)."""
+    def _insert_audit_event_simple_unchained(self, source_id, event_type, username,
+                                              file_path, details=None, detected_by='system'):
+        """Raw simplified audit event INSERT — bypasses the hash chain.
+
+        H-3 (issue #158): private. Direct callers bypass the tamper-evident
+        log. New code MUST call ``insert_audit_event_simple`` (the public
+        wrapper) which auto-routes to the chained variant when
+        ``audit.chain_enabled`` is true.
+        """
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         file_name = os.path.basename(file_path) if file_path else None
         with self.get_cursor() as cur:
@@ -2337,6 +2388,28 @@ class Database:
             """, (source_id, now, event_type, username, file_path, file_name,
                   details, detected_by))
             return cur.lastrowid
+
+    def insert_audit_event_simple(self, source_id, event_type, username,
+                                  file_path, details=None, detected_by='system'):
+        """Public simplified audit-event entry. When ``audit.chain_enabled``
+        is true, routes to the hash-chained variant; otherwise falls back
+        to the unchained raw INSERT.
+
+        H-3 (issue #158): see ``insert_audit_event`` for rationale.
+        """
+        if self._audit_chain_enabled():
+            return self.insert_audit_event_chained({
+                "source_id": source_id,
+                "event_type": event_type,
+                "username": username,
+                "file_path": file_path,
+                "details": details,
+                "detected_by": detected_by,
+            })
+        return self._insert_audit_event_simple_unchained(
+            source_id, event_type, username, file_path,
+            details=details, detected_by=detected_by,
+        )
 
     # ──────────────────────────────────────────────
     # Tamper-evident audit log chain (issue #38)
@@ -2444,10 +2517,15 @@ class Database:
             source_id, event_time, event_type, username, file_path,
             file_name, details, detected_by
 
-        When ``audit.chain_enabled`` is False this is identical to
-        ``insert_audit_event`` — same lastrowid, no chain row. Default off.
+        When ``audit.chain_enabled`` is False this is identical to the
+        unchained insert — same lastrowid, no chain row. Default off.
+
+        H-3 (issue #158): we go straight to ``_insert_audit_event_unchained``
+        here (rather than the public wrapper) to avoid re-entering the
+        routing logic in ``insert_audit_event``. The whole point of this
+        method is to *be* the chained path.
         """
-        event_id = self.insert_audit_event(
+        event_id = self._insert_audit_event_unchained(
             source_id=event_data.get("source_id"),
             event_time=event_data.get("event_time")
             or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

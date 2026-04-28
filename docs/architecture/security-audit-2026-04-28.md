@@ -30,7 +30,7 @@ Combined with stored-XSS-amenable rendering (`innerHTML = ${untrusted}` over fil
 |---|---|---|
 | H-1 | Stored XSS via file/source/owner names rendered with `innerHTML` | 8h |
 | H-2 | Two-person approval bypass when `identity_source: client_supplied` | 2h |
-| H-3 | Audit chain bypassable via non-chained insert APIs | 4h |
+| H-3 | Audit chain bypassable via non-chained insert APIs (FIXED) | 4h |
 
 ### Medium
 
@@ -59,7 +59,7 @@ I-5 No CORS — same-origin policy is the only defence and sufficient for LAN de
 1. **C-1 + C-2 as one PR**: bearer-middleware (`FILEACTIVITY_DASHBOARD_TOKEN` env), default-bind 127.0.0.1 (require explicit `--bind 0.0.0.0`), flip `archiving.dry_run: true` default, require `confirm: true` on `/api/archive/run` and `/api/archive/selective`.
 2. **H-1 + L-3**: `escapeHtml()` helper sweep across `index.html` + `audit-report.html`, CSP middleware.
 3. **H-2**: refuse boot when `approvals.enabled=true` AND `identity_source=client_supplied`.
-4. **H-3**: privatize `insert_audit_event` / `insert_audit_event_simple` (rename `_`-prefix); CI grep guard rejects new call-sites; chained variant becomes the only public entry.
+4. **H-3** (FIXED — issue #158): the public `insert_audit_event` / `insert_audit_event_simple` now auto-route to `insert_audit_event_chained` when `audit.chain_enabled` is true; the raw-INSERT variants are renamed `_insert_audit_event_unchained` / `_insert_audit_event_simple_unchained` and guarded by CI test `tests/test_audit_chain_no_unchained_callsites.py`. Existing call-sites (scanner / archiver / dashboard / retention) require zero changes. Routing covered by `tests/test_audit_chain_routing.py`.
 
 ### Phase 2 — next sprint (Medium, ~4h)
 
