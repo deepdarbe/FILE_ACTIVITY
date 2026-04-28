@@ -427,6 +427,49 @@ NPU (Core Ultra). Three tiers, ordered by realism:
 
 ---
 
+## External ecosystem research (2026-04-28, v1.9.0-rc1)
+
+### Top adoptable GitHub repos
+1. **Microsoft Presidio** (MIT) — `EntityRecognizer` ABC; wrap our Hyperscan
+   as a recognizer + bolt on Turkish NER without rewriting (#143).
+2. **Diskover Community** (Apache 2.0) — production ES schema + JSON export
+   format for cross-tool compatibility (file-tagged for future #114 Phase 2).
+3. **Czkawka** (MIT core) — perceptual-hash similarity, wrong-extension,
+   broken-file detection. Customer-expected dedup features beyond byte hash (#144).
+4. **Mayan EDMS** (Apache 2.0) — workflow state-machine concept for legal-hold
+   exception routing beyond the existing two-person framework. Mirror schema only.
+5. **Elastic Common Schema (ECS)** (Apache 2.0) — `file.*` field set; rename
+   our syslog/CEF JSON keys to ECS dotted paths so Wazuh/Elastic SIEM customers
+   get zero-config ingestion (#142).
+
+### HuggingFace models (CPU-friendly)
+- **`sentence-transformers/all-MiniLM-L6-v2`** (Apache 2.0, 22.7M params,
+  ~90 MB) — CPU-first; embed file snippets/headers for semantic dedup.
+- **`savasy/bert-base-turkish-ner-cased`** (license verify before use,
+  110M params; quantize to ~110 MB INT8) — Turkish PII NER, second-pass
+  verifier on Hyperscan candidates (~50-200 ms/sentence on CPU; cheap
+  if scoped to flagged files).
+- **`Isotonic/distilbert_finetuned_ai4privacy_v2`** (CC-BY-NC-4.0,
+  non-commercial) — 54-class English PII; on-prem self-host OK, NOT
+  bundleable in commercial SKU.
+
+### Standards alignment (#145 umbrella)
+- **ECS** (`file.*` fields) — forwarder JSON keys; ~2 days.
+- **W3C PROV** (Entity/Activity/Agent) — `prov:wasDerivedFrom` between
+  file versions; satisfies regulator lineage requests; ~3 days.
+- **DCAT v3** (Catalog/Dataset/Distribution) — `/dcat/catalog.jsonld`
+  endpoint; data-governance teams ingest our inventory into their existing
+  catalogs; ~1 week.
+
+### Don't bother
+- Paperless-ngx, Wazuh/OSSEC, Cyberduck — GPL viral.
+- GovReady-Q, OSCAL — narrative/control catalogs, not data classification.
+- Davlan multilingual NER — no Turkish, awkward license.
+- LayoutLMv3 — CC-BY-NC-SA-4.0 blocks commercial bundling.
+- Elastic detection-rules — source-available, not OSI; reference ECS only.
+
+---
+
 *This document is mirrored by a pinned GitHub issue for operational
 visibility. Changes here should be reflected in that issue and
 vice-versa.*
