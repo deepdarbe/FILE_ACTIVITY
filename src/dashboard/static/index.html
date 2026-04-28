@@ -3473,6 +3473,15 @@ function _psv2StopPoll() {
 }
 
 
+// ═══════════════════════════════════════════════════
+// OVERVIEW (Genel Bakis)
+// ═══════════════════════════════════════════════════
+// Issue (post-#192): a previous merge accidentally removed this
+// function's declaration line, leaving the body floating at the top
+// level. Result: SyntaxError on `await loadSources()`, the entire
+// inline script fails to parse, every sidebar menu stops working
+// (customer report 2026-04-28: "menüler arası gezinti yok").
+async function loadOverview() {
     if (!sources.length) await loadSources();
     const sid = document.getElementById('overview-source').value;
 
