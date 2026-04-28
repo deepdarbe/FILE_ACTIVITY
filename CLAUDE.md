@@ -6,6 +6,29 @@
 
 ---
 
+## 🛑 ACTIVE: Stabilization week (2026-04-28 → 2026-05-05)
+
+**Read [issue #194](https://github.com/deepdarbe/file_activity/issues/194) FIRST**.
+It's the running log: every customer test, every fix, every regression posts there
+as a comment. Mermaid status diagram, 7-day plan, open architectural debts list.
+
+### Hard rules during this week
+- **NO new features.** Bug fixes for prod-blockers only.
+- **`node --check` is mandatory** for any `index.html` edit (PR #193 regression
+  was a JS parse error — would have been caught in 1 second).
+- **No parallel agents on the same file.** Wave-of-agents on `index.html` produced
+  the JS regression. One agent per file per PR.
+- **Every customer interaction → post a comment to #194** with format:
+  `Customer msg / What tested / Outcome ✅⏳❌ / Action / Next`.
+- **Every PR this week MUST cite a prod-blocker** in #194 comments, otherwise close it.
+
+The stabilization decision came after an honest assessment: 35 PRs in one session
+included **4 separate fixes for the same WAL leak root cause** (#132, #174, #181,
+#185) and a JS regression that broke every menu (#193). The working pattern was
+producing whack-a-mole, not stability. Plan A is "stop, audit, harden, then resume".
+
+---
+
 ## What this project is
 
 **Windows file-share analysis + archiving + compliance system.** Python 3.11, FastAPI dashboard on port 8085, SQLite (OLTP) + DuckDB (read-only analytics ATTACH).
