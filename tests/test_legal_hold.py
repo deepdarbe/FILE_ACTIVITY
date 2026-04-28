@@ -236,8 +236,11 @@ def test_archive_files_skips_held_and_audits(tmp_path):
     # Hold matches the finance file only.
     reg.add_hold(str(src_root / "finance" / "*"), "audit", "C1", "alice")
 
+    # Issue #158 C-2: ArchiveEngine.dry_run now defaults True. This
+    # test exercises real-archive plumbing, so opt back in explicitly.
     engine = ArchiveEngine(db, {"archiving": {"verify_checksum": False,
-                                              "cleanup_empty_dirs": False}})
+                                              "cleanup_empty_dirs": False,
+                                              "dry_run": False}})
     files = [
         {
             "file_path": str(held_file),

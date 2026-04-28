@@ -202,7 +202,12 @@ duplicates:
 
 archiving:
   verify_checksum: true       # SHA-256 doğrulama
-  dry_run: false              # taşımadan sadece raporla
+  # Issue #158 (C-2) — safe-by-default. With dry_run=true the engine
+  # walks the matched fileset, logs the planned moves, and updates the
+  # archive index, but does NOT touch the source files. Operators flip
+  # this off (or pass dry_run=false + confirm=true on the API) only
+  # after they have inspected the dry-run report.
+  dry_run: true               # taşımadan sadece raporla
   cleanup_empty_dirs: true    # boş dizinleri temizle
 
 reports:
@@ -225,8 +230,28 @@ forecast:
   alarm_lead_days: 30              # alarm tarihi bu kadar gun icinde ise digest'e ekle
 
 dashboard:
-  host: "0.0.0.0"
+  # Issue #158 (C-1) — default-bind to loopback. Explicit
+  # ``main.py dashboard --bind 0.0.0.0`` (with auth.enabled=true OR the
+  # ``--i-know-what-im-doing`` opt-out) is required to expose the
+  # dashboard on a LAN.
+  host: "127.0.0.1"
   port: 8085
+  auth:
+    # Bearer-token gate enforced by src.security.dashboard_auth +
+    # FastAPI middleware in src.dashboard.api.create_app.
+    #   * enabled=true   → bearer token required from non-localhost.
+    #   * enabled=false  → legacy unauthenticated mode (NOT recommended
+    #                      with host=0.0.0.0; main.py refuses unless the
+    #                      operator passes --i-know-what-im-doing).
+    # Token NEVER lives in this file — export it via ``token_env`` so a
+    # leaked config does not carry the credential.
+    enabled: true
+    token_env: "FILEACTIVITY_DASHBOARD_TOKEN"
+    # Localhost callers (127.0.0.1 / ::1 / localhost) bypass the bearer
+    # check by default so single-host installs and operator browsing
+    # from RDP keep working without configuration. Set to false to
+    # require the token from localhost too.
+    allow_unauth_localhost: true
 
 security:
   # Fidye yazilimi tespit motoru (#37). Watcher event akisini dinler,

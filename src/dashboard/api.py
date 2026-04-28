@@ -348,6 +348,13 @@ class ArchiveRequest(BaseModel):
     source_id: int
     policy_name: Optional[str] = None
     days: Optional[int] = None
+    # Issue #158 (C-2) — explicit safety gate. ``dry_run`` defaults to
+    # the value in ``archiving.dry_run`` (now true by default); the API
+    # caller can override it to false ONLY when ``confirm=true`` is
+    # also supplied. The endpoint refuses ambiguous requests with HTTP
+    # 400 so a misclick / replay can't move files.
+    dry_run: Optional[bool] = None
+    confirm: Optional[bool] = False
 
 class RestoreRequest(BaseModel):
     archive_id: Optional[int] = None
@@ -539,6 +546,30 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         email_notifier = EmailNotifier(db, config)
 
     app = FastAPI(title="FILE ACTIVITY Dashboard", version=APP_VERSION)
+
+    # ─────────────────────────────────────────────────────────────────
+    # Issue #158 (C-1) — bearer-token gate.
+    #
+    # DashboardAuth defaults to enabled=true and bypasses localhost so
+    # existing dev workflows are unaffected. Static assets are
+    # whitelisted ahead of the token check so the frontend can render a
+    # "set FILEACTIVITY_DASHBOARD_TOKEN" hint when the token is missing.
+    # ─────────────────────────────────────────────────────────────────
+    from src.security.dashboard_auth import DashboardAuth
+    app.state.dashboard_auth = DashboardAuth(config)
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        # Whitelist: static files + favicon are not gated. Everything
+        # else (including / which serves the dashboard SPA) is.
+        path = request.url.path or ""
+        if path.startswith("/static/") or path == "/favicon.ico":
+            return await call_next(request)
+        gate = getattr(app.state, "dashboard_auth", None)
+        if gate is None or gate.check(request):
+            return await call_next(request)
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
     app.state.analytics = analytics
     app.state.ad_lookup = ad_lookup
     app.state.email_notifier = email_notifier
@@ -1311,6 +1342,25 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
 
+        # Issue #158 (C-2) — confirm gate.
+        # dry_run resolution: if the caller passed dry_run explicitly
+        # we honour it; otherwise we use the config default
+        # (archiving.dry_run, now true by default).
+        config_dry_run = bool(
+            (config or {}).get("archiving", {}).get("dry_run", True)
+        )
+        effective_dry_run = (
+            bool(data.dry_run) if data.dry_run is not None else config_dry_run
+        )
+        if (not effective_dry_run) and not bool(data.confirm):
+            raise HTTPException(
+                400,
+                "Real archive run requires confirm=true (issue #158 C-2). "
+                "Re-submit with {\"dry_run\": false, \"confirm\": true} "
+                "after reviewing a dry-run report, or set dry_run=true to "
+                "preview without moving files.",
+            )
+
         policy_engine = ArchivePolicyEngine(db)
 
         if data.policy_name:
@@ -1326,7 +1376,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return {"archived": 0, "message": "Arsivlenecek dosya yok"}
 
         engine = ArchiveEngine(db, config)
-        return engine.archive_files(files, src.archive_dest, src.unc_path, src.id, archived_by)
+        # Plumb the resolved dry_run override into the engine so the
+        # API contract is honoured even if the engine's default
+        # (config.archiving.dry_run) drifts later.
+        return engine.archive_files(
+            files, src.archive_dest, src.unc_path, src.id, archived_by,
+            dry_run=effective_dry_run,
+        )
 
     @app.post("/api/archive/dry-run")
     async def archive_dry_run(data: ArchiveRequest):
@@ -2831,7 +2887,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return report
 
     @app.post("/api/archive/selective")
-    async def archive_selective(request):
+    async def archive_selective(request: Request):
         """Secili dosyalari arsivle (duplicate cleanup icin)."""
         from src.archiver.archive_engine import ArchiveEngine
         from src.utils.size_formatter import format_size
@@ -2842,6 +2898,23 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         if not source_id or not file_ids:
             raise HTTPException(400, "source_id ve file_ids gerekli")
+
+        # Issue #158 (C-2) — confirm gate (mirrors /api/archive/run).
+        config_dry_run = bool(
+            (config or {}).get("archiving", {}).get("dry_run", True)
+        )
+        body_dry_run = body.get("dry_run")
+        effective_dry_run = (
+            bool(body_dry_run) if body_dry_run is not None else config_dry_run
+        )
+        confirm = bool(body.get("confirm", False))
+        if (not effective_dry_run) and not confirm:
+            raise HTTPException(
+                400,
+                "Real archive run requires confirm=true (issue #158 C-2). "
+                "Re-submit with dry_run=false + confirm=true after "
+                "reviewing the selection.",
+            )
 
         # Kaynak bilgisi
         source = db.get_source(source_id)
@@ -2869,7 +2942,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             files, archive_dest, source["unc_path"], source_id,
             archived_by="duplicate_cleanup",
             trigger_type="manual",
-            trigger_detail="duplicate_cleanup"
+            trigger_detail="duplicate_cleanup",
+            dry_run=effective_dry_run,
         )
         return result
 
@@ -5256,7 +5330,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         InvalidStateError, ApprovalExpiredError, ApprovalError,
     )
     from src.security.identity import resolve_user, warn_if_unsafe
-    app.state.approval_registry = ApprovalRegistry(db, config)
+    # Issue #158 (H-2) — refuse the unsafe combo at boot.
+    #
+    # ApprovalRegistry.__init__ raises RuntimeError when
+    # ``approvals.enabled=true`` AND ``identity_source='client_supplied'``
+    # because the second-person rule degenerates to "any caller can claim
+    # the requester's name" in that mode. We catch the error here, log
+    # CRITICAL, and leave ``app.state.approval_registry = None``. The
+    # approval endpoints below check for None and return HTTP 503 so
+    # callers get a clear "approvals disabled until config fixed" signal
+    # rather than a cryptic 500.
+    try:
+        app.state.approval_registry = ApprovalRegistry(db, config)
+    except RuntimeError as e:
+        logger.critical(
+            "Approval framework disabled: %s. Edit config.yaml to set "
+            "approvals.identity_source to 'windows' or 'header', or "
+            "set approvals.enabled=false, then restart.",
+            e,
+        )
+        app.state.approval_registry = None
     warn_if_unsafe(config)
 
     def _approval_to_json(req) -> dict:
@@ -5276,22 +5369,37 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                                 or "client_supplied"),
         }
 
+    # Issue #158 (H-2) helper — every endpoint below dereferences the
+    # registry; this guards against the "unsafe combo refused at boot"
+    # path where the registry is None.
+    _APPROVALS_DISABLED_MSG = (
+        "Approvals framework disabled - check server log for the "
+        "config error (issue #158 H-2). Likely cause: "
+        "approvals.enabled=true with identity_source='client_supplied'."
+    )
+
+    def _require_approval_registry():
+        registry = getattr(app.state, "approval_registry", None)
+        if registry is None:
+            raise HTTPException(503, _APPROVALS_DISABLED_MSG)
+        return registry
+
     @app.get("/api/approvals/pending")
     async def approvals_list_pending():
-        registry = app.state.approval_registry
+        registry = _require_approval_registry()
         rows = registry.list_pending()
         return {"rows": [_approval_to_json(r) for r in rows]}
 
     @app.get("/api/approvals/history")
     async def approvals_history(limit: int = Query(50, ge=1, le=1000)):
-        registry = app.state.approval_registry
+        registry = _require_approval_registry()
         rows = registry.list_history(limit=limit)
         return {"rows": [_approval_to_json(r) for r in rows]}
 
     @app.post("/api/approvals/{approval_id}/approve")
     async def approvals_approve(approval_id: int, body: dict, request: Request):
         body = body or {}
-        registry = app.state.approval_registry
+        registry = _require_approval_registry()
         approved_by = (body.get("approved_by")
                        or resolve_user(request, config, body))
         try:
@@ -5311,7 +5419,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.post("/api/approvals/{approval_id}/reject")
     async def approvals_reject(approval_id: int, body: dict, request: Request):
         body = body or {}
-        registry = app.state.approval_registry
+        registry = _require_approval_registry()
         rejected_by = (body.get("rejected_by")
                        or resolve_user(request, config, body))
         reason = (body.get("reason") or "").strip()
@@ -5335,7 +5443,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         pre-stage support.
         """
         body = body or {}
-        registry = app.state.approval_registry
+        registry = _require_approval_registry()
         try:
             req = registry.get(approval_id)
         except ApprovalNotFound:

@@ -184,6 +184,118 @@ Restart-Computer
 
 ---
 
+## Dashboard Bearer Token (issue #158)
+
+Customer LAN deployments expose the dashboard to every host on the
+subnet. v1.9.0-rc2 ships authentication ON by default + a 127.0.0.1
+default bind. The two together close finding **C-1** from
+`docs/architecture/security-audit-2026-04-28.md`.
+
+### Konfig hatlari (config.yaml)
+
+```yaml
+dashboard:
+  host: "127.0.0.1"          # default: loopback only
+  port: 8085
+  auth:
+    enabled: true                                 # default ON
+    token_env: "FILEACTIVITY_DASHBOARD_TOKEN"     # NEVER put the token in this file
+    allow_unauth_localhost: true                  # 127.0.0.1 / ::1 / localhost bypass
+```
+
+### Operasyonel modlar
+
+| Mod | host | auth.enabled | Tarayicidan | Token gerekli mi |
+|---|---|---|---|---|
+| Tek-host RDP (default) | 127.0.0.1 | true | http://localhost:8085 | Hayir (localhost bypass) |
+| LAN expose, secure | 0.0.0.0 | true | http://server:8085 | EVET (Authorization: Bearer ...) |
+| LAN expose, unauth | 0.0.0.0 | false | http://server:8085 | REDDEDILIR — `--i-know-what-im-doing` ister |
+
+### Token uretme + export
+
+PowerShell tarafinda hizli bir 32-byte rastgele token:
+
+```powershell
+$tok = [System.Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+# Servis hesabina kalici export (admin gerekir):
+setx /M FILEACTIVITY_DASHBOARD_TOKEN $tok
+# Sadece su anki session icin:
+$env:FILEACTIVITY_DASHBOARD_TOKEN = $tok
+```
+
+NSSM service mode kullaniyorsan: NSSM `AppEnvironmentExtra`
+ayarini kullan (`nssm set FileActivity AppEnvironmentExtra
+FILEACTIVITY_DASHBOARD_TOKEN=...`) — process'in environment'i
+kontrol panelinden setx kadar guvenilir bir kanaldir ve restart
+sonrasi otomatik gelir.
+
+### LAN'dan API cagirma
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:FILEACTIVITY_DASHBOARD_TOKEN" }
+Invoke-RestMethod -Uri "http://server:8085/api/system/health" -Headers $headers
+
+# POST ornegi: dry-run arsiv
+Invoke-RestMethod -Uri "http://server:8085/api/archive/run" `
+                  -Method Post -Headers $headers `
+                  -ContentType "application/json" `
+                  -Body (ConvertTo-Json @{ source_id=1; days=365; dry_run=$true })
+```
+
+### Token rotate
+
+Token cache process-local. Yeni bir token export et + servisi restart et:
+
+```powershell
+setx /M FILEACTIVITY_DASHBOARD_TOKEN <yeni-token>
+Restart-Service FileActivity   # NSSM ile kurulduysa
+```
+
+### `--i-know-what-im-doing` flag — neden boyle bilerek garip?
+
+`main.py dashboard --bind 0.0.0.0` + `dashboard.auth.enabled: false`
+kombinasyonu, tum dashboard endpoint'lerini auth'siz LAN'a aciyor —
+dosya tasi, snapshot restore, AD config write, hepsi. v1.9.0-rc2
+itibariyle bu kombinasyonu tespit edersek `main.py` baslatmayi
+**reddediyor** ve bir CRITICAL log atiyor. Operator bilincli olarak
+istediyse `--i-know-what-im-doing` flag'i ile override edebilir.
+Flag'i komut hafizasinda tutmak guc: amac zaten budur.
+
+Production'da bu modu kullanma. Reverse-proxy/VPN arkasinda zaten
+`auth.enabled=true` + `allow_unauth_localhost=true` (proxy bind'i
+loopback'tir) yeterlidir.
+
+### C-2: archiving.dry_run + confirm gate
+
+Ayni PR'de `archiving.dry_run` default `true` oldu. `/api/archive/run`
+ve `/api/archive/selective` endpoint'leri artik `dry_run=false` icin
+`confirm=true` body alani sart kosuyor. Frontend bunu zaten gonderiyor;
+kendi script'lerin varsa ve "tasimadi" diyorsan once dry-run'da
+ciktisini incele, sonra `dry_run=false, confirm=true` ile gonder.
+
+```powershell
+# Dry-run (tasimaz, sadece raporlar):
+Invoke-RestMethod ... -Body (ConvertTo-Json @{
+    source_id = 1; days = 365; dry_run = $true
+})
+
+# Real run (gercekten tasir):
+Invoke-RestMethod ... -Body (ConvertTo-Json @{
+    source_id = 1; days = 365; dry_run = $false; confirm = $true
+})
+```
+
+### H-2: approvals + identity_source guard
+
+`approvals.enabled: true` ile `approvals.identity_source: client_supplied`
+yan yana KOYULAMAZ. Bu kombo iki-kisi kuralini etkisiz kiliyor (ikinci
+kisi kendi adini istedigi gibi yazabilir). Dashboard bu durumda
+ApprovalRegistry'i `None` ile birakir, CRITICAL loglar, ve approval
+endpoint'leri 503 doner. Cozum: `identity_source`'u `windows` (Windows
+host) veya `header` (auth proxy onunde) olarak ayarla, sonra restart.
+
+---
+
 ## Güncelleme (Update)
 
 Kurulum dizininde `update.cmd` yer alır. Çalıştırınca:

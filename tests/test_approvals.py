@@ -51,7 +51,11 @@ def _make_registry(tmp_path, **overrides) -> tuple[Database, ApprovalRegistry]:
             "enabled": True,
             "require_for": ["snapshot_restore"],
             "expiry_hours": 24,
-            "identity_source": "client_supplied",
+            # Issue #158 H-2: enabled=true + identity_source=
+            # 'client_supplied' is now refused at construction. Tests
+            # that don't care about identity routing use 'windows'
+            # which falls back to env vars on Linux CI runners.
+            "identity_source": "windows",
         }
     }
     cfg["approvals"].update(overrides)
@@ -210,14 +214,31 @@ def _make_app(tmp_path, *, enabled=False, require_for=None):
     import importlib
 
     db = _make_db(tmp_path)
+    # Issue #158 H-2: enabled=true + identity_source='client_supplied'
+    # is now refused at boot. Tests that exercise the approval-routed
+    # path must use a safe identity_source; keeping this branch in the
+    # fixture (instead of in every caller) avoids cascading edits.
+    if enabled:
+        identity_source = "header"
+    else:
+        # When approvals are disabled the registry doesn't enforce the
+        # safety check, so we can keep the legacy "client_supplied"
+        # value to mirror the legacy default config and prove the
+        # endpoint still falls through to immediate execution.
+        identity_source = "client_supplied"
     cfg = {
         "database": {"path": db.db_path},
         "backup": {"enabled": False},  # we stub the manager below
+        # Issue #158 C-1: dashboard auth defaults ON. Disable it for
+        # the integration tests since we want to drive the snapshot
+        # endpoints directly with TestClient (no Bearer header).
+        "dashboard": {"auth": {"enabled": False}},
         "approvals": {
             "enabled": enabled,
             "require_for": list(require_for or []),
             "expiry_hours": 24,
-            "identity_source": "client_supplied",
+            "identity_source": identity_source,
+            "identity_header": "X-Forwarded-User",
         },
         "analytics": {"enabled": False},
         "active_directory": {"enabled": False},
@@ -275,9 +296,13 @@ def test_snapshot_restore_routes_through_approval_when_enabled(tmp_path):
     client = TestClient(app, raise_server_exceptions=False)
 
     # Step 1: alice requests the restore — gets a pending id back.
+    # Issue #158 H-2: identity_source is now 'header' (the safe value
+    # for tests that flip enabled=true), so we send the requester's
+    # name via X-Forwarded-User instead of body['username'].
     r = client.post(
         "/api/system/backups/restore/snap-abc",
-        json={"confirm": True, "username": "alice"},
+        json={"confirm": True},
+        headers={"X-Forwarded-User": "alice"},
     )
     assert r.status_code == 200, r.text
     body = r.json()

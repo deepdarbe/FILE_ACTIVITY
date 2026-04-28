@@ -23,7 +23,11 @@ class ArchiveEngine:
         self.db = db
         self.config = config
         self.verify_checksum = config.get("archiving", {}).get("verify_checksum", True)
-        self.dry_run = config.get("archiving", {}).get("dry_run", False)
+        # Issue #158 (C-2) — dry_run defaults to True (safe). Operators
+        # who want hands-off real archiving must set
+        # archiving.dry_run: false in config.yaml AND the API caller
+        # must pass confirm=true (see /api/archive/run gate).
+        self.dry_run = config.get("archiving", {}).get("dry_run", True)
         self.cleanup_empty = config.get("archiving", {}).get("cleanup_empty_dirs", True)
         # Issue #59: legal hold registry is lazy-built on first use.
         self._hold_registry = None
