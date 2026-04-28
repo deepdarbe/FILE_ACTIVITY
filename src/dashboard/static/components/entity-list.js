@@ -69,6 +69,112 @@
         document.body.removeChild(a);
     }
 
+    function _formatBytes(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0, x = n;
+        while (x >= 1024 && i < units.length - 1) { x /= 1024; i++; }
+        return (i === 0 ? x.toFixed(0) : x.toFixed(2)) + ' ' + units[i];
+    }
+
+    function _formatDateTime(v) {
+        if (v === null || v === undefined || v === '') return '';
+        // Already a YYYY-MM-DD HH:MM:SS string? Pass through.
+        return String(v);
+    }
+
+    const _FORMATTERS = {
+        bytes: _formatBytes,
+        datetime: _formatDateTime,
+    };
+
+    // Lightweight modal helper. Returns a `close` function. The modal is
+    // built from a body-string + footer buttons; the caller is responsible
+    // for escaping any dynamic content before passing the body in.
+    function _modal(title, bodyHtml, buttons) {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay active';
+        overlay.style.cssText =
+            'position:fixed;inset:0;background:rgba(0,0,0,0.55);' +
+            'display:flex;align-items:center;justify-content:center;' +
+            'z-index:9999';
+        const dlg = document.createElement('div');
+        dlg.className = 'modal';
+        dlg.style.cssText =
+            'background:var(--bg-card,#1e293b);color:var(--text-primary,#e2e8f0);' +
+            'border:1px solid var(--border,#334155);border-radius:8px;' +
+            'max-width:600px;width:95%;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,0.4)';
+        dlg.innerHTML =
+            '<h3 style="margin:0 0 12px 0;font-size:16px">' +
+            _escape(title) +
+            '</h3>' +
+            '<div class="el-modal-body" style="font-size:13px;line-height:1.5;' +
+            'max-height:50vh;overflow-y:auto;margin-bottom:16px">' +
+            (bodyHtml || '') +
+            '</div>' +
+            '<div class="el-modal-buttons" style="display:flex;gap:8px;' +
+            'justify-content:flex-end;flex-wrap:wrap"></div>';
+        overlay.appendChild(dlg);
+        document.body.appendChild(overlay);
+
+        const close = function () {
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        };
+
+        const btnHost = dlg.querySelector('.el-modal-buttons');
+        (buttons || []).forEach(function (b) {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'btn btn-sm ' + (b.className || 'btn-outline');
+            el.textContent = b.label;
+            el.addEventListener('click', function () {
+                if (typeof b.onClick === 'function') {
+                    Promise.resolve()
+                        .then(function () { return b.onClick(close); })
+                        .catch(function (e) {
+                            _toast(
+                                'Islem hatasi: ' +
+                                    (e && e.message ? e.message : e),
+                                'error',
+                            );
+                        });
+                } else {
+                    close();
+                }
+            });
+            btnHost.appendChild(el);
+        });
+
+        // Click-outside dismiss.
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) close();
+        });
+        return close;
+    }
+
+    function _postJson(endpoint, body) {
+        return fetch(endpoint, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body || {}),
+        }).then(function (resp) {
+            return resp.text().then(function (txt) {
+                let parsed = null;
+                try { parsed = txt ? JSON.parse(txt) : null; } catch (e) {}
+                if (!resp.ok) {
+                    const msg = (parsed && (parsed.detail || parsed.message))
+                        || ('HTTP ' + resp.status);
+                    const err = new Error(msg);
+                    err.status = resp.status;
+                    err.body = parsed;
+                    throw err;
+                }
+                return parsed;
+            });
+        });
+    }
+
     function _matchesSearch(row, query, keys) {
         if (!query) return true;
         const q = query.toLowerCase();
@@ -258,6 +364,9 @@
                             }
                             // render() may return raw HTML — caller's responsibility.
                             if (cell === undefined || cell === null) cell = '';
+                        } else if (c.formatter && _FORMATTERS[c.formatter]) {
+                            // Built-in formatter ('bytes', 'datetime', ...).
+                            cell = _escape(_FORMATTERS[c.formatter](row[c.key]));
                         } else {
                             cell = _escape(row[c.key]);
                         }
@@ -422,21 +531,154 @@
                         _toast('Once en az bir satir secin', 'warning');
                         return;
                     }
-                    if (action.confirm) {
-                        const msg = typeof action.confirm === 'string'
-                            ? action.confirm
-                            : (action.label + ': ' + selected.length + ' satir icin onayliyor musunuz?');
-                        if (!window.confirm(msg)) return;
+                    // Issue #80: max-cap enforcement.
+                    if (typeof action.max === 'number' && selected.length > action.max) {
+                        _toast(
+                            'Bu islem icin en fazla ' + action.max + ' satir secebilirsiniz ' +
+                                '(secili: ' + selected.length + ')',
+                            'warning'
+                        );
+                        return;
                     }
-                    if (onBulkAction) {
-                        Promise.resolve()
-                            .then(function () { return onBulkAction(action.action, selected); })
-                            .catch(function (e) {
-                                _toast('Toplu islem hatasi: ' + (e && e.message ? e.message : e), 'error');
-                            });
-                    }
+                    _runBulkAction(action, selected);
                 });
             });
+        }
+
+        // Issue #80: dispatch a bulk action.
+        //
+        // Two flavours, picked by config:
+        //   1. action.endpoint set      -> POST to that endpoint with the
+        //      selected rows. If action.dryRun is true, we POST first with
+        //      {dry_run: true} to fetch a preview, render the modal, then
+        //      POST again with {dry_run: false, confirm: true} on confirm.
+        //   2. action.endpoint missing  -> fall back to onBulkAction(actionId, rows).
+        //
+        // Every endpoint-driven action surfaces an audit-event banner so the
+        // operator knows the call is logged.
+        function _runBulkAction(action, selected) {
+            const filePaths = selected
+                .map(function (r) { return r.file_path || r.path; })
+                .filter(function (p) { return !!p; });
+
+            // Endpoint-driven action.
+            if (action.endpoint) {
+                const auditNote =
+                    '<div style="background:var(--bg-secondary,#0f172a);border:1px solid var(--border,#334155);' +
+                    'border-left:3px solid var(--info,#38bdf8);padding:8px 12px;border-radius:6px;' +
+                    'font-size:12px;color:var(--text-secondary,#94a3b8);margin-bottom:12px">' +
+                    'Bu islem audit log\'a yazilir.</div>';
+
+                const _doConfirm = function (preview) {
+                    let bodyHtml = auditNote;
+                    if (preview && typeof preview === 'object') {
+                        bodyHtml +=
+                            '<p>' + _escape(action.label) + ': ' +
+                            '<strong>' + selected.length + '</strong> satir secildi.</p>';
+                        if (preview.matched != null) {
+                            bodyHtml +=
+                                '<div style="font-size:12px;color:var(--text-secondary,#94a3b8)">' +
+                                'Eslesti: <strong>' + Number(preview.matched) + '</strong>' +
+                                (preview.missing ? ' &middot; eksik: ' + Number(preview.missing) : '') +
+                                (preview.total_size_formatted
+                                    ? ' &middot; toplam: ' + _escape(preview.total_size_formatted)
+                                    : '') +
+                                '</div>';
+                        }
+                    } else {
+                        bodyHtml +=
+                            '<p>' + _escape(action.label) + ': ' +
+                            '<strong>' + selected.length + '</strong> satir icin ' +
+                            'onayliyor musunuz?</p>';
+                    }
+                    _modal(
+                        action.label + ' - Onay',
+                        bodyHtml,
+                        [
+                            {label: 'Vazgec', className: 'btn-outline'},
+                            {
+                                label: 'Onayla',
+                                className: action.danger ? 'btn-danger' : 'btn-primary',
+                                onClick: function (close) {
+                                    return _postJson(action.endpoint, {
+                                        file_paths: filePaths,
+                                        paths: filePaths,
+                                        confirm: true,
+                                        dry_run: false,
+                                    }).then(function (resp) {
+                                        close();
+                                        _toast(
+                                            action.label + ' tamamlandi' +
+                                                (resp && resp.archived != null
+                                                    ? ' (' + resp.archived + ' dosya)' : ''),
+                                            'success'
+                                        );
+                                        state.selected.clear();
+                                        _render();
+                                    });
+                                },
+                            },
+                        ]
+                    );
+                };
+
+                if (action.dryRun) {
+                    // Stage 1: fetch preview.
+                    _postJson(action.endpoint, {
+                        file_paths: filePaths,
+                        paths: filePaths,
+                        dry_run: true,
+                    }).then(function (preview) {
+                        _doConfirm(preview);
+                    }).catch(function (e) {
+                        _toast(
+                            'On izleme hatasi: ' + (e && e.message ? e.message : e),
+                            'error'
+                        );
+                    });
+                } else if (action.confirmRequired) {
+                    _doConfirm(null);
+                } else {
+                    // Fire and forget (still POSTs with confirm=true so the
+                    // server's confirm gate is satisfied).
+                    _postJson(action.endpoint, {
+                        file_paths: filePaths,
+                        paths: filePaths,
+                        confirm: true,
+                        dry_run: false,
+                    }).then(function () {
+                        _toast(action.label + ' tamamlandi', 'success');
+                        state.selected.clear();
+                        _render();
+                    }).catch(function (e) {
+                        _toast(
+                            'Toplu islem hatasi: ' +
+                                (e && e.message ? e.message : e),
+                            'error'
+                        );
+                    });
+                }
+                return;
+            }
+
+            // Legacy path: defer to onBulkAction.
+            if (action.confirm) {
+                const msg = typeof action.confirm === 'string'
+                    ? action.confirm
+                    : (action.label + ': ' + selected.length + ' satir icin onayliyor musunuz?');
+                if (!window.confirm(msg)) return;
+            }
+            if (onBulkAction) {
+                Promise.resolve()
+                    .then(function () { return onBulkAction(action.action || action.id, selected); })
+                    .catch(function (e) {
+                        _toast(
+                            'Toplu islem hatasi: ' +
+                                (e && e.message ? e.message : e),
+                            'error'
+                        );
+                    });
+            }
         }
 
         function _doExport(exportCfg, kind) {

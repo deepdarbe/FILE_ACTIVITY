@@ -5361,30 +5361,32 @@ async function renderMitNamingEntityList(sourceId, report) {
                     endpoint: `/api/reports/mit-naming/${sourceId}/export.xlsx`,
                     filenameBase: `naming-${sourceId}`,
                 },
+                // Issue #80: endpoint-driven bulk actions with dry-run preview
+                // + audit banner. The component renders a confirmation modal
+                // for confirmRequired actions; max-cap is enforced client-side.
                 bulkActions: [
-                    {label: 'Hedefe Git', action: 'open-folder'},
-                    // Destructive actions deferred to issue #83.
-                    {label: 'Toplu Arsivle', action: 'bulk-archive',
-                     confirm: true, comingSoon: 'Yakinda eklenecek (#83)'},
-                    {label: 'Legal Hold Ekle', action: 'add-hold',
-                     confirm: true, comingSoon: 'Yakinda eklenecek (#83)'},
+                    {id: 'open-target', action: 'open-folder',
+                     label: 'Hedefe Git', icon: 'open',
+                     confirmRequired: false, max: 5},
+                    {id: 'archive-bulk', action: 'bulk-archive',
+                     label: 'Toplu Arsivle',
+                     confirmRequired: true, dryRun: true, danger: true,
+                     endpoint: '/api/archive/bulk-from-list'},
+                    {id: 'legal-hold-add', action: 'add-hold',
+                     label: 'Legal Hold Ekle',
+                     confirmRequired: true,
+                     endpoint: '/api/compliance/legal-holds'},
                 ],
             },
             onBulkAction: async (actionId, selectedRows) => {
-                if (actionId === 'open-folder') {
-                    if (selectedRows.length > 5) {
-                        notify('Bir defada en fazla 5 konum acilabilir', 'warning');
-                        return;
-                    }
+                // Reached only for actions without an `endpoint` set.
+                if (actionId === 'open-folder' || actionId === 'open-target') {
                     for (const r of selectedRows) {
-                        // Use existing openFolder() — already handles localhost vs
-                        // remote per #82 Bug 1 fix.
                         const target = r.directory || (r.file_path || '').replace(/[\\/][^\\/]*$/, '');
                         if (target) openFolder(target);
                     }
                     return;
                 }
-                // Other action ids fall here only if not flagged comingSoon.
                 notify('Bilinmeyen toplu islem: ' + actionId, 'warning');
             },
             emptyMessage: 'Ihlal eden dosya bulunamadi',
