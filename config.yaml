@@ -132,9 +132,16 @@ sources: []
   #   enabled: true
 
 watcher:
-  # Dosya degisikligi izleme (polling-based). Yeni/degisen/silinen dosyalar
-  # bu aralikta scan_runs tablosuna yansir. Cok dusuk degerler FS'i yorar,
-  # cok yuksek degerler degisikliklerin gorunmesini geciktirir.
+  # Dosya degisikligi izleme. Issue #14 ile event-driven watchdog backend
+  # default oldu — local diskte sub-second latency, polling yok. UNC
+  # share / network drive uzerinde ReadDirectoryChangesW guvenilir
+  # degildir, otomatik olarak polling fallback'ine duser.
+  #   "watchdog" → event-driven (default)
+  #   "polling"  → eski poll loop (interval bazinda os.walk diff)
+  backend: "watchdog"
+  # Polling fallback (UNC share / watchdog kurulu degil / config override)
+  # icin kullanilir. Cok dusuk degerler FS'i yorar, cok yuksek degerler
+  # degisikliklerin gorunmesini geciktirir.
   poll_interval_seconds: 60   # varsayilan 60 sn, minimum 10 sn (API zorlar)
 
 scanner:

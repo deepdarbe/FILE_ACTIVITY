@@ -53,3 +53,18 @@ python-magic-bin>=0.4.14; sys_platform == "win32"
 # clustered even when byte-hashes differ (resized, recompressed, etc.).
 # Enable in config.yaml: scanner.compute_image_hashes: true
 imagehash>=4.3,<5
+
+# ──────────────────────────────────────────────────────────────────────
+# Event-driven file watcher (issue #14)
+#
+# WatchdogWatcher wraps watchdog's Observer + FileSystemEventHandler so
+# the dashboard receives create / modify / delete notifications without
+# the 60-second poll loop. Local filesystems get sub-second latency on
+# all major OSes (inotify on Linux, FSEvents on macOS,
+# ReadDirectoryChangesW on Windows).
+#
+# When this dep is missing — or the watched path is a UNC share where
+# ReadDirectoryChangesW is unreliable — WatcherFactory transparently
+# falls back to the legacy polling watcher. Default config.yaml leaves
+# `watcher.backend: "watchdog"`; flip to "polling" to force the fallback.
+watchdog>=4.0,<5
