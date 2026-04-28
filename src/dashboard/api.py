@@ -5331,6 +5331,76 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     # ──────────────────────────────────────────────
+    # Standards alignment — W3C PROV + DCAT v3 (issue #145)
+    # ──────────────────────────────────────────────
+    # Read-only JSON-LD endpoints so customers can ingest our scan
+    # inventory + audit trail into Apache Atlas / DataHub / Collibra
+    # without bespoke adapters. The bearer-token middleware (issue
+    # #158 C-1) already gates these along with everything else.
+    def _standards_cfg() -> dict:
+        cfg = (config or {}).get("compliance") or {}
+        return cfg.get("standards") or {}
+
+    def _standards_enabled() -> bool:
+        # Default true — the endpoints are read-only and pose no
+        # exfiltration risk beyond what the dashboard already exposes.
+        return bool(_standards_cfg().get("enabled", True))
+
+    def _organization_uri() -> str:
+        return str(
+            _standards_cfg().get("organization_uri")
+            or "urn:fileactivity:"
+        )
+
+    @app.get("/api/compliance/lineage/file.jsonld")
+    async def lineage_file(path: str = Query(..., min_length=1)):
+        """Return PROV-O JSON-LD for the given file path."""
+        if not _standards_enabled():
+            raise HTTPException(
+                404,
+                "Standards endpoints disabled "
+                "(compliance.standards.enabled=false)",
+            )
+        from src.compliance.lineage import LineageBuilder
+        builder = LineageBuilder(db, organization_uri=_organization_uri())
+        try:
+            doc = builder.build_for_file(path)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return JSONResponse(content=doc, media_type="application/ld+json")
+
+    @app.get("/api/compliance/lineage/scan.jsonld")
+    async def lineage_scan(scan_id: int = Query(..., ge=1)):
+        """Return PROV-O JSON-LD for the given scan as a Collection."""
+        if not _standards_enabled():
+            raise HTTPException(
+                404,
+                "Standards endpoints disabled "
+                "(compliance.standards.enabled=false)",
+            )
+        from src.compliance.lineage import LineageBuilder
+        builder = LineageBuilder(db, organization_uri=_organization_uri())
+        try:
+            doc = builder.build_for_scan(scan_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return JSONResponse(content=doc, media_type="application/ld+json")
+
+    @app.get("/api/compliance/dcat/catalog.jsonld")
+    async def dcat_catalog():
+        """Return a DCAT v3 catalog of every configured scan source."""
+        if not _standards_enabled():
+            raise HTTPException(
+                404,
+                "Standards endpoints disabled "
+                "(compliance.standards.enabled=false)",
+            )
+        from src.compliance.dcat import CatalogBuilder
+        builder = CatalogBuilder(db, config)
+        doc = builder.build_catalog()
+        return JSONResponse(content=doc, media_type="application/ld+json")
+
+    # ──────────────────────────────────────────────
     # Two-person approval framework (issue #112)
     # ──────────────────────────────────────────────
     # Registry lives on app.state so the snapshot-restore endpoint

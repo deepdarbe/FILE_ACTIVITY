@@ -618,6 +618,7 @@ body.sidebar-open { overflow: hidden; }
         <div class="nav-item" onclick="showPage('pii')" title="PII Bulgular"><span class="icon">🛡️</span> <span>PII Bulgular</span></div>
         <div class="nav-item" onclick="showPage('retention')" title="Saklama Politikalari"><span class="icon">🗓️</span> <span>Saklama Politikalari</span></div>
         <div class="nav-item" onclick="showPage('legal-holds')" title="Legal Hold"><span class="icon">⚖️</span> <span>Legal Hold</span></div>
+        <div class="nav-item" onclick="showPage('standards')" title="Standartlar (PROV / DCAT)"><span class="icon">🔗</span> <span>Standartlar</span></div>
     </div>
     <div class="nav-section" data-group="Raporlar">
         <div class="nav-label">Raporlar <span class="chev">&#9660;</span></div>
@@ -1227,6 +1228,38 @@ body.sidebar-open { overflow: hidden; }
     </div>
     <div id="lh-history-pane" style="display:none">
         <div id="lh-history-container"></div>
+    </div>
+</div>
+
+<!-- ============ COMPLIANCE: STANDARDS (issue #145) ============ -->
+<div class="page" id="page-standards">
+    <div class="page-header">
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Uyumluluk &raquo; Standartlar</div>
+            <h2>Standartlar (W3C PROV + DCAT v3)</h2>
+            <div class="desc">Lineage ve katalog endpoint'leri JSON-LD olarak — Apache Atlas / DataHub / Collibra ingest icin</div>
+        </div>
+    </div>
+    <div class="panel" style="margin-bottom:16px">
+        <h3 class="panel-title">Lineage (W3C PROV-O)</h3>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            Bir dosya yolu icin tam audit gecmisi PROV-O JSON-LD formatinda. Endpoint:
+            <code>/api/compliance/lineage/file.jsonld?path=...</code>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+            <input id="std-lineage-path" placeholder="/share/finance/report.docx" style="flex:1;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:12px">
+            <button class="btn btn-primary" onclick="standardsDownloadLineage()">Lineage Cek</button>
+        </div>
+        <div id="std-lineage-status" style="margin-top:10px;font-size:12px"></div>
+    </div>
+    <div class="panel">
+        <h3 class="panel-title">Katalog (DCAT v3)</h3>
+        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            Tum scan kaynaklarinin DCAT v3 katalogu. Endpoint:
+            <code>/api/compliance/dcat/catalog.jsonld</code>
+        </div>
+        <button class="btn btn-primary" onclick="standardsDownloadCatalog()">Catalog Indir</button>
+        <div id="std-catalog-status" style="margin-top:10px;font-size:12px"></div>
     </div>
 </div>
 
@@ -2474,7 +2507,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
+    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -6199,6 +6232,78 @@ async function releaseLegalHold(holdId) {
     } catch (e) {
         notify('Hata: ' + (e.message || e), 'error');
     }
+}
+
+// ═══════════════════════════════════════════════════
+// STANDARDS — W3C PROV / DCAT v3 (issue #145)
+// ═══════════════════════════════════════════════════
+// Both endpoints return JSON-LD documents. We download them as files
+// so customers can ingest them into Apache Atlas / DataHub / Collibra
+// directly — no XLSX, JSON-LD is the on-the-wire format by spec.
+function _stdSetStatus(elId, msg, kind) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    const color = kind === 'error' ? 'var(--danger,#dc2626)' :
+                  kind === 'success' ? 'var(--success,#10b981)' :
+                  'var(--text-muted)';
+    el.style.color = color;
+    el.textContent = msg || '';
+}
+
+function _stdDownloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function standardsDownloadLineage() {
+    const path = (document.getElementById('std-lineage-path')?.value || '').trim();
+    if (!path) {
+        notify('Dosya yolu zorunlu', 'warning');
+        return;
+    }
+    _stdSetStatus('std-lineage-status', 'Lineage cekiliyor...', 'info');
+    try {
+        const r = await fetch('/api/compliance/lineage/file.jsonld?path=' + encodeURIComponent(path));
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || ('HTTP ' + r.status));
+        }
+        const blob = await r.blob();
+        const safe = path.replace(/[^A-Za-z0-9]/g, '_').slice(0, 80);
+        _stdDownloadBlob(blob, 'lineage_' + safe + '.jsonld');
+        _stdSetStatus('std-lineage-status', 'Lineage indirildi.', 'success');
+    } catch (e) {
+        _stdSetStatus('std-lineage-status', 'Hata: ' + e.message, 'error');
+    }
+}
+
+async function standardsDownloadCatalog() {
+    _stdSetStatus('std-catalog-status', 'Katalog cekiliyor...', 'info');
+    try {
+        const r = await fetch('/api/compliance/dcat/catalog.jsonld');
+        if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            throw new Error(err.detail || ('HTTP ' + r.status));
+        }
+        const blob = await r.blob();
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        _stdDownloadBlob(blob, 'dcat_catalog_' + ts + '.jsonld');
+        _stdSetStatus('std-catalog-status', 'Katalog indirildi.', 'success');
+    } catch (e) {
+        _stdSetStatus('std-catalog-status', 'Hata: ' + e.message, 'error');
+    }
+}
+
+function loadStandards() {
+    // Page is static — no auto-refresh; just clear the status fields.
+    _stdSetStatus('std-lineage-status', '', 'info');
+    _stdSetStatus('std-catalog-status', '', 'info');
 }
 
 // ═══════════════════════════════════════════════════

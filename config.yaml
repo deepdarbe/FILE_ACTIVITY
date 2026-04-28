@@ -354,6 +354,22 @@ compliance:
   legal_hold:
     enabled: true
     poll_interval_minutes: 5
+  # W3C PROV + DCAT v3 read-only standards endpoints (issue #145).
+  # Mounts ``/api/compliance/lineage/file.jsonld`` and
+  # ``/api/compliance/dcat/catalog.jsonld`` so data-governance
+  # platforms (Apache Atlas, DataHub, Collibra) can ingest our scan
+  # inventory + audit trail directly. Both endpoints are gated by the
+  # bearer-token middleware (issue #158) like the rest of the API.
+  standards:
+    enabled: true
+    # Base IRI used for PROV/DCAT entity identifiers in the emitted
+    # JSON-LD. Falls back to the urn-form when left empty so the
+    # output is still self-consistent.
+    organization_uri: "urn:fileactivity:"
+    # Default ``dct:license`` value attached to each Dataset in the
+    # DCAT catalog. Override with an SPDX URL when distributing the
+    # catalog externally.
+    license_uri: "internal-use"
 
 approvals:
   # Two-person approval framework (issue #112). Phase 1 wires the
