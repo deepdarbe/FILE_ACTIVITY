@@ -14,7 +14,7 @@
 # Build:   docker build -f docker/Dockerfile.test -t fa-test .
 # Run:     docker run --rm fa-test                     # full suite
 #          docker run --rm fa-test tests/test_pii_engine.py -v
-FROM python:3.11-slim AS base
+FROM python:3.14-slim AS base
 
 # System deps:
 #   build-essential       — fallback C/C++ toolchain for any wheel that has
