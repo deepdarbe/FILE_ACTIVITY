@@ -2603,13 +2603,22 @@ async function pollScanProgress(sourceId) {
     try {
         const p = await api(`/scan/progress/${sourceId}`, { silent: true });
 
+        // Issue #137 — prefer the live MFT-collection counter over the
+        // (still-zero) DB file_count during the early "MFT okuma" phase
+        // so the Sources page card and DOSYA KPI track the ops banner.
+        // Falls back to file_count once the scanner starts iterating
+        // batches and live_count plateaus / disappears.
+        const displayCount = (p.live_count != null && p.live_count > (p.file_count || 0))
+            ? p.live_count
+            : (p.file_count || 0);
+
         // Tarama bitti mi?
         if (p.finished) {
             clearInterval(scanPollingInterval);
             scanPollingInterval = null;
 
             document.getElementById('scan-progress-bar').style.width = '100%';
-            document.getElementById('sp-files').textContent = formatNum(p.total_files || p.file_count);
+            document.getElementById('sp-files').textContent = formatNum(p.total_files || displayCount);
             document.getElementById('sp-size').textContent = p.total_size_formatted || formatSize(p.total_size);
             document.getElementById('sp-speed').textContent = p.files_per_second || '0';
             document.getElementById('sp-dir').textContent = 'Tamamlandi!';
@@ -2617,8 +2626,8 @@ async function pollScanProgress(sourceId) {
             // Bildirim sadece 1 kez goster
             if (!window._scanNotified) {
                 window._scanNotified = true;
-                if (p.total_files > 0 || p.file_count > 0) {
-                    notify(`Tarama tamamlandi! ${formatNum(p.total_files || p.file_count)} dosya, ${p.total_size_formatted || formatSize(p.total_size)}`, 'success');
+                if (p.total_files > 0 || displayCount > 0) {
+                    notify(`Tarama tamamlandi! ${formatNum(p.total_files || displayCount)} dosya, ${p.total_size_formatted || formatSize(p.total_size)}`, 'success');
                 } else {
                     notify('Tarama tamamlandi ancak dosya bulunamadi.', 'warning');
                 }
@@ -2638,7 +2647,7 @@ async function pollScanProgress(sourceId) {
         }
 
         if (p.status === 'scanning' || p.status === 'generating_report' || p.status === 'connecting' || p.status === 'resuming') {
-            document.getElementById('sp-files').textContent = formatNum(p.file_count);
+            document.getElementById('sp-files').textContent = formatNum(displayCount);
             document.getElementById('sp-size').textContent = p.total_size_formatted || formatSize(p.total_size);
             document.getElementById('sp-speed').textContent = p.files_per_second || '0';
             document.getElementById('sp-errors').textContent = p.errors || '0';
@@ -2671,7 +2680,7 @@ async function pollScanProgress(sourceId) {
             if (typeof p.phase_pct === 'number' && p.phase_pct > 0) {
                 w = Math.max(5, Math.min(95, p.phase_pct));
             } else {
-                w = Math.min(90, 5 + (p.file_count / 100));
+                w = Math.min(90, 5 + (displayCount / 100));
             }
             bar.style.width = w + '%';
 
@@ -2680,7 +2689,7 @@ async function pollScanProgress(sourceId) {
             if (gsp) {
                 gsp.style.display = '';
                 document.getElementById('gsp-label').textContent = p.status === 'generating_report' ? 'Rapor...' : 'Tarama...';
-                document.getElementById('gsp-count').textContent = formatNum(p.file_count) + ' dosya';
+                document.getElementById('gsp-count').textContent = formatNum(displayCount) + ' dosya';
                 document.getElementById('gsp-bar').style.width = w + '%';
                 document.getElementById('gsp-detail').textContent = `${p.total_size_formatted || formatSize(p.total_size)} | ${p.files_per_second || 0}/s | ${p.elapsed || ''}`;
             }
@@ -2697,7 +2706,7 @@ async function pollScanProgress(sourceId) {
             // the last call was less than 15 min ago for this scan_id.
             window._reportRefreshLast = window._reportRefreshLast || {};
             const activePage = document.querySelector('.page.active')?.id?.replace('page-','');
-            if (p.file_count > 0 && ['frequency','types','sizes','treemap','overview'].includes(activePage)) {
+            if (displayCount > 0 && ['frequency','types','sizes','treemap','overview'].includes(activePage)) {
                 const now = Date.now();
                 const last = window._reportRefreshLast[activePage] || 0;
                 const FIFTEEN_MIN = 15 * 60 * 1000;

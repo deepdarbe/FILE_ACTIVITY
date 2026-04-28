@@ -146,54 +146,20 @@ class NtfsMftBackend:
     config:
         Project configuration dictionary. Currently unused beyond storage —
         accepted for protocol compatibility with other backends.
-    ops_registry:
-        Optional :class:`OperationsRegistry` (issue #125). When provided
-        together with ``op_id``, the backend emits incremental progress
-        every :data:`_PROGRESS_EVERY_N_RECORDS` records during the MFT
-        enumeration loop so the dashboard banner reflects activity even
-        before the scan_run row is updated. Issue #135 — the dashboard's
-        "Tarama Devam Ediyor" card showed 0 progress for the entire MFT
-        walk because nothing was emitted until enumeration finished.
-    op_id:
-        Optional operations-tracker handle (the value returned from
-        ``OperationsRegistry.start``). If absent, all tracker calls
-        no-op. Tracker failures are swallowed — they MUST NOT break the
-        scan.
+    progress_callback:
+        Optional ``callable(stage: str, processed: int) -> None``. Issue
+        #137 (replacing #135's tighter ops_registry/op_id coupling) — the
+        callback is invoked during the long MFT collection phase so callers
+        can surface a live row count to the operations registry / scan
+        progress endpoint while the scanner hasn't yet iterated records
+        into batches. Failures inside the callback are swallowed; the
+        backend never lets a tracker hiccup break the walk. Default
+        ``None`` keeps the previous (silent) behaviour.
     """
 
-    def __init__(
-        self,
-        config: dict,
-        ops_registry: Optional[object] = None,
-        op_id: Optional[str] = None,
-    ) -> None:
+    def __init__(self, config: dict, progress_callback=None) -> None:
         self.config = config or {}
-        # Tracker handle is optional. Stored as plain attributes so callers
-        # can set them after construction (e.g. when the registry is created
-        # later in the FileScanner lifecycle).
-        self.ops_registry = ops_registry
-        self.op_id = op_id
-
-    # ------------------------------------------------------------------
-    # Operations-tracker progress helper
-    # ------------------------------------------------------------------
-
-    def _emit_progress(self, processed_count: int) -> None:
-        """Emit incremental MFT-enumeration progress to the ops registry.
-
-        Best-effort: if the registry is None, the op_id is unset, or the
-        call raises, we swallow the error. The scan must continue.
-        """
-        registry = self.ops_registry
-        op_id = self.op_id
-        if registry is None or not op_id:
-            return
-        try:
-            label = f"MFT okuma: {processed_count:,} kayit"
-            registry.progress(op_id, label=label)
-        except Exception:  # pragma: no cover - defensive only
-            # Never break the scan on tracker failure.
-            pass
+        self.progress_callback = progress_callback
 
     # ------------------------------------------------------------------
     # Capability check
@@ -333,10 +299,13 @@ class NtfsMftBackend:
                 "attributes": rec["attributes"],
             }
             emitted += 1
-            # Issue #135 — yield-loop progress so the dashboard banner keeps
+            # Issue #135/#137 — yield-loop progress so the dashboard banner keeps
             # ticking while the orchestrator drains records into the DB.
-            if emitted % _PROGRESS_EVERY_N_RECORDS == 0:
-                self._emit_progress(emitted)
+            if emitted % _PROGRESS_EVERY_N_RECORDS == 0 and self.progress_callback is not None:
+                try:
+                    self.progress_callback("mft_emit", emitted)
+                except Exception:  # pragma: no cover - defensive only
+                    pass
 
         logger.info("MFT taramasi tamamlandi: %d dosya yayildi", emitted)
 
@@ -400,8 +369,11 @@ class NtfsMftBackend:
             new_count = len(records)
             if (new_count // _PROGRESS_EVERY_N_RECORDS) > (
                 prev_count // _PROGRESS_EVERY_N_RECORDS
-            ):
-                self._emit_progress(new_count)
+            ) and self.progress_callback is not None:
+                try:
+                    self.progress_callback("mft_collect", new_count)
+                except Exception:  # pragma: no cover - defensive only
+                    pass
 
             # The first 8 bytes of the output buffer are the next-FRN to
             # resume enumeration from.
@@ -413,6 +385,17 @@ class NtfsMftBackend:
                 logger.debug(
                     "MFT enum: %d iterasyon, %d kayit", iterations, len(records)
                 )
+
+            # Issue #137 — feed live MFT-collection counters to whatever
+            # the caller wired up (typically OperationsRegistry.progress
+            # via a closure). Best-effort only: any failure here MUST NOT
+            # break the IOCTL loop. Throttled to once every 10 iterations
+            # so a 50k-record volume reports ~5 updates rather than 5000.
+            if self.progress_callback is not None and iterations % 10 == 0:
+                try:
+                    self.progress_callback("mft_collect", len(records))
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("progress_callback raised: %s", exc)
 
         return records
 

@@ -139,9 +139,18 @@ class OperationsRegistry:
         pct: Optional[int] = None,
         eta_seconds: Optional[int] = None,
         label: Optional[str] = None,
+        processed: Optional[int] = None,
+        **extra_metadata,
     ) -> None:
         """Update progress fields for an existing op. Silent no-op if
         ``op_id`` is not registered (e.g. race after :meth:`finish`).
+
+        Issue #137 — ``processed`` (and any ``extra_metadata`` kwargs) are
+        merged into ``op.metadata`` so callers can surface live counters
+        (e.g. MFT records collected) without parsing them out of the
+        free-form label string. ``processed`` is stored under
+        ``metadata['processed']`` for the canonical "live row count"
+        consumed by ``/api/scan/progress/{source_id}``.
         """
         if not op_id:
             return
@@ -161,6 +170,19 @@ class OperationsRegistry:
                     pass
             if label:
                 op.label = str(label)[:200]
+            if processed is not None:
+                try:
+                    op.metadata["processed"] = max(0, int(processed))
+                except (TypeError, ValueError):
+                    pass
+            if extra_metadata:
+                # Merge any other structured fields callsites want to
+                # surface. Bad keys / values aren't filtered here — the
+                # registry treats metadata as opaque, free-form context.
+                try:
+                    op.metadata.update(extra_metadata)
+                except (TypeError, AttributeError):  # pragma: no cover
+                    pass
 
     def finish(self, op_id: str, success: bool = True) -> None:
         """Remove an op from the active registry. Silent if unknown.
@@ -191,3 +213,28 @@ class OperationsRegistry:
             return sorted(
                 self._ops.values(), key=lambda o: o.started_at,
             )
+
+    def find_active_op_by_metadata(
+        self, **filters,
+    ) -> Optional[OperationStatus]:
+        """Issue #137 — return the first active op whose ``metadata``
+        contains all key/value pairs in ``filters``.
+
+        Used by ``/api/scan/progress/{source_id}`` to look up the
+        in-flight scan op for a given ``source_id`` and pull its
+        ``metadata['processed']`` counter so the Sources page card and
+        DOSYA KPI can stay in sync with the ops banner during the MFT
+        collection phase (when the DB row count is still 0).
+
+        Returns ``None`` if nothing matches. Empty ``filters`` returns
+        the oldest active op, matching :meth:`list_active` order.
+        """
+        with self._lock:
+            ops_sorted = sorted(
+                self._ops.values(), key=lambda o: o.started_at,
+            )
+        for op in ops_sorted:
+            md = op.metadata or {}
+            if all(md.get(k) == v for k, v in filters.items()):
+                return op
+        return None
