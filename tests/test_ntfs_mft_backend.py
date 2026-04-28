@@ -160,6 +160,29 @@ def test_parse_empty_buffer() -> None:
     assert list(parse_usn_records(buf, offset=8)) == []
 
 
+def test_parse_masks_frn_sequence_number() -> None:
+    """Real-world FRNs carry a 16-bit sequence number in the upper bits.
+    The parser must mask it off so child.parent_frn matches parent.frn
+    after dict-keyed lookup. Customer prod regression: 3.1M kayit → 0
+    dosya yayildi, traced to a sequence-number mismatch.
+    """
+    from src.scanner.backends._ntfs_records import parse_usn_records
+
+    # Sequence=0x0005 in upper 16 bits, segment=5 in lower 48 bits.
+    root_full_frn = (0x0005 << 48) | 5
+    rec = _build_record(
+        frn=(0x0010 << 48) | 100,
+        parent_frn=root_full_frn,
+        file_name="x.txt",
+    )
+    buf = _wrap_buffer(rec)
+    parsed = list(parse_usn_records(buf, offset=8))
+    assert len(parsed) == 1
+    # Both FRN and parent_frn must be masked to lower 48 bits.
+    assert parsed[0]["frn"] == 100
+    assert parsed[0]["parent_frn"] == 5
+
+
 # ---------------------------------------------------------------------------
 # reconstruct_paths
 # ---------------------------------------------------------------------------
@@ -219,6 +242,45 @@ def test_reconstruct_paths_orphan_parent() -> None:
 
     paths = reconstruct_paths(records, root_frn=5)
     assert paths.get(99) is None
+
+
+def test_reconstruct_paths_real_world_frns_via_parser() -> None:
+    """End-to-end regression for the prod '0 dosya yayildi' bug:
+    feed records with non-zero sequence numbers through the parser into
+    reconstruct_paths and assert paths resolve. Without the FRN mask,
+    the children's parent chain misses the root and every path is None.
+    """
+    from src.scanner.backends._ntfs_records import (
+        parse_usn_records,
+        reconstruct_paths,
+    )
+
+    # All three records carry non-zero sequence numbers, mirroring an
+    # NTFS volume that has been through allocate/free cycles.
+    rec_root = _build_record(
+        frn=(0x0005 << 48) | 5,
+        parent_frn=(0x0005 << 48) | 5,
+        file_name="",
+        attributes=0x10,  # directory
+    )
+    rec_dir = _build_record(
+        frn=(0x0010 << 48) | 100,
+        parent_frn=(0x0005 << 48) | 5,
+        file_name="docs",
+        attributes=0x10,
+    )
+    rec_file = _build_record(
+        frn=(0x0020 << 48) | 200,
+        parent_frn=(0x0010 << 48) | 100,
+        file_name="report.txt",
+    )
+    buf = _wrap_buffer(rec_root + rec_dir + rec_file)
+
+    records = {r["frn"]: r for r in parse_usn_records(buf, offset=8)}
+    paths = reconstruct_paths(records, root_frn=5)
+
+    assert paths.get(100) == "docs"
+    assert paths.get(200) == "docs\\report.txt"
 
 
 # ---------------------------------------------------------------------------

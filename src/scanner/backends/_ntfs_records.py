@@ -48,8 +48,16 @@ _OFF_FILE_NAME_OFFSET = 58
 # Minimum size of a fixed USN_RECORD_V2 header (filename starts at +60).
 _MIN_RECORD_SIZE = 60
 
-# NTFS volume root always has FRN 5.
+# NTFS volume root always has FRN segment number 5.
 NTFS_ROOT_FRN = 5
+
+# NTFS FRN encoding: lower 48 bits = MFT segment number (the actual entry
+# index), upper 16 bits = sequence number (incremented when an entry is
+# reused after deletion). For path reconstruction we ONLY care about the
+# segment number — sequence numbers cause parent-chain lookups to miss
+# whenever the volume has had any churn, which manifested in prod as
+# "3M kayit toplandi → 0 dosya yayildi" (issue #144 follow-up).
+_FRN_SEGMENT_MASK = (1 << 48) - 1
 
 # FILE_ATTRIBUTE_DIRECTORY bit — used by callers to filter directories.
 FILE_ATTRIBUTE_DIRECTORY = 0x10
@@ -91,8 +99,14 @@ def parse_usn_records(buf: bytes, offset: int = 8) -> Iterator[dict]:
             offset += record_length
             continue
 
-        (frn,) = struct.unpack_from("<Q", buf, offset + _OFF_FRN)
-        (parent_frn,) = struct.unpack_from("<Q", buf, offset + _OFF_PARENT_FRN)
+        (frn_raw,) = struct.unpack_from("<Q", buf, offset + _OFF_FRN)
+        (parent_frn_raw,) = struct.unpack_from("<Q", buf, offset + _OFF_PARENT_FRN)
+        # Mask off the sequence number (upper 16 bits) so children whose
+        # parent_frn carries a non-zero sequence number still match the
+        # parent record's key in the {frn: rec} dict. See _FRN_SEGMENT_MASK
+        # comment above for the prod failure mode.
+        frn = frn_raw & _FRN_SEGMENT_MASK
+        parent_frn = parent_frn_raw & _FRN_SEGMENT_MASK
         (usn,) = struct.unpack_from("<q", buf, offset + _OFF_USN)
         (attributes,) = struct.unpack_from(
             "<I", buf, offset + _OFF_FILE_ATTRIBUTES
