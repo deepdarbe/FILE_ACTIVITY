@@ -3141,6 +3141,287 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
         return result
 
+    # --- ENTITY-LIST BULK ACTIONS (issue #80) ---
+    #
+    # These endpoints back the reusable ``entity-list.js`` toolbar. They are
+    # deliberately list-driven (paths, not ids) so any list page can call
+    # them without knowing the underlying scanned_files row id. Each call is
+    # written to the chained audit log via ``insert_audit_event_simple`` so
+    # operators retain a tamper-evident record of every bulk action.
+
+    @app.post("/api/archive/bulk-from-list")
+    async def archive_bulk_from_list(request: Request):
+        """Archive a hand-picked list of files coming from an entity-list page.
+
+        Body:
+          {
+            "source_id": <int>,           # optional; auto-detected from paths
+                                            otherwise
+            "file_paths": ["...", ...],
+            "confirm": <bool>,            # required for non-dry-run
+            "dry_run": <bool>,            # default true (matches policy gate)
+            "username": "<string>",       # optional, default 'dashboard'
+          }
+
+        Returns the archive engine result (or a preview when dry_run).
+        Always writes an audit event before returning.
+        """
+        from src.archiver.archive_engine import ArchiveEngine
+        from src.utils.size_formatter import format_size
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "Body JSON nesnesi olmali")
+
+        file_paths = body.get("file_paths") or []
+        if not isinstance(file_paths, list) or not file_paths:
+            raise HTTPException(400, "file_paths gerekli (liste)")
+        # Trim & dedupe; reject non-string entries.
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for p in file_paths:
+            if not isinstance(p, str) or not p.strip():
+                raise HTTPException(400, "file_paths icinde gecersiz giris")
+            ps = p.strip()
+            if ps not in seen:
+                seen.add(ps)
+                cleaned.append(ps)
+        file_paths = cleaned
+
+        # dry_run/confirm semantics — mirrors /api/archive/selective.
+        config_dry_run = bool(
+            (config or {}).get("archiving", {}).get("dry_run", True)
+        )
+        body_dry_run = body.get("dry_run")
+        effective_dry_run = (
+            bool(body_dry_run) if body_dry_run is not None else config_dry_run
+        )
+        confirm = bool(body.get("confirm", False))
+        if (not effective_dry_run) and not confirm:
+            raise HTTPException(
+                400,
+                "Real archive run requires confirm=true (issue #158 C-2). "
+                "Re-submit with dry_run=false + confirm=true after "
+                "reviewing the dry-run preview.",
+            )
+
+        username = (body.get("username") or "dashboard")[:64]
+
+        # Resolve files from scanned_files by path. If source_id provided,
+        # we constrain to that source; otherwise we let the path uniquely
+        # identify the row (current scan).
+        source_id = body.get("source_id")
+        files: list[dict] = []
+        with db.get_read_cursor() as cur:
+            placeholders = ",".join("?" * len(file_paths))
+            if source_id is not None:
+                try:
+                    sid = int(source_id)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "source_id integer olmali")
+                cur.execute(
+                    f"SELECT * FROM scanned_files "
+                    f"WHERE source_id=? AND file_path IN ({placeholders})",
+                    [sid] + file_paths,
+                )
+            else:
+                cur.execute(
+                    f"SELECT * FROM scanned_files "
+                    f"WHERE file_path IN ({placeholders})",
+                    file_paths,
+                )
+            files = [dict(r) for r in cur.fetchall()]
+
+        if not files:
+            raise HTTPException(404, "Belirtilen yollar icin dosya bulunamadi")
+
+        # Audit-log every call (dry-run included). file_path is NOT NULL in
+        # the schema, so we record the first matched path as a sentinel and
+        # encode the rest of the batch in `details`.
+        try:
+            db.insert_audit_event_simple(
+                source_id=files[0].get("source_id"),
+                event_type=(
+                    "bulk_archive_dry_run" if effective_dry_run
+                    else "bulk_archive"
+                ),
+                username=username,
+                file_path=files[0].get("file_path") or "",
+                details=(
+                    f"paths={len(file_paths)} matched={len(files)} "
+                    f"dry_run={effective_dry_run}"
+                ),
+                detected_by="entity-list",
+            )
+        except Exception as e:  # pragma: no cover - audit failure is non-fatal
+            logger.warning("audit-log write failed for bulk-from-list: %s", e)
+
+        # Dry-run: synthesise a preview without invoking the engine.
+        total_size = sum(int(f.get("file_size") or 0) for f in files)
+        if effective_dry_run:
+            return {
+                "dry_run": True,
+                "preview": True,
+                "matched": len(files),
+                "missing": len(file_paths) - len(files),
+                "total_size": total_size,
+                "total_size_formatted": format_size(total_size),
+                "sample": files[:20],
+            }
+
+        # Real archive: resolve source(s) and dispatch to ArchiveEngine.
+        # All matched files must share the same source for a single batch.
+        sids = {f.get("source_id") for f in files}
+        if len(sids) != 1 or None in sids:
+            raise HTTPException(
+                400,
+                "Toplu arsivleme icin tum dosyalar ayni kaynaktan olmali",
+            )
+        sid = next(iter(sids))
+        source = db.get_source_by_id(sid)
+        if not source:
+            raise HTTPException(404, "Kaynak bulunamadi")
+        if not source.archive_dest:
+            raise HTTPException(400, "Arsiv hedefi tanimli degil")
+
+        engine = ArchiveEngine(db, config)
+        return engine.archive_files(
+            files,
+            source.archive_dest,
+            source.unc_path,
+            sid,
+            archived_by=f"entity-list:{username}",
+            trigger_type="manual",
+            trigger_detail="bulk-from-list",
+            dry_run=False,
+        )
+
+    @app.post("/api/explorer/open")
+    async def explorer_open(request: Request):
+        """Open one or more paths in Windows Explorer (Windows-only).
+
+        Body: { "paths": ["...", ...], "username": "<string>" }
+
+        Refuses on non-Windows hosts (400). Each path must resolve to a real
+        directory or file under one of the configured source roots so the
+        endpoint cannot be abused as a generic local-FS browser. Audit-log
+        every call.
+        """
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "Body JSON nesnesi olmali")
+        paths = body.get("paths") or []
+        if not isinstance(paths, list) or not paths:
+            raise HTTPException(400, "paths gerekli (liste)")
+        username = (body.get("username") or "dashboard")[:64]
+
+        if os.name != "nt":
+            raise HTTPException(
+                400,
+                "explorer.exe yalnizca Windows uzerinde kullanilabilir",
+            )
+
+        # Build the allowed-roots set from sources.unc_path. Each candidate
+        # path must be inside one of these roots (after realpath). This
+        # prevents traversal like ../../etc/passwd and blocks arbitrary
+        # local-disk browsing on the server.
+        allowed_roots: list[str] = []
+        for s in db.get_sources():
+            root = (s.unc_path or "").strip()
+            if not root:
+                continue
+            try:
+                allowed_roots.append(
+                    os.path.realpath(os.path.normpath(root)).rstrip("\\/")
+                )
+            except Exception:
+                continue
+        if not allowed_roots:
+            raise HTTPException(
+                400,
+                "Hicbir kaynak tanimli degil; explorer/open kullanilamaz",
+            )
+
+        import subprocess
+        opened: list[str] = []
+        rejected: list[dict] = []
+        for raw in paths:
+            if not isinstance(raw, str) or not raw.strip():
+                rejected.append({"path": raw, "reason": "empty"})
+                continue
+            try:
+                resolved = os.path.realpath(os.path.normpath(raw))
+            except Exception:
+                rejected.append({"path": raw, "reason": "invalid"})
+                continue
+            inside = any(
+                resolved == root or resolved.startswith(root + os.sep)
+                for root in allowed_roots
+            )
+            if not inside:
+                rejected.append({"path": raw, "reason": "outside_source_roots"})
+                continue
+            if not (os.path.isdir(resolved) or os.path.isfile(resolved)):
+                rejected.append({"path": raw, "reason": "not_found"})
+                continue
+            try:
+                # shell=False + argv list -> no command injection risk.
+                if os.path.isdir(resolved):
+                    subprocess.Popen(["explorer.exe", resolved], shell=False)
+                else:
+                    subprocess.Popen(
+                        ["explorer.exe", "/select,", resolved], shell=False,
+                    )
+                opened.append(resolved)
+            except Exception as e:
+                rejected.append({"path": raw, "reason": f"popen_error:{e}"})
+
+        # Audit-log every call (one event per request). file_path is NOT
+        # NULL — record the first attempted path (opened or rejected) as a
+        # sentinel; the full count breakdown lives in `details`.
+        first_path = ""
+        if opened:
+            first_path = opened[0]
+        elif rejected:
+            first_raw = rejected[0].get("path")
+            if isinstance(first_raw, str):
+                first_path = first_raw
+        try:
+            # source_id required for chained audit; fall back to first source.
+            sources = db.get_sources()
+            sid = sources[0].id if sources else None
+            db.insert_audit_event_simple(
+                source_id=sid,
+                event_type="explorer_open",
+                username=username,
+                file_path=first_path or "(none)",
+                details=(
+                    f"requested={len(paths)} opened={len(opened)} "
+                    f"rejected={len(rejected)}"
+                ),
+                detected_by="entity-list",
+            )
+        except Exception as e:  # pragma: no cover
+            logger.warning("audit-log write failed for explorer/open: %s", e)
+
+        if rejected and not opened:
+            # All paths were rejected — surface as 400 so the UI can show
+            # a clear error rather than a misleading 200 "ok, opened 0".
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "ok": False,
+                    "opened": [],
+                    "rejected": rejected,
+                    "message": "Tum yollar reddedildi",
+                },
+            )
+        return {
+            "ok": True,
+            "opened": opened,
+            "rejected": rejected,
+        }
+
     # --- BUYUME ANALIZI ---
 
     @app.get("/api/growth/{source_id}")
