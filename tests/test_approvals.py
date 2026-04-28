@@ -277,7 +277,8 @@ def test_snapshot_restore_executes_immediately_when_disabled(tmp_path):
     client = TestClient(app, raise_server_exceptions=False)
     r = client.post(
         "/api/system/backups/restore/snap-xyz",
-        json={"confirm": True},
+        # Audit M-3: safety_token now required alongside confirm.
+        json={"confirm": True, "safety_token": "RESTORE"},
     )
     assert r.status_code == 200, r.text
     body = r.json()
@@ -301,7 +302,9 @@ def test_snapshot_restore_routes_through_approval_when_enabled(tmp_path):
     # name via X-Forwarded-User instead of body['username'].
     r = client.post(
         "/api/system/backups/restore/snap-abc",
-        json={"confirm": True},
+        # Audit M-3: safety_token now required alongside confirm.
+        # H-2 (#159): identity_source 'header', so requester via X-Forwarded-User.
+        json={"confirm": True, "safety_token": "RESTORE"},
         headers={"X-Forwarded-User": "alice"},
     )
     assert r.status_code == 200, r.text

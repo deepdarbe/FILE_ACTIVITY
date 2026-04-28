@@ -47,6 +47,13 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
+          # Audit M-4: pull in the security-extended + security-and-quality
+          # query packs so the first scan covers the broader rule set we
+          # plan to baseline against. ``continue-on-error: true`` above
+          # stays in place until that baseline is triaged — see the
+          # CodeQL integration plan in
+          # docs/architecture/security-audit-2026-04-28.md.
+          queries: security-extended,security-and-quality
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3

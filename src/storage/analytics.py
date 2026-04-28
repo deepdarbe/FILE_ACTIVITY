@@ -64,7 +64,9 @@ class AnalyticsEngine:
     def _open(self):
         """DuckDB baglantisini ac, SQLite'i salt-okunur ATTACH et."""
         conn = duckdb.connect(database=":memory:")
+        # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         conn.execute(f"SET memory_limit='{self.memory_limit}'")
+        # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         conn.execute(f"SET threads={self.threads}")
 
         # sqlite_scanner extension'i yukle (duckdb paketiyle beraber gelir)
@@ -77,6 +79,7 @@ class AnalyticsEngine:
 
         # SQLite'i salt-okunur attach et. Bazi surumlerde parametre adi
         # READ_ONLY, digerlerinde read_only olabilir; ikincide fallback dene.
+        # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         attach_sql_variants = [
             f"ATTACH '{self.db_path}' AS sqlite_db (TYPE SQLITE, READ_ONLY)",
             f"ATTACH '{self.db_path}' AS sqlite_db (TYPE SQLITE)",

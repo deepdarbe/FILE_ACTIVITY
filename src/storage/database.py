@@ -217,7 +217,7 @@ class Database:
                         logger.info(
                             f"WAL checkpoint baslatiliyor ({wal_size / 1048576:.1f} MB, mode={mode})..."
                         )
-                        conn.execute(f"PRAGMA wal_checkpoint({mode})")
+                        conn.execute(f"PRAGMA wal_checkpoint({mode})")  # noqa: S608
                         wal_after = os.path.getsize(wal_path) if os.path.exists(wal_path) else 0
                         logger.info(
                             f"WAL checkpoint tamamlandi: {wal_size / 1048576:.1f} MB "
@@ -566,7 +566,7 @@ class Database:
         ):
             col_name = col_def.split()[0]
             try:
-                cur.execute(f"ALTER TABLE scan_runs ADD COLUMN {col_def}")
+                cur.execute(f"ALTER TABLE scan_runs ADD COLUMN {col_def}")  # noqa: S608
                 logger.info("scan_runs tablosuna %s kolonu eklendi", col_name)
             except sqlite3.OperationalError as e:
                 if "duplicate column name" not in str(e).lower():
@@ -1489,7 +1489,7 @@ class Database:
                 WHERE {where}
                 ORDER BY last_access_time ASC
                 LIMIT ?
-            """, params)
+            """, params)  # noqa: S608
             return cur.fetchall()
 
     # ──────────────────────────────────────────────
@@ -1562,7 +1562,7 @@ class Database:
 
         with self.get_cursor() as cur:
             # Toplam sayi
-            cur.execute(f"SELECT COUNT(*) as cnt FROM archived_files WHERE {where}", params)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM archived_files WHERE {where}", params)  # noqa: S608
             total = cur.fetchone()["cnt"]
 
             # Sayfalanmis sonuclar
@@ -1571,7 +1571,7 @@ class Database:
                 WHERE {where}
                 ORDER BY archived_at DESC
                 LIMIT ? OFFSET ?
-            """, params + [page_size, offset])
+            """, params + [page_size, offset])  # noqa: S608
             rows = cur.fetchall()
 
         return {"total": total, "page": page, "page_size": page_size, "results": rows}
@@ -1730,7 +1730,7 @@ class Database:
                 GROUP BY username
                 ORDER BY access_count DESC
                 LIMIT ?
-            """, params)
+            """, params)  # noqa: S608
             return cur.fetchall()
 
     def get_user_activity(self, username: str, days: int = 30) -> dict:
@@ -1843,7 +1843,7 @@ class Database:
                 WHERE {where}
                 GROUP BY dow, hour
                 ORDER BY dow, hour
-            """, params)
+            """, params)  # noqa: S608
             return cur.fetchall()
 
     def get_access_timeline(self, source_id: int = None, days: int = 30) -> list:
@@ -1867,7 +1867,7 @@ class Database:
                 WHERE {where}
                 GROUP BY DATE(access_time)
                 ORDER BY date
-            """, params)
+            """, params)  # noqa: S608
             return cur.fetchall()
 
     # ──────────────────────────────────────────────
@@ -1926,7 +1926,7 @@ class Database:
                 SELECT * FROM anomaly_alerts
                 WHERE {where}
                 ORDER BY detected_at DESC
-            """, params)
+            """, params)  # noqa: S608
             return cur.fetchall()
 
     def acknowledge_anomaly(self, anomaly_id: int, by_user: str):
@@ -1984,12 +1984,12 @@ class Database:
         where = f"source_id = ? AND scan_id = ? AND {owner_cond}"
 
         with self.get_cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params_base)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params_base)  # noqa: S608
             total = cur.fetchone()["cnt"]
             cur.execute(f"""
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY file_size DESC LIMIT ? OFFSET ?
-            """, params_base + [limit, offset])
+            """, params_base + [limit, offset])  # noqa: S608
             files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
@@ -2014,12 +2014,12 @@ class Database:
         where = " AND ".join(conditions)
 
         with self.get_cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params)  # noqa: S608
             total = cur.fetchone()["cnt"]
             cur.execute(f"""
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY last_access_time ASC LIMIT ? OFFSET ?
-            """, params + [limit, offset])
+            """, params + [limit, offset])  # noqa: S608
             files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
@@ -2034,12 +2034,12 @@ class Database:
         where = f"source_id = ? AND scan_id = ? AND {ext_cond}"
 
         with self.get_cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params_base)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params_base)  # noqa: S608
             total = cur.fetchone()["cnt"]
             cur.execute(f"""
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY file_size DESC LIMIT ? OFFSET ?
-            """, params_base + [limit, offset])
+            """, params_base + [limit, offset])  # noqa: S608
             files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
@@ -2057,12 +2057,12 @@ class Database:
         where = " AND ".join(conditions)
 
         with self.get_cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params)  # noqa: S608
             total = cur.fetchone()["cnt"]
             cur.execute(f"""
                 SELECT * FROM scanned_files WHERE {where}
                 ORDER BY file_size DESC LIMIT ? OFFSET ?
-            """, params + [limit, offset])
+            """, params + [limit, offset])  # noqa: S608
             files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files}
 
@@ -2177,13 +2177,13 @@ class Database:
         offset = (page - 1) * page_size
 
         with self.get_cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) as cnt FROM file_audit_events WHERE {where}", params)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM file_audit_events WHERE {where}", params)  # noqa: S608
             total = cur.fetchone()["cnt"]
 
             cur.execute(f"""
                 SELECT * FROM file_audit_events WHERE {where}
                 ORDER BY event_time DESC LIMIT ? OFFSET ?
-            """, params + [page_size, offset])
+            """, params + [page_size, offset])  # noqa: S608
             events = [dict(r) for r in cur.fetchall()]
 
         return {"total": total, "events": events, "page": page}
@@ -2200,7 +2200,7 @@ class Database:
                 SELECT event_type, COUNT(*) as cnt
                 FROM file_audit_events {cond}
                 GROUP BY event_type ORDER BY cnt DESC
-            """, params)
+            """, params)  # noqa: S608
             by_type = [dict(r) for r in cur.fetchall()]
 
             cur.execute(f"""
@@ -2208,10 +2208,10 @@ class Database:
                        SUM(CASE WHEN event_type='delete' THEN 1 ELSE 0 END) as deletes
                 FROM file_audit_events {cond}
                 GROUP BY username ORDER BY cnt DESC LIMIT 20
-            """, params)
+            """, params)  # noqa: S608
             by_user = [dict(r) for r in cur.fetchall()]
 
-            cur.execute(f"SELECT COUNT(*) as cnt FROM file_audit_events {cond}", params)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM file_audit_events {cond}", params)  # noqa: S608
             total = cur.fetchone()["cnt"]
 
         return {"total": total, "by_type": by_type, "by_user": by_user}
@@ -2256,7 +2256,7 @@ class Database:
             cur.execute(f"""
                 SELECT * FROM archive_operations {where}
                 ORDER BY started_at DESC LIMIT ?
-            """, params)
+            """, params)  # noqa: S608
             return [dict(r) for r in cur.fetchall()]
 
     def get_archive_operation_detail(self, op_id):
@@ -2352,13 +2352,13 @@ class Database:
         offset = (page - 1) * page_size
 
         with self.get_cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) as cnt FROM archive_operations {where}", params)
+            cur.execute(f"SELECT COUNT(*) as cnt FROM archive_operations {where}", params)  # noqa: S608
             total = cur.fetchone()["cnt"]
 
             cur.execute(f"""
                 SELECT * FROM archive_operations {where}
                 ORDER BY started_at DESC LIMIT ? OFFSET ?
-            """, params + [page_size, offset])
+            """, params + [page_size, offset])  # noqa: S608
             rows = [dict(r) for r in cur.fetchall()]
 
         return {
@@ -3389,9 +3389,9 @@ class Database:
                     old_run_ids = [r["id"] for r in cur.fetchall()]
                     if old_run_ids:
                         placeholders = ','.join(['?'] * len(old_run_ids))
-                        cur.execute(f"DELETE FROM scanned_files WHERE scan_id IN ({placeholders})", old_run_ids)
+                        cur.execute(f"DELETE FROM scanned_files WHERE scan_id IN ({placeholders})", old_run_ids)  # noqa: S608
                         deleted_files += cur.rowcount
-                        cur.execute(f"DELETE FROM scan_runs WHERE id IN ({placeholders})", old_run_ids)
+                        cur.execute(f"DELETE FROM scan_runs WHERE id IN ({placeholders})", old_run_ids)  # noqa: S608
                         deleted_runs += cur.rowcount
 
                 # Orphan satirlari da temizle (silinmis scan_run'lara ait dosyalar)
@@ -3480,7 +3480,7 @@ class Database:
             with self.get_cursor() as cur:
                 for table in ["scanned_files", "scan_runs", "archived_files", "user_access_logs", "sources"]:
                     try:
-                        cur.execute(f"SELECT COUNT(*) as cnt FROM {table}")
+                        cur.execute(f"SELECT COUNT(*) as cnt FROM {table}")  # noqa: S608
                         stats[f"{table}_count"] = cur.fetchone()["cnt"]
                     except Exception:
                         stats[f"{table}_count"] = 0

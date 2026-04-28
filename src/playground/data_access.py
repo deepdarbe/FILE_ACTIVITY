@@ -116,7 +116,9 @@ def open_duckdb_readonly(db_path: Path, memory_limit: str = "512MB",
 
     conn = duckdb.connect(database=":memory:")
     try:
+        # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         conn.execute(f"SET memory_limit='{memory_limit}'")
+        # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         conn.execute(f"SET threads={int(threads)}")
         try:
             conn.execute("INSTALL sqlite")
@@ -126,6 +128,7 @@ def open_duckdb_readonly(db_path: Path, memory_limit: str = "512MB",
         conn.execute("LOAD sqlite")
         # Try the explicit READ_ONLY form first; some duckdb builds use
         # a different keyword casing.
+        # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
         attach_variants = [
             f"ATTACH '{db_path}' AS sqlite_db (TYPE SQLITE, READ_ONLY)",
             f"ATTACH '{db_path}' AS sqlite_db (TYPE SQLITE)",
