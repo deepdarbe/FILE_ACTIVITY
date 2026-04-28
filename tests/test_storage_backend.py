@@ -117,10 +117,22 @@ def test_storage_manager_explicit_sqlite(db):
     assert isinstance(mgr.backend, SqliteBackend)
 
 
-def test_storage_manager_elasticsearch_raises_not_implemented(db):
-    """ES backend is reserved for Phase 2 — must raise NotImplementedError."""
-    with pytest.raises(NotImplementedError):
-        StorageManager(db, {"storage": {"backend": "elasticsearch"}})
+def test_storage_manager_elasticsearch_lazy_imports(db):
+    """Phase 2 (#114): ES backend is wired but the import is lazy.
+
+    If the ``elasticsearch`` client is not installed the constructor
+    raises ``ImportError`` with a pointer to ``requirements-elastic.txt``.
+    If it IS installed the constructor must succeed (network ping is
+    deferred to ``health_check`` so a missing cluster doesn't break
+    boot)."""
+    try:
+        import elasticsearch  # noqa: F401
+    except Exception:
+        with pytest.raises(ImportError):
+            StorageManager(db, {"storage": {"backend": "elasticsearch"}})
+        return
+    mgr = StorageManager(db, {"storage": {"backend": "elasticsearch"}})
+    assert mgr.name == "elasticsearch"
 
 
 def test_storage_manager_unknown_backend_raises(db):

@@ -473,6 +473,39 @@ arasındaki audit eventleri gözden geçir.
 
 ---
 
+## Switching to Elasticsearch (optional)
+
+Phase 2 of issue #114 ships an optional ``ElasticsearchBackend`` so
+large deployments can offload dashboard queries to an ES cluster
+(Phase 3 wires the dashboard query layer; Phase 4 ships the SQLite ->
+ES backfill / migration tool). SQLite remains the default.
+
+```bash
+# 1) Install the optional client (SQLite-only deployments skip this).
+pip install -r requirements-elastic.txt
+
+# 2) config.yaml — flip backend and uncomment the connection block:
+# storage:
+#   backend: "elasticsearch"
+#   elasticsearch:
+#     hosts: ["https://es.internal:9200"]
+#     api_key: "${FILEACTIVITY_ES_API_KEY}"
+#     verify_certs: true
+#     request_timeout: 30
+
+# 3) Provide the API key out-of-band (env var).
+export FILEACTIVITY_ES_API_KEY="..."
+
+# 4) Restart the service / dashboard. The ops banner will reflect
+#    the active backend; ``health_check`` never raises, so a missing
+#    cluster shows up as a banner, not a crash.
+```
+
+**Migration of existing SQLite data is NOT in this release** — the
+backfill tool ships in Phase 4 of #114. Until then, switching backends
+on a populated install means new scans land in ES while historical
+scans remain queryable only via the SQLite tool.
+
 ## Performans Ayarı
 
 ### Hyperscan opt-in (Linux)
