@@ -171,7 +171,15 @@ scanner:
     # uzerinden tek INSERT ile SQLite'a ingest eder. 100k+ satirli scan'lerde
     # row-by-row INSERT'e gore 10-50x hizli; pyarrow yoksa otomatik olarak
     # klasik bulk_insert_scanned_files yoluna dusulur.
-    enabled: true
+    #
+    # Issue #174 — varsayilan KAPALI. DuckDB ATTACH(READ_WRITE) yolu, dashboard
+    # / analytics tarafinda canli bir SQLite reader ile cakistiginda "database
+    # is locked" verip tarama 100k satirda kesiliyor. Klasik executemany
+    # yolu busy_timeout=60s + retry-with-backoff ile ayni problemi yasamiyor.
+    # Customer hat verisinde 3.1M satirlik scan icin executemany ~10-15 dk
+    # civari; DuckDB hizi sadece reader-yokken kazandiriyor — bu nadir.
+    # Manuel acmak icin: enabled: true (bilincli risk alarak).
+    enabled: false
     flush_rows: 50000         # buffer bu satira ulasinca flush et
     flush_seconds: 30         # son flush bu sn'den eski ise flush et
     staging_dir: "data/staging"
