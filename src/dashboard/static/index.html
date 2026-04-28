@@ -134,9 +134,34 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 /* === PROGRESS BAR === */
 .progress-container { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin-bottom: 24px; display: none; }
 .progress-container.active { display: block; animation: fadeIn 0.3s; }
+/* Issue #177 — scan state machine: keep banner visible after scan ends */
+.progress-container.scan-scanning { border-color: var(--accent); }
+.progress-container.scan-scanning .progress-bar .fill { background: linear-gradient(90deg, var(--accent), var(--accent-light)); }
+.progress-container.scan-completed { border-color: var(--success); }
+.progress-container.scan-completed .progress-header .title { color: var(--success); }
+.progress-container.scan-completed .progress-bar .fill { background: linear-gradient(90deg, var(--success), #34d399); animation: none; }
+.progress-container.scan-completed .progress-bar .fill::after { display: none; }
+.progress-container.scan-failed { border-color: var(--danger); }
+.progress-container.scan-failed .progress-header .title { color: var(--danger); }
+.progress-container.scan-failed .progress-bar .fill { background: linear-gradient(90deg, var(--danger), #f87171); animation: none; }
+.progress-container.scan-failed .progress-bar .fill::after { display: none; }
+.progress-container.scan-cancelled { border-color: var(--warning); }
+.progress-container.scan-cancelled .progress-header .title { color: var(--warning); }
+.progress-container.scan-cancelled .progress-bar .fill { background: linear-gradient(90deg, var(--warning), #fcd34d); animation: none; }
+.progress-container.scan-cancelled .progress-bar .fill::after { display: none; }
+.progress-container.scan-idle { border-style: dashed; border-color: var(--border-light); padding: 12px 20px; }
+#scan-progress-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+#scan-progress-actions { display: none; margin-top: 14px; }
+.scan-completed #scan-progress-actions,
+.scan-failed #scan-progress-actions,
+.scan-cancelled #scan-progress-actions,
+.scan-idle #scan-progress-actions { display: flex; gap: 8px; }
 .progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .progress-header .title { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
 .progress-header .title .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border-light); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.scan-completed .progress-header .title .spinner,
+.scan-failed .progress-header .title .spinner,
+.scan-cancelled .progress-header .title .spinner { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 .progress-bar { height: 8px; background: var(--bg-primary); border-radius: 4px; overflow: hidden; margin-bottom: 16px; }
@@ -146,6 +171,9 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 .progress-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
 .progress-stat { text-align: center; }
 .progress-stat .val { font-size: 18px; font-weight: 700; color: var(--accent-light); }
+.scan-completed .progress-stat .val { color: var(--success); }
+.scan-failed .progress-stat .val { color: var(--danger); }
+.scan-cancelled .progress-stat .val { color: var(--warning); }
 .progress-stat .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-top: 2px; }
 
 /* === CHART CONTAINERS === */
@@ -714,9 +742,13 @@ body.sidebar-open { overflow: hidden; }
         <div class="actions"><button class="btn btn-primary" onclick="openAddSourceModal()">+ Kaynak Ekle</button></div>
     </div>
     <!-- SCAN PROGRESS -->
-    <div class="progress-container" id="scan-progress">
+    <!-- Issue #177 — scan state machine: banner stays visible after completion -->
+    <div class="progress-container scan-scanning" id="scan-progress">
         <div class="progress-header">
-            <div class="title"><span class="spinner"></span> Tarama Devam Ediyor</div>
+            <div>
+                <div class="title"><span class="spinner"></span> <span id="scan-title-text">Tarama Devam Ediyor</span></div>
+                <div id="scan-progress-subtitle"></div>
+            </div>
             <div id="scan-elapsed" style="font-size:12px;color:var(--text-muted)">0s</div>
         </div>
         <div class="progress-bar"><div class="fill" id="scan-progress-bar" style="width:0%"></div></div>
@@ -726,6 +758,9 @@ body.sidebar-open { overflow: hidden; }
             <div class="progress-stat"><div class="val" id="sp-speed">0</div><div class="lbl">Dosya/sn</div></div>
             <div class="progress-stat"><div class="val" id="sp-errors">0</div><div class="lbl">Hata</div></div>
             <div class="progress-stat"><div class="val" id="sp-dir" style="font-size:11px;word-break:break-all">-</div><div class="lbl">Aktif Dizin</div></div>
+        </div>
+        <div id="scan-progress-actions">
+            <button class="btn btn-sm btn-primary" id="scan-restart-btn" onclick="activeScanSourceId && startScan(activeScanSourceId)" style="font-size:12px">🔍 Yeni Tarama</button>
         </div>
     </div>
     <div class="source-cards" id="source-list"></div>
@@ -2631,10 +2666,27 @@ document.querySelectorAll('.modal-overlay').forEach(m => m.addEventListener('cli
 // ═══════════════════════════════════════════════════
 // SOURCES
 // ═══════════════════════════════════════════════════
+// Issue #177 — per-source trend cache for delta line in source cards.
+// Keyed by source_id, populated lazily in loadSources().
+const _sourceTrends = {};
+
 async function loadSources() {
     sources = await api('/sources');
     populateAllSourceSelects();
     renderSources();
+    // Issue #177 — fetch trend data for each source in parallel so the
+    // delta line (Önceki tarama / Δ dosya) can be rendered. Errors are
+    // swallowed — a missing trend just hides the delta line gracefully.
+    if (sources.length > 0) {
+        Promise.all(sources.map(s =>
+            fetch(`/api/trend/${s.id}`, { cache: 'no-store' })
+                .then(r => r.ok ? r.json() : null)
+                .catch(() => null)
+                .then(data => {
+                    if (data) _sourceTrends[s.id] = data;
+                })
+        )).then(() => renderSources()).catch(() => {});
+    }
 }
 
 function populateAllSourceSelects() {
@@ -2665,7 +2717,27 @@ function populateSourceSelect(id) {
 function renderSources() {
     const c = document.getElementById('source-list');
     if (!sources.length) { c.innerHTML = '<div class="empty-state"><div class="icon">📁</div><h3>Kaynak Bulunamadi</h3><p>"+ Kaynak Ekle" ile dosya paylasim kaynagi ekleyin.</p></div>'; return; }
-    c.innerHTML = sources.map(s => `
+    c.innerHTML = sources.map(s => {
+        // Issue #177 — build delta line from cached trend data
+        const trend = _sourceTrends[s.id];
+        let deltaHtml = '';
+        if (trend && trend.scans && trend.scans.length >= 2) {
+            const sorted = trend.scans.slice().sort((a, b) => (a.started_at || '') < (b.started_at || '') ? -1 : 1);
+            const prev = sorted[sorted.length - 2];
+            const latest = sorted[sorted.length - 1];
+            if (prev && prev.started_at && prev.total_files != null) {
+                const prevDate = escapeHtml(prev.started_at.substring(0, 16).replace('T', ' '));
+                const prevFiles = formatNum(prev.total_files || 0);
+                let deltaStr = '';
+                if (trend.growth && trend.growth.file_diff != null) {
+                    const d = trend.growth.file_diff;
+                    const sign = d >= 0 ? '+' : '';
+                    deltaStr = ` <span style="color:${d >= 0 ? 'var(--success)' : 'var(--danger)'}">Δ ${sign}${formatNum(d)} dosya</span>`;
+                }
+                deltaHtml = `<div class="info-row" style="font-size:11px;color:var(--text-muted)"><span class="label">Önceki Tarama</span><span class="value">${prevDate} | ${prevFiles} dosya${deltaStr}</span></div>`;
+            }
+        }
+        return `
         <div class="source-card">
             <div class="source-card-header">
                 <div class="name">📁 ${escapeHtml(s.name)}</div>
@@ -2675,6 +2747,7 @@ function renderSources() {
                 <div class="info-row"><span class="label">Yol</span><span class="value">${escapeHtml(s.unc_path)}</span></div>
                 <div class="info-row"><span class="label">Arsiv</span><span class="value">${escapeHtml(s.archive_dest || '-')}</span></div>
                 <div class="info-row"><span class="label">Son Tarama</span><span class="value">${escapeHtml(s.last_scanned_at ? s.last_scanned_at.substring(0,19) : 'Hic')}</span></div>
+                ${deltaHtml}
                 <div class="info-row"><span class="label">Izleme</span><span class="value" id="watcher-status-${s.id}"><span class="watcher-dot inactive"></span> <span style="font-size:11px;color:var(--text-muted)">Durduruldu</span></span></div>
             </div>
             <div class="source-card-actions">
@@ -2689,7 +2762,8 @@ function renderSources() {
                 <button class="btn btn-sm btn-danger" onclick="deleteSource(${s.id})">🗑️ Sil</button>
             </div>
         </div>
-    `).join('');
+    `;
+    }).join('');
     // Update watcher status for all sources
     sources.forEach(s => updateWatcherStatus(s.id));
 }
@@ -2737,7 +2811,9 @@ let activeScanSourceId = null;
 async function startScan(sourceId) {
     activeScanSourceId = sourceId;
     const prog = document.getElementById('scan-progress');
-    prog.classList.add('active');
+    // Issue #177 — reset state classes and show scanning state
+    prog.classList.remove('scan-completed', 'scan-failed', 'scan-cancelled', 'scan-idle');
+    prog.classList.add('active', 'scan-scanning');
 
     // Reset progress
     document.getElementById('scan-progress-bar').style.width = '2%';
@@ -2745,8 +2821,14 @@ async function startScan(sourceId) {
     document.getElementById('sp-size').textContent = '0 B';
     document.getElementById('sp-speed').textContent = '0';
     document.getElementById('sp-errors').textContent = '0';
-    document.getElementById('sp-dir').textContent = 'Baslatiliyor...';
+    document.getElementById('sp-dir').textContent = 'Başlatılıyor...';
     document.getElementById('scan-elapsed').textContent = '0s';
+    const titleSpan = document.getElementById('scan-title-text');
+    if (titleSpan) titleSpan.textContent = 'Tarama Devam Ediyor';
+    const subtitle = document.getElementById('scan-progress-subtitle');
+    if (subtitle) subtitle.textContent = '';
+    // Reset edge-trigger so first completion fires toast
+    pollScanProgress._lastSeenStatus = 'scanning';
 
     // Fire scan (returns immediately - runs in background)
     try {
@@ -2754,10 +2836,10 @@ async function startScan(sourceId) {
         if (result.status === 'already_running') {
             notify('Bu kaynak zaten taraniyor!', 'warning');
         } else {
-            notify('Tarama arka planda baslatildi! Diger sayfalara gecebilirsiniz.', 'success');
+            notify('Tarama arka planda başlatıldı! Diğer sayfalara geçebilirsiniz.', 'success');
         }
     } catch(e) {
-        notify(`Tarama baslatilamadi: ${e.message}`, 'error');
+        notify(`Tarama başlatılamadı: ${e.message}`, 'error');
         prog.classList.remove('active');
         activeScanSourceId = null;
         return;
@@ -2798,41 +2880,112 @@ async function pollScanProgress(sourceId) {
             ? p.live_count
             : (p.file_count || 0);
 
+        // Issue #177 — edge-triggered toast: fire only on state transition.
+        // lastSeenStatus is set once per pollScanProgress call-site so
+        // repeated polls at the same state don't re-fire the toast.
+        const previousStatus = pollScanProgress._lastSeenStatus;
+        const currentStatus = p.status;
+
+        // ── Helper: transition scan-progress to a terminal state ──────────
+        function _applyTerminalState(stateClass, titleText, subtitleText, filesText, sizeText, speedText, dirText) {
+            const prog = document.getElementById('scan-progress');
+            if (!prog) return;
+            prog.classList.remove('scan-scanning', 'scan-completed', 'scan-failed', 'scan-cancelled', 'scan-idle');
+            prog.classList.add(stateClass);
+
+            const titleSpan = document.getElementById('scan-title-text');
+            if (titleSpan) titleSpan.textContent = titleText;
+
+            const subtitle = document.getElementById('scan-progress-subtitle');
+            if (subtitle) subtitle.textContent = subtitleText || '';
+
+            document.getElementById('sp-files').textContent = filesText || '0';
+            document.getElementById('sp-size').textContent = sizeText || '0 B';
+            document.getElementById('sp-speed').textContent = speedText || '—';
+            document.getElementById('sp-dir').textContent = dirText || '';
+
+            // Persist last-known source so restart button works
+            if (activeScanSourceId) {
+                const btn = document.getElementById('scan-restart-btn');
+                if (btn) btn.setAttribute('onclick', `startScan(${activeScanSourceId})`);
+            }
+        }
+
         // Tarama bitti mi?
         if (p.finished) {
             clearInterval(scanPollingInterval);
             scanPollingInterval = null;
 
             document.getElementById('scan-progress-bar').style.width = '100%';
-            document.getElementById('sp-files').textContent = formatNum(p.total_files || displayCount);
-            document.getElementById('sp-size').textContent = p.total_size_formatted || formatSize(p.total_size);
-            document.getElementById('sp-speed').textContent = p.files_per_second || '0';
-            document.getElementById('sp-dir').textContent = 'Tamamlandi!';
 
-            // Bildirim sadece 1 kez goster
-            if (!window._scanNotified) {
-                window._scanNotified = true;
-                if (p.total_files > 0 || displayCount > 0) {
-                    notify(`Tarama tamamlandi! ${formatNum(p.total_files || displayCount)} dosya, ${p.total_size_formatted || formatSize(p.total_size)}`, 'success');
+            const finalFiles = formatNum(p.total_files || displayCount);
+            const finalSize = p.total_size_formatted || formatSize(p.total_size);
+            const finalSpeed = p.files_per_second ? (p.files_per_second + '/s') : '—';
+            const finalErrors = String(p.errors || '0');
+            const elapsed = p.elapsed || '';
+            const finStatus = p.status || 'completed';
+
+            // Build subtitle: "28-04-2026 18:31 | 33sn | 0 hata"
+            const now = new Date();
+            const pad = n => String(n).padStart(2, '0');
+            const ts = `${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+            const subtitle = [ts, elapsed, `${p.errors || 0} hata`].filter(Boolean).join(' | ');
+
+            document.getElementById('sp-errors').textContent = finalErrors;
+
+            if (finStatus === 'cancelled') {
+                _applyTerminalState('scan-cancelled',
+                    'İptal edildi',
+                    subtitle,
+                    finalFiles, finalSize, finalSpeed, '—');
+            } else if (finStatus === 'failed') {
+                const errMsg = p.error || p.error_message || '';
+                _applyTerminalState('scan-failed',
+                    'Tarama başarısız',
+                    errMsg ? `${subtitle} — ${errMsg}` : subtitle,
+                    finalFiles, finalSize, finalSpeed, '—');
+            } else {
+                _applyTerminalState('scan-completed',
+                    `Son tarama: ${ts}`,
+                    `${elapsed ? elapsed + ' | ' : ''}${finalFiles} dosya | ${p.errors || 0} hata`,
+                    finalFiles, finalSize, finalSpeed, 'Tamamlandı');
+            }
+
+            // Issue #177 — edge-triggered toast on state transition
+            if (previousStatus !== finStatus) {
+                pollScanProgress._lastSeenStatus = finStatus;
+                if (finStatus === 'cancelled') {
+                    notify(`Tarama iptal edildi: ${finalFiles} dosya kaydedildi`, 'warning');
+                } else if (finStatus === 'failed') {
+                    const errMsg = p.error || p.error_message || '';
+                    notify(`Tarama başarısız${errMsg ? ': ' + errMsg : ''}`, 'error');
                 } else {
-                    notify('Tarama tamamlandi ancak dosya bulunamadi.', 'warning');
+                    // completed (or any other finished state)
+                    if (p.total_files > 0 || displayCount > 0) {
+                        notify(`Tarama tamamlandı: ${finalFiles} dosya, ${finalSize}`, 'success');
+                    } else {
+                        notify('Tarama tamamlandı ancak dosya bulunamadı.', 'warning');
+                    }
                 }
-                setTimeout(() => { window._scanNotified = false; }, 30000);
             }
 
             setTimeout(() => { loadSources(); }, 1000);
-            setTimeout(() => {
-                const prog = document.getElementById('scan-progress');
-                prog.classList.remove('active');
-                activeScanSourceId = null;
-                // Global mini progress'i de gizle
-                const miniProg = document.getElementById('global-scan-progress');
-                if (miniProg) miniProg.style.display = 'none';
-            }, 5000);
+            // Global mini progress'i gizle (artik banner kalici)
+            const miniProg = document.getElementById('global-scan-progress');
+            if (miniProg) miniProg.style.display = 'none';
             return;
         }
 
         if (p.status === 'scanning' || p.status === 'generating_report' || p.status === 'connecting' || p.status === 'resuming') {
+            pollScanProgress._lastSeenStatus = p.status;
+
+            // Ensure scanning state class is set
+            const prog = document.getElementById('scan-progress');
+            if (prog && !prog.classList.contains('scan-scanning')) {
+                prog.classList.remove('scan-completed', 'scan-failed', 'scan-cancelled', 'scan-idle');
+                prog.classList.add('scan-scanning');
+            }
+
             // displayCount comes from the function-scope definition at the
             // top of pollScanProgress (#138 — prefers p.live_count over
             // p.file_count during MFT collection phase).
@@ -2861,19 +3014,19 @@ async function pollScanProgress(sourceId) {
             // Issue #135 — phase label (MFT okunuyor / DB'ye yaziliyor /
             // Analiz calisiyor / Tamamlandi). Falls back to the previous
             // "Tarama Devam Ediyor" header when phase is missing.
-            const titleEl = document.querySelector('#scan-progress .progress-header .title');
-            if (titleEl) {
+            const titleSpan = document.getElementById('scan-title-text');
+            if (titleSpan) {
                 let phaseLabel = 'Tarama Devam Ediyor';
                 if (p.phase === 'enumeration') {
-                    phaseLabel = 'MFT okunuyor (' + formatNum(displayCount) + ' kayit)';
+                    phaseLabel = 'MFT okunuyor (' + formatNum(displayCount) + ' kayıt)';
                 } else if (p.phase === 'insert') {
-                    phaseLabel = "DB'ye yaziliyor (" + formatNum(displayCount) + ' dosya)';
+                    phaseLabel = "DB'ye yazılıyor (" + formatNum(displayCount) + ' dosya)';
                 } else if (p.phase === 'analysis') {
-                    phaseLabel = 'Analiz calisiyor';
+                    phaseLabel = 'Analiz çalışıyor';
                 } else if (p.phase === 'completed') {
-                    phaseLabel = 'Tamamlandi';
+                    phaseLabel = 'Tamamlandı';
                 }
-                titleEl.innerHTML = '<span class="spinner"></span> ' + phaseLabel;
+                titleSpan.textContent = phaseLabel;
             }
             // Animated progress: prefer server-side phase_pct when available
             // so the bar reflects the lifecycle (enumeration -> insert ->
@@ -2924,6 +3077,7 @@ async function pollScanProgress(sourceId) {
         }
     } catch(e) { /* silent */ }
 }
+pollScanProgress._lastSeenStatus = null;
 
 // ═══════════════════════════════════════════════════
 // FOLDER BROWSER
@@ -7127,6 +7281,13 @@ async function executeApproval(id, btn) {
                 // Agir verileri arka planda yukle
                 loadOverview();
                 loadAnomalies();
+                // Issue #177 — fetch trend data for delta lines after initial render
+                Promise.all(sources.map(s =>
+                    fetch(`/api/trend/${s.id}`, { cache: 'no-store' })
+                        .then(r => r.ok ? r.json() : null)
+                        .catch(() => null)
+                        .then(data => { if (data) _sourceTrends[s.id] = data; })
+                )).then(() => renderSources()).catch(() => {});
             }
         } else {
             // Fallback: eski yontem
