@@ -4330,11 +4330,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/security/feature-flags")
     async def security_feature_flags():
-        """Read-only view of the three security feature flags so the
-        dashboard can render a "kapali" banner when a page is disabled
-        in config.yaml. Cheap; no DB access.
+        """Read-only view of the security feature flags so the dashboard
+        can render a "kapali" banner when a page is disabled in
+        config.yaml. Cheap; no DB access.
         """
         sec = (config or {}).get("security", {}) or {}
+        scanner_cfg = (config or {}).get("scanner", {}) or {}
         ransom = sec.get("ransomware", {}) or {}
         orphan = sec.get("orphan_sid", {}) or {}
         return {
@@ -4350,6 +4351,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             # ACL analyzer has no enabled flag in config.yaml today; it
             # is always available (read-side is DB-only).
             "acl": {"enabled": True},
+            # Issue #144 Phase 1 — wrong-extension detection.
+            "extension_anomalies": {
+                "enabled": bool(
+                    scanner_cfg.get("detect_wrong_extensions", False)
+                ),
+            },
         }
 
     @app.get("/api/security/orphan-sids/{source_id}/export.xlsx")
@@ -4494,6 +4501,116 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                      "Inherited"],
             filename=filename,
             sheet_title="Trustee Paths",
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # Extension-anomaly findings (#144 Phase 1 — Czkawka pattern)
+    # ─────────────────────────────────────────────────────────────────
+
+    @app.get("/api/security/extension-anomalies")
+    async def list_extension_anomalies(
+        scan_id: Optional[int] = None,
+        source_id: Optional[int] = None,
+        severity: Optional[str] = None,
+        limit: int = Query(500, ge=1, le=10000),
+        offset: int = Query(0, ge=0),
+    ):
+        """Paginated list of extension/MIME mismatches.
+
+        Filters:
+          * ``scan_id`` — explicit scan to query
+          * ``source_id`` — convenience: resolves to that source's
+            latest completed scan and queries that scan_id.
+          * ``severity`` — one of ``low|medium|high|critical``
+        """
+        if severity is not None and severity not in {
+            "low", "medium", "high", "critical"
+        }:
+            raise HTTPException(400, "severity must be low|medium|high|critical")
+
+        # Resolve source_id -> latest scan if given
+        resolved_scan_id = scan_id
+        if resolved_scan_id is None and source_id is not None:
+            resolved_scan_id = db.get_latest_scan_id(
+                source_id, include_running=False,
+            )
+
+        rows = db.list_extension_anomalies(
+            scan_id=resolved_scan_id,
+            severity=severity,
+            limit=limit,
+            offset=offset,
+        )
+        total = db.count_extension_anomalies(
+            scan_id=resolved_scan_id, severity=severity,
+        )
+        # By-severity breakdown for the dashboard summary cards.
+        by_sev = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        try:
+            with db.get_cursor() as cur:
+                where = "WHERE scan_id = ?" if resolved_scan_id is not None else ""
+                params = (resolved_scan_id,) if resolved_scan_id is not None else ()
+                cur.execute(
+                    f"SELECT severity, COUNT(*) AS c "
+                    f"FROM extension_anomalies {where} "
+                    f"GROUP BY severity",
+                    params,
+                )
+                for r in cur.fetchall():
+                    sev = (r["severity"] or "").lower()
+                    if sev in by_sev:
+                        by_sev[sev] = int(r["c"])
+        except Exception:
+            pass
+
+        return {
+            "scan_id": resolved_scan_id,
+            "source_id": source_id,
+            "severity_filter": severity,
+            "total": int(total),
+            "by_severity": by_sev,
+            "items": rows,
+            "limit": int(limit),
+            "offset": int(offset),
+        }
+
+    @app.get(
+        "/api/security/extension-anomalies/{source_id}/export.xlsx"
+    )
+    async def extension_anomalies_export_xlsx(
+        source_id: int,
+        severity: Optional[str] = None,
+    ):
+        """XLSX export of extension-anomaly rows for ``source_id``'s
+        latest completed scan. Mirrors the orphan-SID / ACL exports.
+        """
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, f"No scan_runs found for source {source_id}")
+        rows_db = db.list_extension_anomalies(
+            scan_id=scan_id, severity=severity, limit=1_000_000,
+        )
+        rows = []
+        for r in rows_db:
+            rows.append([
+                r.get("file_path", ""),
+                r.get("declared_ext", "") or "",
+                r.get("detected_mime", "") or "",
+                r.get("detected_ext", "") or "",
+                r.get("severity", "") or "",
+                r.get("detected_at", "") or "",
+            ])
+        filename = (
+            f"extension_anomalies_source{source_id}_scan{scan_id}.xlsx"
+        )
+        return _xlsx_response(
+            rows,
+            headers=[
+                "File Path", "Declared Ext", "Detected MIME",
+                "Detected Ext", "Severity", "Detected At",
+            ],
+            filename=filename,
+            sheet_title="Extension Anomalies",
         )
 
     # ─────────────────────────────────────────────────────────────────

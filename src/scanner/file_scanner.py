@@ -972,6 +972,19 @@ class FileScanner:
             except Exception as e:
                 logger.warning("AI insights hesaplanamadi (scan_id=%d): %s", scan_id, e)
 
+            # Issue #144 Phase 1 — opt-in wrong-extension detection.
+            # Default OFF (perf cost: libmagic.from_file() per scanned
+            # file). When enabled, run as a separate post-scan phase so
+            # the main MFT/SMB walk never blocks on libmagic.
+            if self.config.get("detect_wrong_extensions", False):
+                try:
+                    self._run_extension_check(scan_id)
+                except Exception as e:
+                    logger.warning(
+                        "Extension-check pasi basarisiz (scan_id=%d): %s",
+                        scan_id, e,
+                    )
+
         # Son ilerleme durumunu guncelle
         # Issue #135 — phase artik ``completed`` (veya cancelled/failed). Bu
         # alan /api/scan/progress yanitinda kullanilir; in-memory progress
@@ -1029,6 +1042,98 @@ class FileScanner:
             progress["status"] = "completed"
 
         return result
+
+    def _run_extension_check(self, scan_id: int) -> dict:
+        """Issue #144 Phase 1 — wrong-extension detection (Czkawka pattern).
+
+        Iterates the freshly-inserted scanned_files for ``scan_id``,
+        runs ``ExtensionChecker.check_file()`` on each path and bulk-
+        inserts the mismatches into ``extension_anomalies``. Skips
+        cleanly when libmagic isn't installed.
+
+        Returns a small summary dict ({checked, anomalies, by_severity}).
+        """
+        from src.analyzer.extension_check import ExtensionChecker
+
+        checker = ExtensionChecker()
+        if not checker.available:
+            logger.info(
+                "Extension-check atlandi (libmagic yok). pip install -r "
+                "requirements-accel.txt"
+            )
+            return {"checked": 0, "anomalies": 0, "skipped_no_libmagic": True}
+
+        progress = _scan_progress.get(scan_id) or {}
+        progress["phase"] = "extension_check"
+
+        t0 = time.time()
+        # Stream paths so we don't materialise the full file set in
+        # memory on big shares.
+        paths_iter = self.db.iter_scanned_paths(scan_id) \
+            if hasattr(self.db, "iter_scanned_paths") \
+            else self._iter_scan_paths(scan_id)
+
+        anomalies = []
+        checked = 0
+        for path in paths_iter:
+            checked += 1
+            hit = checker.check_file(path)
+            if hit is not None:
+                anomalies.append(hit)
+            # Flush in chunks of 500 so a multi-million file scan doesn't
+            # hold all anomalies in memory.
+            if len(anomalies) >= 500:
+                self.db.insert_extension_anomalies(scan_id, anomalies)
+                anomalies = []
+
+        if anomalies:
+            self.db.insert_extension_anomalies(scan_id, anomalies)
+
+        elapsed = time.time() - t0
+        # Aggregate by severity for the log line / summary.
+        by_sev: dict[str, int] = {}
+        try:
+            counts = self.db.list_extension_anomalies(
+                scan_id=scan_id, limit=10_000_000,
+            )
+            for r in counts:
+                sev = r["severity"] or "?"
+                by_sev[sev] = by_sev.get(sev, 0) + 1
+        except Exception:
+            pass
+
+        total = sum(by_sev.values())
+        logger.info(
+            "Extension-check (scan_id=%d): %d dosya kontrol edildi, "
+            "%d anomali (kritik=%d, yuksek=%d, orta=%d, dusuk=%d) %.1f sn",
+            scan_id, checked, total,
+            by_sev.get("critical", 0),
+            by_sev.get("high", 0),
+            by_sev.get("medium", 0),
+            by_sev.get("low", 0),
+            elapsed,
+        )
+        return {
+            "scan_id": scan_id,
+            "checked": checked,
+            "anomalies": total,
+            "by_severity": by_sev,
+            "elapsed_seconds": round(elapsed, 2),
+        }
+
+    def _iter_scan_paths(self, scan_id: int):
+        """Fallback iterator — stream file_path values for ``scan_id``.
+
+        Used by ``_run_extension_check`` if Database doesn't expose a
+        dedicated streaming helper.
+        """
+        with self.db.get_cursor() as cur:
+            cur.execute(
+                "SELECT file_path FROM scanned_files WHERE scan_id = ?",
+                (scan_id,),
+            )
+            for row in cur.fetchall():
+                yield row["file_path"]
 
     def _generate_auto_report(self, source_id: int, source_name: str) -> dict:
         """Tarama sonrasi otomatik rapor uret ve kaydet."""
