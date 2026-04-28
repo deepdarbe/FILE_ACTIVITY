@@ -1380,6 +1380,86 @@ class Database:
                 ) for f in files]
             )
 
+    def bulk_update_file_sizes(self, rows: list) -> int:
+        """Issue #175 — bulk-UPDATE file_size + timestamp columns.
+
+        Used by the post-walk size-enrich pass (see
+        :class:`src.scanner.size_enricher.SizeEnricher`). Each row dict
+        carries ``scan_id``, ``file_path``, ``file_size`` and any subset
+        of ``last_modify_time`` / ``last_access_time`` / ``creation_time``.
+        The match is on ``(scan_id, file_path)`` so the same path on a
+        different historical scan is not affected.
+
+        Retry semantics mirror :meth:`bulk_insert_scanned_files` (#176):
+        if SQLite raises ``database is locked`` / ``database is busy``
+        we retry up to 5 times with exponential backoff
+        (1, 2, 4, 8, 16 seconds). All other ``OperationalError`` /
+        ``DatabaseError`` propagate immediately. Returns the total
+        ``cursor.rowcount`` for the executemany — i.e. the number of
+        rows actually updated. If the input list is empty we return 0
+        without touching the connection.
+        """
+        if not rows:
+            return 0
+
+        # Build the parameter tuples once. Missing optional keys map to
+        # NULL so we don't accidentally overwrite a column we didn't
+        # mean to touch (callers may pass a row with only file_size).
+        params = [
+            (
+                int(r.get("file_size") or 0),
+                r.get("last_modify_time"),
+                r.get("last_access_time"),
+                r.get("creation_time"),
+                int(r["scan_id"]),
+                r["file_path"],
+            )
+            for r in rows
+        ]
+        sql = (
+            "UPDATE scanned_files "
+            "SET file_size = ?, "
+            "    last_modify_time = COALESCE(?, last_modify_time), "
+            "    last_access_time = COALESCE(?, last_access_time), "
+            "    creation_time    = COALESCE(?, creation_time) "
+            "WHERE scan_id = ? AND file_path = ?"
+        )
+
+        # 5 attempts with 1/2/4/8/16-second backoff, exactly the schedule
+        # used by bulk_insert_scanned_files (#176).
+        backoff = [1, 2, 4, 8, 16]
+        attempts = len(backoff)
+        last_exc: Optional[Exception] = None
+        for i in range(attempts):
+            try:
+                with self.get_conn() as conn:
+                    cur = conn.executemany(sql, params)
+                    # executemany on sqlite3 returns the cursor; rowcount
+                    # is the running total of affected rows.
+                    return int(getattr(cur, "rowcount", 0) or 0)
+            except sqlite3.OperationalError as exc:
+                msg = str(exc).lower()
+                if "locked" in msg or "busy" in msg:
+                    last_exc = exc
+                    if i == attempts - 1:
+                        # Final attempt failed — propagate.
+                        raise
+                    sleep_for = backoff[i]
+                    logger.warning(
+                        "bulk_update_file_sizes locked, retrying in %ds "
+                        "(attempt %d/%d): %s",
+                        sleep_for, i + 1, attempts, exc,
+                    )
+                    import time as _t
+                    _t.sleep(sleep_for)
+                    continue
+                # Non-lock OperationalError — don't retry.
+                raise
+        # Defensive: shouldn't reach here.
+        if last_exc is not None:
+            raise last_exc
+        return 0
+
     def get_scanned_files_count(self, source_id: int, scan_id: Optional[int] = None) -> int:
         with self.get_cursor() as cur:
             if scan_id:
