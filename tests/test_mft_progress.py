@@ -303,6 +303,10 @@ def test_scan_progress_endpoint_returns_phase(tmp_path) -> None:
     config = {
         "scanner": {"batch_size": 10},
         "database": {"path": str(db_path)},
+        # Issue #158 C-1: TestClient.client.host is "testclient",
+        # not on the localhost bypass — disable auth for this smoke
+        # test of the scan-progress endpoint.
+        "dashboard": {"auth": {"enabled": False}},
     }
     app = create_app(db, config)
     client = TestClient(app)

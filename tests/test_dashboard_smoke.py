@@ -113,6 +113,11 @@ class _StubAnalytics:
 
 
 _BASE_CONFIG: dict[str, Any] = {
+    # Issue #158 C-1: smoke test drives endpoints via TestClient,
+    # whose ``client.host`` ("testclient") isn't on the localhost
+    # bypass list. Disable auth here; auth itself is covered by
+    # ``tests/test_dashboard_auth.py``.
+    "dashboard": {"auth": {"enabled": False}},
     "security": {
         "ransomware": {
             "enabled": True,

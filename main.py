@@ -804,17 +804,62 @@ def schedule_remove(ctx, task_id):
 
 @cli.command("dashboard")
 @click.option("--host", "-h", default=None, help="Host adresi")
+@click.option("--bind", "-b", default=None,
+              help="Alias for --host; matches issue #158 docs (e.g. 0.0.0.0).")
 @click.option("--port", "-p", type=int, default=None, help="Port numarası")
+@click.option("--i-know-what-im-doing", "ack_unsafe", is_flag=True, default=False,
+              help="Acknowledge an explicit insecure binding (--bind 0.0.0.0 "
+                   "with auth disabled). DO NOT use in production.")
 @click.pass_context
-def dashboard(ctx, host, port):
+def dashboard(ctx, host, bind, port, ack_unsafe):
     """Web dashboard başlat."""
     import uvicorn
     from src.dashboard.api import create_app
     app = ctx.obj
 
     dash_config = app.config.get("dashboard", {})
-    host = host or dash_config.get("host", "0.0.0.0")
+    # --bind is the documented C-1 flag; --host kept as the existing
+    # alias for backwards compat. CLI > config; --bind > --host.
+    host = bind or host or dash_config.get("host", "127.0.0.1")
     port = port or dash_config.get("port", 8085)
+
+    # ─────────────────────────────────────────────────────────────
+    # Issue #158 (C-1) — refuse 0.0.0.0 + auth disabled.
+    #
+    # ``DashboardAuth.enabled`` defaults true, so the only way to land
+    # in this branch is to have explicitly set
+    # ``dashboard.auth.enabled: false`` in config.yaml AND request a
+    # non-loopback bind. That is the worst-case combination from the
+    # security audit; we refuse to start unless the operator passes
+    # --i-know-what-im-doing AS WELL. The flag is intentionally
+    # awkward — it is meant to be a deliberate choice, not a habit.
+    # ─────────────────────────────────────────────────────────────
+    auth_cfg = (dash_config.get("auth") or {}) if isinstance(dash_config, dict) else {}
+    auth_enabled = bool(auth_cfg.get("enabled", True))
+    is_lan_bind = host not in ("127.0.0.1", "::1", "localhost")
+    if is_lan_bind and not auth_enabled:
+        if not ack_unsafe:
+            logger.critical(
+                "REFUSING TO START: dashboard.auth.enabled=false with host=%r "
+                "exposes every endpoint unauthenticated on the LAN. Either "
+                "enable auth (set dashboard.auth.enabled: true and export "
+                "FILEACTIVITY_DASHBOARD_TOKEN), bind to 127.0.0.1, or pass "
+                "--i-know-what-im-doing if this really is intentional.",
+                host,
+            )
+            click.echo(
+                "REFUSING TO START: --bind {h} with auth disabled is "
+                "unsafe. See logs for guidance, or pass "
+                "--i-know-what-im-doing to override.".format(h=host),
+                err=True,
+            )
+            ctx.exit(2)
+            return
+        logger.critical(
+            "INSECURE START: --bind=%r with auth disabled and "
+            "--i-know-what-im-doing acknowledged. Every endpoint is "
+            "reachable unauthenticated.", host,
+        )
 
     fastapi_app = create_app(app.db, app.config)
     click.echo(t("dashboard_started", host=host, port=port))

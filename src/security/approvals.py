@@ -146,6 +146,20 @@ class ApprovalRegistry:
         self.config = config or {}
         cfg = (self.config.get("approvals") or {}) if isinstance(self.config, dict) else {}
         self.enabled = bool(cfg.get("enabled", False))
+        # Issue #158 (H-2) — refuse the structurally-unsafe combo of
+        # ``approvals.enabled=true`` with ``identity_source='client_supplied'``.
+        # In that combo any caller can claim the requester's username on the
+        # second leg of the two-person rule, defeating the gate. We raise
+        # at construction time so the dashboard refuses to boot rather than
+        # silently shipping a bypass.
+        identity_source = (cfg.get("identity_source") or "client_supplied").strip().lower()
+        if self.enabled and identity_source == "client_supplied":
+            raise RuntimeError(
+                "approvals.enabled=true is incompatible with "
+                "identity_source='client_supplied' - this combination allows "
+                "trivial self-approval bypass. Set identity_source to "
+                "'windows' or 'header' before enabling approvals."
+            )
         try:
             self.expiry_hours = int(cfg.get("expiry_hours", 24))
         except (TypeError, ValueError):

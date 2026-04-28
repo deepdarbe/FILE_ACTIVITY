@@ -72,6 +72,13 @@ class _StubAnalytics:
 
 
 _BASE_CONFIG = {
+    # Issue #158 C-1: dashboard auth defaults ON. TestClient's
+    # ``client.host`` is the literal "testclient" which isn't on the
+    # localhost bypass list, so every endpoint would 401. Disable auth
+    # here so the integration tests below drive endpoints without
+    # juggling Bearer tokens — auth itself is covered by
+    # ``tests/test_dashboard_auth.py``.
+    "dashboard": {"auth": {"enabled": False}},
     "security": {
         "ransomware": {
             "enabled": True,

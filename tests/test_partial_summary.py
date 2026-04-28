@@ -203,7 +203,13 @@ def _make_app(database):
     """
     from fastapi.testclient import TestClient  # noqa: WPS433
     from src.dashboard.api import create_app
-    cfg = {"dashboard": {"host": "127.0.0.1", "port": 0}}
+    cfg = {
+        "dashboard": {
+            "host": "127.0.0.1", "port": 0,
+            # Issue #158 C-1: disable auth for TestClient runs.
+            "auth": {"enabled": False},
+        },
+    }
     app = create_app(database, cfg)
     return TestClient(app)
 

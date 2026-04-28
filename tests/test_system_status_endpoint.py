@@ -61,6 +61,8 @@ class _StubAnalytics:
 
 
 _BASE_CONFIG = {
+    # Issue #158 C-1: disable auth for TestClient runs.
+    "dashboard": {"auth": {"enabled": False}},
     "security": {
         "ransomware": {"enabled": False},
         "orphan_sid": {"enabled": False},

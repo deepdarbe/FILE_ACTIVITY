@@ -71,6 +71,34 @@ launch.
 
 Dashboard: **http://localhost:8085**
 
+## Dashboard authentication (issue #158)
+
+Since v1.9.0-rc2 the dashboard ships with a **bearer-token gate enabled by default** and binds to **127.0.0.1** unless the operator explicitly opts into a LAN bind. The token never lives in `config.yaml` — it is read from the `FILEACTIVITY_DASHBOARD_TOKEN` environment variable.
+
+### Local single-host install (no token needed)
+
+`dashboard.auth.allow_unauth_localhost: true` in the default config means callers from `127.0.0.1` / `::1` / `localhost` bypass the gate. Open `http://localhost:8085` from RDP and everything works as before — no token export required.
+
+### Exposing the dashboard on a LAN
+
+1. Generate and export a token (any high-entropy random string):
+   ```powershell
+   $env:FILEACTIVITY_DASHBOARD_TOKEN = [System.Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+   ```
+   Persist it for the service account via `setx FILEACTIVITY_DASHBOARD_TOKEN ...` or your secrets manager — *not* in `config.yaml`.
+2. Start the dashboard with an explicit bind:
+   ```powershell
+   python main.py dashboard --bind 0.0.0.0
+   ```
+3. Hit the API from a remote workstation:
+   ```powershell
+   $tok = $env:FILEACTIVITY_DASHBOARD_TOKEN
+   Invoke-RestMethod -Uri "http://server:8085/api/system/health" `
+                     -Headers @{ Authorization = "Bearer $tok" }
+   ```
+
+If `dashboard.auth.enabled: false` AND `--bind 0.0.0.0` are both set, `main.py` refuses to start unless the operator also passes the deliberately awkward `--i-know-what-im-doing` flag — see `docs/operator-runbook.md` for the rationale.
+
 ## Project Structure
 
 ```
