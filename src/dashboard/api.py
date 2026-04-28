@@ -1259,21 +1259,47 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         src = _get_source(db, source_id)
         # Once v2 summary_json'daki age_buckets'a bak — scanned_files'i
         # hic tarama. Custom days verildiyse klasik hesaplamaya dus.
+        # Issue #194 update #5: the v2 fast-path used to return
+        # ``frequency`` as a dict, but every frontend page expects a
+        # list of bucket records (loadFrequency does freq.forEach()).
+        # Convert the v2 dict to the canonical list shape so existing
+        # callers keep working.
         if not days:
             scan_id = db.get_latest_scan_id(src.id, include_running=True)
             if scan_id:
                 summary = db.get_scan_summary(scan_id)
                 if summary and isinstance(summary, dict) and "age_buckets" in summary:
                     from datetime import datetime
+                    age_buckets_v2 = summary.get("age_buckets") or {}
+                    # Map v2 bin labels (non-cumulative) to the cumulative
+                    # "X+ gun erisilmemis" shape the frontend renders. We
+                    # don't have per-bucket size from v2 yet, so total_size
+                    # is left at 0 for the fast-path; falls through to the
+                    # full analyzer below if accurate sizes are needed.
+                    v2_to_classic = [
+                        ("<30d", 30, "30+ gun erisilmemis"),
+                        ("30-60d", 60, "60+ gun erisilmemis"),
+                        ("60-90d", 90, "90+ gun erisilmemis"),
+                        ("90-180d", 180, "180+ gun erisilmemis"),
+                        ("180-365d", 365, "365+ gun erisilmemis"),
+                        (">365d", 9999, "9999+ gun erisilmemis"),
+                    ]
+                    freq_list = [
+                        {
+                            "days": days_val,
+                            "label": label,
+                            "file_count": int(age_buckets_v2.get(k, 0) or 0),
+                            "total_size": 0,
+                            "total_size_formatted": "0 B",
+                        }
+                        for k, days_val, label in v2_to_classic
+                        if k in age_buckets_v2
+                    ]
                     return {
                         "source": {"id": source_id, "name": src.name},
                         "scan_id": scan_id,
-                        "age_buckets": summary.get("age_buckets"),
-                        "frequency": {
-                            "age_buckets": summary.get("age_buckets"),
-                            "total_files": summary.get("total_files"),
-                            "total_size": summary.get("total_size"),
-                        },
+                        "frequency": freq_list,
+                        "age_buckets": age_buckets_v2,
                         "from_summary": True,
                         "generated_at": datetime.now().isoformat(),
                     }
