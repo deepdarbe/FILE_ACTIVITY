@@ -789,6 +789,19 @@ class FileScanner:
                     if len(batch) >= self.batch_size:
                         stager.append(batch)
                         batch = []
+                        # Issue #153 Lever A — signal the manual
+                        # checkpointer that we just released the writer
+                        # lock. Non-blocking: the daemon may pick this
+                        # up on its next iteration. ``checkpointer`` may
+                        # be ``None`` if init failed; treat as no-op.
+                        cp = getattr(self.db, "checkpointer", None)
+                        if cp is not None:
+                            try:
+                                cp.request()
+                            except Exception as e:  # pragma: no cover
+                                logger.debug(
+                                    "checkpointer.request() failed: %s", e,
+                                )
                         # Issue #135 — throttled scan_runs progress UPDATE:
                         # fire when EITHER 10 seconds have elapsed since the
                         # last write OR 100k records have accumulated. Old

@@ -557,6 +557,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     from src.storage.backends.manager import StorageManager
     app.state.storage = StorageManager(db, config)
 
+    # Issue #153 Lever A — surface the manual checkpointer for endpoints
+    # that want a "now is a good time" hook (e.g. post-archive,
+    # post-retention). The Database owns the lifecycle; we just expose
+    # it. ``None`` here means init failed and the engine's own
+    # auto-checkpoint is in charge — same fallback behaviour as before.
+    app.state.checkpointer = getattr(db, "checkpointer", None)
+
     # Ransomware detector (#37) — watcher pushes events here. Construction is
     # cheap; safe to do unconditionally. The detector pulls its own config
     # block out of `config["security"]["ransomware"]`.

@@ -47,6 +47,14 @@ class Database:
         # verified=False. Wired by the dashboard / service container to
         # forward integrity-break events to syslog/SIEM (issue #50).
         self._audit_break_callback = None
+        # Issue #153 Lever A — manual checkpointer. ``connect()`` tries
+        # to start the daemon; on success we flip auto-checkpoint to 0
+        # (engine never checkpoints, the daemon does), on failure we
+        # leave the legacy 1000-page default intact. The handle is
+        # stashed on the Database so other layers (scanner, dashboard)
+        # can call ``request()`` after batch flush.
+        self._wal_autocheckpoint_pages = 1000
+        self.checkpointer = None
 
     def set_audit_break_callback(self, callback) -> None:
         """Register a callback invoked on every audit chain verification
@@ -65,7 +73,21 @@ class Database:
             logger.warning("Audit-break callback failed: %s", e)
 
     def _get_conn(self):
-        """Thread-local baglanti al veya olustur."""
+        """Thread-local baglanti al veya olustur.
+
+        Issue #153 Lever B — performance pragmas. Increased mmap_size
+        (2 GB) and cache_size (256 MB) drop cold-read latency on the
+        big aggregates the dashboard runs during scan; ``synchronous
+        = NORMAL`` is WAL-safe (a crash loses the *last* commit, not
+        the DB). ``journal_size_limit = 1 GB`` is a hard cap so a
+        misbehaving checkpoint can't grow the WAL past 1 GB on disk.
+
+        Lever A — ``wal_autocheckpoint = 0`` (when the manual
+        checkpointer is healthy) hands all checkpoint scheduling to
+        ``Checkpointer``. Fallback path keeps the legacy 1000-page
+        behaviour: see ``Database._wal_autocheckpoint_pages``, set by
+        ``connect()`` based on whether the checkpointer thread came up.
+        """
         if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = sqlite3.connect(
                 self.db_path,
@@ -76,9 +98,45 @@ class Database:
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn.execute("PRAGMA busy_timeout=5000")
-            self._local.conn.execute("PRAGMA cache_size=-64000")  # 64MB
-            # WAL auto-checkpoint: her 1000 sayfada (default 1000, ~4MB)
-            self._local.conn.execute("PRAGMA wal_autocheckpoint=1000")
+
+            # Issue #153 Lever B — tuned defaults for "slow during scan"
+            # pain. Order matters: synchronous + cache_size first so the
+            # mmap_size sees the tuned cache; mmap_size last so the
+            # mapping is the largest single allocation.
+            try:
+                # 256 MB page cache (negative = KB).
+                self._local.conn.execute("PRAGMA cache_size = -262144")
+                # WAL-safe: NORMAL skips fsync per commit, fsyncs on
+                # checkpoint. Loses last commit on power-loss; never
+                # corrupts the DB.
+                self._local.conn.execute("PRAGMA synchronous = NORMAL")
+                # Sort/group/temp btrees in RAM rather than the temp dir.
+                self._local.conn.execute("PRAGMA temp_store = MEMORY")
+                # Hard cap on WAL on-disk size. Belt + suspenders for the
+                # checkpointer.
+                self._local.conn.execute(
+                    "PRAGMA journal_size_limit = 1073741824"
+                )
+                # 2 GB mmap window. SQLite reads pages directly from the
+                # OS page cache; on hosts with the headroom this is the
+                # single biggest win for repeat aggregates.
+                self._local.conn.execute("PRAGMA mmap_size = 2147483648")
+            except sqlite3.DatabaseError as e:  # pragma: no cover - defensive
+                # Old SQLite versions may reject some pragmas. Log + keep
+                # the connection — the rest of the app still works.
+                logger.warning(
+                    "Lever B pragma uygulanamadi (kritik degil): %s", e
+                )
+
+            # WAL auto-checkpoint. With Lever A (Checkpointer thread)
+            # active, ``self._wal_autocheckpoint_pages == 0`` disables
+            # the engine's own scheduler. If the checkpointer thread
+            # failed to come up, we fall back to 1000 (the legacy
+            # default, ~4 MB) so the WAL still gets groomed.
+            pages = getattr(self, "_wal_autocheckpoint_pages", 1000)
+            self._local.conn.execute(
+                f"PRAGMA wal_autocheckpoint={int(pages)}"
+            )
         return self._local.conn
 
     def connect(self):
@@ -89,10 +147,60 @@ class Database:
             if db_dir and not os.path.exists(db_dir):
                 os.makedirs(db_dir, exist_ok=True)
 
+            # Issue #153 Lever A — try to bring up the manual checkpointer
+            # *before* opening the writer connection so we know whether to
+            # disable auto-checkpoint. On failure (sqlite version, OS
+            # weirdness, threading.Event not available, etc.) we log,
+            # leave ``checkpointer = None``, and let ``_get_conn`` apply
+            # the legacy ``wal_autocheckpoint=1000`` fallback.
+            try:
+                from src.storage.checkpointer import Checkpointer
+                self.checkpointer = Checkpointer(self.db_path, self.config)
+                self.checkpointer.start()
+                # Daemon is up — engine no longer checkpoints itself.
+                self._wal_autocheckpoint_pages = 0
+                logger.info(
+                    "Manual checkpointer aktif (issue #153 Lever A); "
+                    "PRAGMA wal_autocheckpoint=0"
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "Manual checkpointer baslatilamadi, "
+                    "wal_autocheckpoint=1000 ile devam: %s", e,
+                )
+                self.checkpointer = None
+                self._wal_autocheckpoint_pages = 1000
+
             conn = self._get_conn()
             conn.execute("SELECT 1")
             self.connected = True
             logger.info(f"SQLite baglantisi kuruldu: {self.db_path}")
+
+            # Issue #153 Lever B — page_size hint. Cannot be changed
+            # after the first VACUUM; new DBs get 8192 the cheap way
+            # (via the very next CREATE TABLE), existing DBs get a one-
+            # liner log so operators know how to upgrade if they care.
+            try:
+                row = conn.execute("PRAGMA page_size").fetchone()
+                current_page_size = (
+                    row.get("page_size") if isinstance(row, dict) else (row[0] if row else 0)
+                )
+                # The DB might be brand-new (empty file). Try to bump
+                # page_size to 8192; it only sticks if the file has no
+                # pages yet, otherwise the pragma is a no-op until the
+                # next manual VACUUM.
+                conn.execute("PRAGMA page_size = 8192")
+                if current_page_size and current_page_size < 8192:
+                    logger.info(
+                        "Existing DB has page_size=%d; consider VACUUM "
+                        "with page_size=8192 for ~2x perf on large "
+                        "queries (manual: sqlite3 db 'PRAGMA "
+                        "page_size=8192; VACUUM;')",
+                        current_page_size,
+                    )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("page_size kontrolu basarisiz: %s", e)
+
             self._create_tables()
 
             # Baslangicta WAL checkpoint — buyuk WAL dosyalarini temizle.
@@ -258,6 +366,19 @@ class Database:
 
     def close(self):
         """Baglantilari kapat."""
+        # Issue #153 — shut the checkpointer thread down before the
+        # writer connection: the daemon opens its own short-lived
+        # handles and we want any in-flight TRUNCATE to wind down
+        # before anything that might rename/swap the DB file
+        # (#77 auto-restore) runs against a stale file descriptor.
+        cp = getattr(self, "checkpointer", None)
+        if cp is not None:
+            try:
+                cp.stop()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Checkpointer.stop() basarisiz: %s", e)
+            self.checkpointer = None
+
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
