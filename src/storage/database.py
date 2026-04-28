@@ -911,6 +911,33 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_pii_path ON pii_findings(file_path)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_pii_scan ON pii_findings(scan_id)")
 
+        # Extension/MIME mismatch findings (issue #144 Phase 1). Populated
+        # by ExtensionChecker after a scan when scanner.detect_wrong_extensions
+        # is enabled. Mirrors the Czkawka "wrong extension" finding pattern;
+        # the canonical critical case is a document extension (pdf, docx,
+        # jpg, ...) whose libmagic-detected MIME is an executable container.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS extension_anomalies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER REFERENCES scan_runs(id) ON DELETE CASCADE,
+                file_id INTEGER,
+                file_path TEXT NOT NULL,
+                declared_ext TEXT,
+                detected_mime TEXT,
+                detected_ext TEXT,
+                severity TEXT,
+                detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ext_anomaly_scan "
+            "ON extension_anomalies(scan_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ext_anomaly_severity "
+            "ON extension_anomalies(severity)"
+        )
+
         # GDPR retention policies (issue #58). Operator-defined rules of
         # the form "files matching <fnmatch> older than <N> days ->
         # archive|delete". Applied in dry-run by default; non-dry-run
@@ -3365,6 +3392,95 @@ class Database:
                 logger.warning("Summary backfill hatasi scan %s: %s", sid, e)
         logger.info("Backfill tamamlandi: %d scan", len(pending))
         return len(pending)
+
+    # ──────────────────────────────────────────────
+    # Extension/MIME mismatch findings (issue #144 Phase 1)
+    # ──────────────────────────────────────────────
+
+    def insert_extension_anomalies(
+        self,
+        scan_id: int,
+        anomalies,
+    ) -> int:
+        """Bulk-insert ``ExtensionAnomaly``-shaped rows for ``scan_id``.
+
+        ``anomalies`` is an iterable of objects exposing ``as_row()`` (the
+        ``ExtensionAnomaly`` dataclass) OR plain ``(file_path, declared_ext,
+        detected_mime, detected_ext, severity)`` tuples. Returns the count
+        of rows inserted.
+        """
+        rows = []
+        for a in anomalies or []:
+            if hasattr(a, "as_row"):
+                t = a.as_row()
+            else:
+                t = tuple(a)
+            # (file_path, declared_ext, detected_mime, detected_ext, severity)
+            rows.append((scan_id, *t))
+        if not rows:
+            return 0
+        with self.get_cursor() as cur:
+            cur.executemany(
+                """INSERT INTO extension_anomalies
+                   (scan_id, file_path, declared_ext, detected_mime,
+                    detected_ext, severity)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+        return len(rows)
+
+    def list_extension_anomalies(
+        self,
+        scan_id: Optional[int] = None,
+        severity: Optional[str] = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list:
+        """Return paginated extension-anomaly rows. Used by the dashboard
+        ``/api/security/extension-anomalies`` endpoint.
+        """
+        clauses = []
+        params: list = []
+        if scan_id is not None:
+            clauses.append("scan_id = ?")
+            params.append(int(scan_id))
+        if severity:
+            clauses.append("severity = ?")
+            params.append(severity)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT id, scan_id, file_id, file_path, declared_ext, "
+            "detected_mime, detected_ext, severity, detected_at "
+            f"FROM extension_anomalies {where} "
+            "ORDER BY CASE severity "
+            "  WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+            "  WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, "
+            "detected_at DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([int(limit), int(offset)])
+        with self.get_cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return cur.fetchall()
+
+    def count_extension_anomalies(
+        self,
+        scan_id: Optional[int] = None,
+        severity: Optional[str] = None,
+    ) -> int:
+        clauses = []
+        params: list = []
+        if scan_id is not None:
+            clauses.append("scan_id = ?")
+            params.append(int(scan_id))
+        if severity:
+            clauses.append("severity = ?")
+            params.append(severity)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"SELECT COUNT(*) AS c FROM extension_anomalies {where}"
+        with self.get_cursor() as cur:
+            cur.execute(sql, tuple(params))
+            row = cur.fetchone()
+            return int(row["c"] if row else 0)
 
     def cleanup_old_scans(self, keep_last_n: int = 5) -> dict:
         """Eski tarama verilerini temizle. Her kaynak icin son N taramayi koru.
