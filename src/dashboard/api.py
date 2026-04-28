@@ -3673,6 +3673,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.post("/api/db/cleanup")
     async def db_cleanup(
+        request: Request,
         keep_last: Optional[int] = Query(
             default=None, ge=0, le=100,
             description="Son N taramayi koru. 0 = hepsini sil.",
@@ -3687,18 +3688,52 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         Issue #133: customer hit ``?keep_last=0`` and got 422 because
         the previous handler used ``ge=1``. The endpoint now accepts:
 
-        - ``keep_last`` (default 5, range 0..100) — original shape.
-        - ``keep_last_n_scans`` — alias matching the config / DB
+        - ``keep_last`` (default 5, range 0..100) — query param, original shape.
+        - ``keep_last_n_scans`` — query param alias matching the config / DB
           method parameter name. If both are passed,
           ``keep_last_n_scans`` wins (it's the newer, more explicit
           spelling).
+        - JSON body ``{"keep_last_n_scans": N, "confirm": true}`` — M-3
+          pattern; ``confirm: true`` is required when using the body form.
 
         ``keep_last=0`` is a valid request: it deletes every scan_run
         for every source. The audit chain and orphan cleanup branches
         in :py:meth:`Database.cleanup_old_scans` cope with N=0 because
         they use ``OFFSET ?`` which yields the full set when N=0.
         """
-        # Resolve which alias to use. Newer name wins when both given.
+        # ── Optional JSON body (M-3 pattern) ─────────────────────────────
+        body: dict = {}
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                body = {}
+        except (ValueError, UnicodeDecodeError):
+            # No body, empty body, or non-JSON content-type — fall back to
+            # query-param-only mode. ValueError covers json.JSONDecodeError.
+            body = {}
+
+        # If a JSON body was provided, enforce the confirm gate (M-3).
+        if body:
+            if not bool(body.get("confirm", False)):
+                raise HTTPException(
+                    400, "confirm=true required in request body to run cleanup"
+                )
+            body_keep = body.get("keep_last_n_scans")
+            if body_keep is not None:
+                try:
+                    body_keep = int(body_keep)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        422, "keep_last_n_scans must be an integer (0..100)"
+                    )
+                if not (0 <= body_keep <= 100):
+                    raise HTTPException(
+                        422, "keep_last_n_scans must be between 0 and 100"
+                    )
+                # Body value wins over query params when both present.
+                keep_last_n_scans = body_keep
+
+        # ── Resolve effective keep value ─────────────────────────────────
         effective: int
         if keep_last_n_scans is not None:
             effective = int(keep_last_n_scans)
@@ -3708,6 +3743,20 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             effective = 5  # legacy default
 
         result = db.cleanup_old_scans(keep_last_n=effective)
+
+        # ── Audit log (best-effort, chain-routed per #160) ───────────────
+        try:
+            db.insert_audit_event_simple(
+                source_id=None,
+                event_type="db_cleanup",
+                username="admin",
+                file_path="",
+                details=f"keep_last_n={effective}",
+                detected_by="dashboard",
+            )
+        except Exception as _audit_err:  # pragma: no cover - best-effort
+            logger.warning("db_cleanup audit yazılamadı: %s", _audit_err)
+
         return result
 
     @app.post("/api/db/optimize")
