@@ -179,6 +179,7 @@ FILE_ACTIVITY/
 | **Naming Compliance** | MIT Libraries File Naming Scheme compliance analysis |
 | **Policies** | Archive policy management |
 | **Scheduling** | Automated scan and archive schedules |
+| **Standards alignment** | Compliance-grade lineage + catalog endpoints (W3C PROV + DCAT v3) for ingest into Apache Atlas / LinkedIn DataHub / Collibra |
 
 ## Update
 
@@ -209,6 +210,9 @@ $f="$env:TEMP\fa.ps1"; (New-Object Net.WebClient).DownloadFile("https://raw.gith
 | POST | `/api/restore/bulk` | Bulk restore |
 | GET | `/api/users/overview` | User activity overview |
 | GET | `/api/anomalies` | Anomaly alerts |
+| GET | `/api/compliance/lineage/file.jsonld?path=…` | W3C PROV-O lineage for a single file (JSON-LD) |
+| GET | `/api/compliance/lineage/scan.jsonld?scan_id=…` | W3C PROV-O lineage for an entire scan (JSON-LD) |
+| GET | `/api/compliance/dcat/catalog.jsonld` | DCAT v3 catalog of every scan source (JSON-LD) |
 
 ## PowerShell Module
 
