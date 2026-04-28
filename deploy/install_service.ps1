@@ -189,15 +189,35 @@ Write-Host "       stderr : $svcErr" -ForegroundColor DarkGray
 Write-Host "       restart: 5 sn delay, otomatik" -ForegroundColor DarkGray
 
 # --- 4. Servisi baslat ---
+# NSSM'in stderr'e UTF-16 yazdigi "SERVICE_START_PENDING" satiri Windows SCM'in
+# normal cevabidir (asenkron baslatma). PowerShell'in NativeCommandError record'u
+# ile karistirmamak icin Start-Process ile cagiriyor, stdout/stderr'i tamamen yutuyoruz.
+# Sonra Get-Service ile gercek durumu polluyoruz (15 sn'ye kadar) — ilk boot venv +
+# APScheduler nedeniyle 8-15 sn alabilir.
 Write-Host "[4/4] Servis baslatiliyor..." -ForegroundColor Yellow
-& $nssmExe start $ServiceName 2>&1 | Out-Null
-Start-Sleep -Seconds 3
-$svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$null = Start-Process -FilePath $nssmExe -ArgumentList "start", $ServiceName `
+    -Wait -NoNewWindow `
+    -RedirectStandardOutput "$env:TEMP\nssm_start.out" `
+    -RedirectStandardError "$env:TEMP\nssm_start.err"
+Remove-Item "$env:TEMP\nssm_start.out", "$env:TEMP\nssm_start.err" -ErrorAction SilentlyContinue
+
+$svc = $null
+for ($i = 0; $i -lt 15; $i++) {
+    Start-Sleep -Seconds 1
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq "Running") { break }
+}
 if ($svc -and $svc.Status -eq "Running") {
-    Write-Host "  [OK] Servis calisiyor" -ForegroundColor Green
+    Write-Host "  [OK] Servis calisiyor (Status=Running, $($i+1) sn icinde)" -ForegroundColor Green
 } else {
-    Write-Host "  [UYARI] Servis henuz Running degil. Status: $($svc.Status)" -ForegroundColor Yellow
-    Write-Host "          Loglara bakin: $svcErr" -ForegroundColor Yellow
+    $statusText = if ($svc) { $svc.Status } else { "<servis bulunamadi>" }
+    Write-Host "  [UYARI] Servis 15 sn icinde Running'e gecmedi. Status: $statusText" -ForegroundColor Yellow
+    Write-Host "          Son 20 satir log: $svcErr" -ForegroundColor Yellow
+    if (Test-Path $svcErr) {
+        Get-Content $svcErr -Tail 20 | ForEach-Object {
+            Write-Host "            $_" -ForegroundColor DarkGray
+        }
+    }
 }
 
 # --- Optional tray app auto-start ---
