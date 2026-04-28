@@ -821,6 +821,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         summaries = {}
         for s in sources:
             try:
+                # Writer pool required: cursor block fixes up scan_runs
+                # totals via UPDATE when total_files=0 fallback hits
+                # (issue #181 Track A — keep on get_cursor, not get_read_cursor).
                 with db.get_cursor() as cur:
                     # 1) Son tamamlanmis tarama (completed once priority)
                     cur.execute("""
@@ -2046,7 +2049,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(404, "Tarama bulunamadi")
 
         analyzer = MITNamingAnalyzer()
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute("""
                 SELECT file_path, file_name FROM scanned_files
                 WHERE scan_id=?
@@ -2088,7 +2091,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         # Dosyalari tara ve ihlal edenleri topla
         matching = []
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute("""
                 SELECT id, file_path, file_name, file_size, owner, last_modify_time
                 FROM scanned_files WHERE scan_id=?
@@ -2137,7 +2140,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         # Tum dosyalari tara
         violations = {code: [] for code in checks}
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute("""
                 SELECT file_path, file_name, file_size, owner, last_modify_time
                 FROM scanned_files WHERE source_id=? AND scan_id=?
@@ -2260,7 +2263,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # this lazily — peak memory stays in the MB range even for the 5M-row
         # internal probe (issue #122).
         def _violation_rows():
-            with db.get_cursor() as cur:
+            with db.get_read_cursor() as cur:
                 cur.execute(
                     """SELECT id, file_path, file_name, owner,
                               last_modify_time, file_size
@@ -2617,7 +2620,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         placeholders = ','.join(['?'] * len(risky_exts))
         stale_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
 
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             # TEK SORGU: 5 metrigi bir seferde hesapla (6 ayri sorgu yerine)
             cur.execute(f"""
                 SELECT
@@ -2694,7 +2697,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.get("/api/trend/{source_id}")
     async def scan_trend(source_id: int):
         """Storage growth trend from scan history."""
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute("""
                 SELECT id, started_at, completed_at, total_files, total_size, status
                 FROM scan_runs WHERE source_id = ? ORDER BY started_at DESC LIMIT 20
@@ -2941,7 +2944,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         sql += "ORDER BY moved_at DESC LIMIT ?"
         params.append(int(limit))
         rows: list = []
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute(sql, params)
             for r in cur.fetchall():
                 d = dict(r)
@@ -3118,7 +3121,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         # Secili dosyalari veritabanindan al
         files = []
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             placeholders = ','.join('?' * len(file_ids))
             cur.execute(f"""
                 SELECT * FROM scanned_files WHERE id IN ({placeholders}) AND source_id=?
@@ -3185,7 +3188,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         from src.utils.size_formatter import format_size
 
         # Build query based on insight_type
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             if insight_type == "stale_1year":
                 cur.execute("""
                     SELECT * FROM scanned_files WHERE source_id=? AND scan_id=?
@@ -3638,7 +3641,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             conditions.append("status = ?")
             params.append(status)
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute(f"SELECT COUNT(*) AS cnt FROM notification_log{where}", params)
             total = cur.fetchone()["cnt"]
             cur.execute(
@@ -4005,7 +4008,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     cell.alignment = Alignment(horizontal='center')
 
                 row = 2
-                with db.get_cursor() as cur:
+                with db.get_read_cursor() as cur:
                     cur.execute("SELECT COUNT(*) as cnt FROM scanned_files WHERE source_id=? AND scan_id=?", (source_id, scan_id))
                     total = cur.fetchone()["cnt"]
                     cur.execute("SELECT file_path, file_name, file_size, owner, last_modify_time FROM scanned_files WHERE source_id=? AND scan_id=?", (source_id, scan_id))
@@ -4048,7 +4051,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     cell.fill = header_fill
 
                 row = 2
-                with db.get_cursor() as cur:
+                with db.get_read_cursor() as cur:
                     cur.execute("""
                         SELECT file_name, file_size, file_path, owner, last_modify_time
                         FROM scanned_files WHERE source_id=? AND scan_id=? AND file_size > 1048576
@@ -4080,7 +4083,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     cell.fill = header_fill
 
                 row = 2
-                with db.get_cursor() as cur:
+                with db.get_read_cursor() as cur:
                     cur.execute("SELECT COUNT(*) as cnt FROM scanned_files WHERE source_id=? AND scan_id=?", (source_id, scan_id))
                     total = cur.fetchone()["cnt"]
                     cur.execute("SELECT * FROM scanned_files WHERE source_id=? AND scan_id=? ORDER BY file_path", (source_id, scan_id))
@@ -4132,7 +4135,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     async def start_export(report_type: str = Query(...), source_id: int = Query(...)):
         """Arka planda XLS export baslat. Tarama devam ederken bile calisir."""
         # Son tamamlanmis taramayi kullan (aktif tarama kilitlemesin)
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute("""
                 SELECT id FROM scan_runs WHERE source_id=? AND status='completed'
                 ORDER BY started_at DESC LIMIT 1
@@ -4370,7 +4373,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not analyzer.is_supported():
             raise HTTPException(501, "ACL snapshot requires Windows + pywin32")
         src = _get_source(db, source_id)
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute(
                 """SELECT id FROM scan_runs WHERE source_id=?
                    ORDER BY CASE WHEN status='completed' THEN 0 ELSE 1 END,
@@ -4490,7 +4493,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
             placeholders = ",".join(["?"] * len(orphan_sids))
             params: list = [source_id, scan_id, *orphan_sids]
-            with db.get_cursor() as cur:
+            with db.get_read_cursor() as cur:
                 cur.execute(
                     f"""SELECT file_path, owner, file_size, last_modify_time
                         FROM scanned_files
@@ -4619,7 +4622,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         from src.analyzer.image_hash import find_duplicate_groups
 
         if scan_id is None:
-            with db.get_cursor() as cur:
+            with db.get_read_cursor() as cur:
                 cur.execute(
                     "SELECT id FROM scan_runs WHERE status = 'completed' "
                     "ORDER BY completed_at DESC LIMIT 1"
@@ -4676,7 +4679,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         from src.analyzer.image_hash import find_duplicate_groups
 
         if scan_id is None:
-            with db.get_cursor() as cur:
+            with db.get_read_cursor() as cur:
                 cur.execute(
                     "SELECT id FROM scan_runs WHERE status = 'completed' "
                     "ORDER BY completed_at DESC LIMIT 1"
@@ -4895,7 +4898,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # By-severity breakdown for the dashboard summary cards.
         by_sev = {"critical": 0, "high": 0, "medium": 0, "low": 0}
         try:
-            with db.get_cursor() as cur:
+            with db.get_read_cursor() as cur:
                 where = "WHERE scan_id = ?" if resolved_scan_id is not None else ""
                 params = (resolved_scan_id,) if resolved_scan_id is not None else ()
                 cur.execute(
@@ -5352,7 +5355,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             )
             params.append(int(source_id))
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute(
                 f"SELECT COUNT(*) AS cnt FROM pii_findings p {where}",
                 params,
@@ -5463,7 +5466,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # Stream rows directly out of the cursor — keeps memory flat even
         # when the findings table grows past 1M rows on big PII scans.
         def _finding_rows():
-            with db.get_cursor() as cur:
+            with db.get_read_cursor() as cur:
                 cur.execute(
                     f"""SELECT p.id, p.scan_id, p.file_path, p.pattern_name,
                                p.hit_count, p.sample_snippet, p.detected_at
@@ -6225,7 +6228,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         Excludes still-running scans because their total_size is interim.
         Sorted ascending so forecast_growth() can use the first row as t0.
         """
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute(
                 """
                 SELECT started_at, total_size, total_files
@@ -6289,7 +6292,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         # Verify the source exists so callers get a real 404 (not an empty
         # forecast with samples_used=0).
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute("SELECT 1 FROM sources WHERE id = ?", (source_id,))
             if not cur.fetchone():
                 raise HTTPException(404, "source bulunamadi")
@@ -6343,7 +6346,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not fc_cfg["enabled"]:
             raise HTTPException(404, "forecast.enabled=false")
 
-        with db.get_cursor() as cur:
+        with db.get_read_cursor() as cur:
             cur.execute(
                 "SELECT id, name FROM sources WHERE id = ?", (source_id,)
             )
