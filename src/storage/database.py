@@ -436,6 +436,12 @@ class Database:
             "insights_computed_at TEXT",
             "current_phase TEXT DEFAULT 'enumeration'",
             "updated_at TIMESTAMP",
+            # Issue #139 — incremental partial summary written periodically
+            # during a running scan so Overview/Reports/Insights can render
+            # rolling KPIs instead of all zeros while the MFT walk + insert
+            # phases are mid-flight.
+            "partial_summary_json TEXT",
+            "partial_updated_at TIMESTAMP",
         ):
             col_name = col_def.split()[0]
             try:
@@ -3029,6 +3035,78 @@ class Database:
             return d
         except Exception:
             return None
+
+    # ──────────────────────────────────────────────
+    # Issue #139 — partial (rolling) summary helpers
+    #
+    # The scanner periodically writes a coarse aggregate snapshot of the
+    # ``scanned_files`` rows it has already inserted to
+    # ``scan_runs.partial_summary_json``. Endpoints fall back to this when
+    # there is no completed-scan ``summary_json`` yet (e.g. first scan in
+    # progress, or scan was just cancelled before completion). Both helpers
+    # below tolerate a legacy DB without the new columns so old deployments
+    # never crash on a missing column lookup.
+    # ──────────────────────────────────────────────
+
+    def save_scan_partial_summary(self, scan_id: int, payload: dict) -> None:
+        """Persist an incremental partial summary for ``scan_id``.
+
+        Stored compact, ASCII-preserving (Turkish labels in payload). On
+        legacy DBs missing the column we log+swallow rather than abort
+        the scan — partial summary is opportunistic.
+        """
+        from datetime import datetime as _dt
+        now = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            blob = json.dumps(payload, ensure_ascii=False,
+                              separators=(",", ":"), default=str)
+        except (TypeError, ValueError) as e:  # pragma: no cover - defensive
+            logger.warning("partial_summary serialise failed scan=%s: %s",
+                           scan_id, e)
+            return
+        try:
+            with self.get_cursor() as cur:
+                cur.execute(
+                    "UPDATE scan_runs SET partial_summary_json=?, "
+                    "partial_updated_at=? WHERE id=?",
+                    (blob, now, scan_id),
+                )
+        except sqlite3.OperationalError as e:
+            # Old DB without partial_summary_json column — graceful fallback.
+            if "no such column" in str(e).lower():
+                logger.debug("partial_summary skipped (legacy DB): %s", e)
+                return
+            logger.warning("partial_summary write failed scan=%s: %s",
+                           scan_id, e)
+
+    def get_scan_partial_summary(self, scan_id: int) -> Optional[dict]:
+        """Read the latest partial summary for ``scan_id`` (or None).
+
+        On legacy DBs without the column the call returns None silently
+        so endpoints fall back to their existing "no data" branch.
+        """
+        try:
+            with self.get_read_cursor() as cur:
+                row = cur.execute(
+                    "SELECT partial_summary_json, partial_updated_at "
+                    "FROM scan_runs WHERE id=?",
+                    (scan_id,),
+                ).fetchone()
+        except sqlite3.OperationalError as e:
+            if "no such column" in str(e).lower():
+                return None
+            logger.debug("partial_summary read failed scan=%s: %s", scan_id, e)
+            return None
+        if not row or not row.get("partial_summary_json"):
+            return None
+        try:
+            d = json.loads(row["partial_summary_json"])
+        except Exception:
+            return None
+        d["scan_id"] = scan_id
+        d["partial_updated_at"] = row.get("partial_updated_at")
+        d["is_partial"] = True
+        return d
 
     def get_scan_summary(self, scan_id: int) -> Optional[dict]:
         """Kayitli scan summary'yi oku. Hic hesaplanmamissa None doner."""

@@ -661,6 +661,13 @@ body.sidebar-open { overflow: hidden; }
             <button class="btn-export" onclick="exportXLS(document.getElementById('overview-source').value, event)">XLS</button>
         </div>
     </div>
+    <!-- Issue #139 — partial-data banner shown only when /api/overview
+         returns is_partial=true (rolling snapshot during a live scan).
+         Auto-hidden on full data; auto-refreshed every 30 sec. -->
+    <div id="ov-partial-banner" style="display:none;margin-bottom:14px;padding:10px 16px;border-radius:8px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.45);color:#fbbf24;font-size:13px;font-weight:500">
+        <span style="margin-right:8px">&#9888;</span>
+        <span id="ov-partial-banner-text">Kismi veri &mdash; Tarama devam ediyor, son guncelleme bilinmiyor.</span>
+    </div>
     <!-- KPI Row: 7 cards -->
     <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:14px;margin-bottom:24px" id="overview-kpi-row">
         <!-- Risk Score gauge card -->
@@ -3055,6 +3062,56 @@ async function optimizeDb() {
     } catch(e) { notify('Optimize hatasi: ' + e.message, 'error'); }
 }
 
+// Issue #139 — partial-data banner state. Single setInterval handle so
+// switching sources or navigating away cancels the auto-refresh. The
+// banner re-fetches /api/overview every 30 sec while is_partial is true;
+// when the response flips to full data the banner hides + interval clears.
+let _partialBannerTimer = null;
+
+function updatePartialBanner(sourceId, ov) {
+    const banner = document.getElementById('ov-partial-banner');
+    const textEl = document.getElementById('ov-partial-banner-text');
+    if (!banner || !textEl) return;
+    const isPartial = !!(ov && ov.is_partial);
+    if (!isPartial) {
+        banner.style.display = 'none';
+        if (_partialBannerTimer) {
+            clearInterval(_partialBannerTimer);
+            _partialBannerTimer = null;
+        }
+        return;
+    }
+    // Compute a friendly "N dk once" label from partial_updated_at.
+    let mins = null;
+    const ts = ov.partial_updated_at;
+    if (ts) {
+        const parsed = Date.parse(ts.replace(' ', 'T'));
+        if (!isNaN(parsed)) {
+            mins = Math.max(0, Math.floor((Date.now() - parsed) / 60000));
+        }
+    }
+    const minsLabel = (mins === null) ? 'bilinmiyor' :
+        (mins < 1 ? 'az once' : `${mins} dk once`);
+    textEl.textContent =
+        `⚠ Kismi veri — Tarama devam ediyor, son guncelleme ${minsLabel}.`;
+    banner.style.display = 'block';
+    // Schedule a 30-second auto refresh so the banner stays current AND
+    // flips to "complete" automatically once the scan finishes.
+    if (!_partialBannerTimer) {
+        _partialBannerTimer = setInterval(() => {
+            const currentSid = document.getElementById('overview-source')?.value;
+            if (!currentSid || String(currentSid) !== String(sourceId)) {
+                clearInterval(_partialBannerTimer);
+                _partialBannerTimer = null;
+                return;
+            }
+            api(`/overview/${currentSid}`, {silent:true})
+                .then(ov2 => updatePartialBanner(currentSid, ov2))
+                .catch(() => {});
+        }, 30000);
+    }
+}
+
 async function loadOverview() {
     if (!sources.length) await loadSources();
     const sid = document.getElementById('overview-source').value;
@@ -3064,6 +3121,7 @@ async function loadOverview() {
             const el = document.getElementById(id); if(el) el.textContent = '-';
         });
         document.getElementById('ov-risk-text').textContent = '--';
+        updatePartialBanner(null, null);
         return;
     }
 
@@ -3074,6 +3132,13 @@ async function loadOverview() {
             api(`/risk-score/${sid}`, {silent:true}).catch(()=>({risk_score:0, kpis:{}})),
             api(`/trend/${sid}`, {silent:true}).catch(()=>({scans:[], growth:null})),
         ]);
+
+        // Issue #139 — partial-data banner. /api/overview falls back to
+        // scan_runs.partial_summary_json during a live scan; render the
+        // banner whenever that endpoint reports is_partial=true.
+        api(`/overview/${sid}`, {silent:true})
+            .then(ov => updatePartialBanner(sid, ov))
+            .catch(() => updatePartialBanner(sid, null));
 
         // YAVAS ENDPOINT'LER: frequency + insights arka planda, UI beklemez.
         // Her ikisi de cache miss'te agir oldugu icin await edilmezler; geldiklerinde

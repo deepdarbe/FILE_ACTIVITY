@@ -636,6 +636,48 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # in-memory scan progress dict (file_count vs. an estimate); when
     # we have no estimate the bar is rendered as indeterminate by the
     # frontend.
+    def _partial_overview_response(source_id: int) -> Optional[dict]:
+        """Issue #139 — try the rolling partial summary for an in-flight scan.
+
+        Returns a dashboard-shaped dict when a running scan has at least
+        one persisted partial-summary snapshot, otherwise None so the
+        caller can fall through to the existing scan-in-progress
+        placeholder. Wraps both calls in a try/except so legacy DBs
+        without the ``partial_summary_json`` column don't break the
+        endpoint — they just return None and the caller picks the
+        original behaviour up.
+        """
+        from src.utils.size_formatter import format_size
+        try:
+            running_scan_id = db.is_scan_running(source_id)
+        except Exception:
+            return None
+        if running_scan_id is None:
+            return None
+        try:
+            partial = db.get_scan_partial_summary(running_scan_id)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("partial summary read failed: %s", e)
+            return None
+        if not partial:
+            return None
+        # Format sizes for the cards. ``partial`` was authored by
+        # ``compute_partial_summary`` in ``src/analyzer/partial_summary``
+        # which uses the canonical keys (total_files, total_size,
+        # unique_owners, top_extensions, size_buckets, age_buckets).
+        out = dict(partial)
+        out["total_size_formatted"] = format_size(out.get("total_size", 0) or 0)
+        for ext in out.get("top_extensions", []) or []:
+            try:
+                ext["size_formatted"] = format_size(ext.get("size", 0) or 0)
+            except Exception:
+                ext["size_formatted"] = "0 B"
+        out["has_data"] = True
+        out["is_partial"] = True
+        out["scan_in_progress"] = True
+        out["scan_id"] = running_scan_id
+        return out
+
     def _scan_in_progress_response(source_id: int, running_scan_id: int,
                                    reason: str = "scan_in_progress") -> dict:
         from src.scanner.file_scanner import get_scan_progress
@@ -1222,11 +1264,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         """Issue #132: when no completed scan AND a scan is running,
         return the scan-in-progress banner shape rather than forcing
         ReportGenerator to compute over an empty/partial table.
+
+        Issue #139: when a scan is running and a partial-summary
+        snapshot is available, return it (with ``is_partial: True``) so
+        the Reports page renders rolling KPIs instead of the empty
+        placeholder.
         """
         from src.analyzer.report_generator import ReportGenerator
         src = _get_source(db, source_id)
         completed_scan_id = db.get_latest_scan_id(src.id, include_running=False)
         if completed_scan_id is None:
+            partial_resp = _partial_overview_response(src.id)
+            if partial_resp:
+                return partial_resp
             running_scan_id = db.is_scan_running(src.id)
             if running_scan_id is not None:
                 return _scan_in_progress_response(src.id, running_scan_id,
@@ -1848,9 +1898,15 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 cached["from_cache"] = True
                 return cached
 
-        # No cache. If a scan is running, return the banner instead of
-        # blocking on a heavy compute that fights the writer.
+        # No cache. If a scan is running, return the partial snapshot
+        # (issue #139) when available so the Insights page renders top-
+        # extension / size-bucket / age-bucket cards instead of an
+        # empty placeholder. Fall back to the in-progress banner if no
+        # partial snapshot has been computed yet.
         if not refresh:
+            partial_resp = _partial_overview_response(source_id)
+            if partial_resp:
+                return partial_resp
             running_scan_id = db.is_scan_running(source_id)
             if running_scan_id is not None:
                 return _scan_in_progress_response(source_id, running_scan_id,
@@ -2221,34 +2277,40 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         from src.utils.size_formatter import format_size
         _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
-        if not scan_id:
-            running_scan_id = db.is_scan_running(source_id)
-            if running_scan_id is not None:
-                return _scan_in_progress_response(source_id, running_scan_id,
-                                                  reason="no_completed_scan")
-            return {"has_data": False, "reason": "no_completed_scan"}
+        if scan_id:
+            kpi = db.get_scan_summary(scan_id)
+            if kpi:
+                # Boyutlari formatla
+                kpi["total_size_formatted"] = format_size(kpi.get("total_size", 0))
+                kpi["stale_size_formatted"] = format_size(kpi.get("stale_size", 0))
+                kpi["large_size_formatted"] = format_size(kpi.get("large_size", 0))
+                kpi["duplicate_waste_formatted"] = format_size(kpi.get("duplicate_waste_size", 0))
+                for ext in kpi.get("top_extensions", []):
+                    ext["size_formatted"] = format_size(ext.get("size", 0))
+                for owner in kpi.get("top_owners", []):
+                    owner["size_formatted"] = format_size(owner.get("size", 0))
+                kpi["has_data"] = True
+                kpi["is_partial"] = False
+                return kpi
 
-        kpi = db.get_scan_summary(scan_id)
-        if not kpi:
-            running_scan_id = db.is_scan_running(source_id)
-            if running_scan_id is not None:
-                return _scan_in_progress_response(source_id, running_scan_id,
-                                                  reason="summary_not_computed")
+        # Issue #139 — no completed-scan summary available. Try the
+        # rolling partial-summary snapshot from the active scan first;
+        # only fall back to the in-progress placeholder if even the
+        # partial snapshot has not been written yet.
+        partial_resp = _partial_overview_response(source_id)
+        if partial_resp:
+            return partial_resp
+
+        running_scan_id = db.is_scan_running(source_id)
+        if running_scan_id is not None:
+            reason = ("no_completed_scan" if not scan_id
+                      else "summary_not_computed")
+            return _scan_in_progress_response(source_id, running_scan_id,
+                                              reason=reason)
+        if scan_id:
             return {"has_data": False, "scan_id": scan_id,
                     "reason": "summary_not_computed"}
-
-        # Boyutlari formatla
-        kpi["total_size_formatted"] = format_size(kpi.get("total_size", 0))
-        kpi["stale_size_formatted"] = format_size(kpi.get("stale_size", 0))
-        kpi["large_size_formatted"] = format_size(kpi.get("large_size", 0))
-        kpi["duplicate_waste_formatted"] = format_size(kpi.get("duplicate_waste_size", 0))
-        for ext in kpi.get("top_extensions", []):
-            ext["size_formatted"] = format_size(ext.get("size", 0))
-        for owner in kpi.get("top_owners", []):
-            owner["size_formatted"] = format_size(owner.get("size", 0))
-
-        kpi["has_data"] = True
-        return kpi
+        return {"has_data": False, "reason": "no_completed_scan"}
 
     @app.post("/api/overview/{source_id}/recompute")
     async def overview_recompute(source_id: int):
