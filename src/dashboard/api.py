@@ -2917,11 +2917,15 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             )
 
         # Kaynak bilgisi
-        source = db.get_source(source_id)
+        # NOTE: ``db.get_source(...)`` did not exist — historical typo.
+        # ``get_source_by_id`` returns a ``Source`` dataclass (attribute
+        # access, not dict access). See latent-bug fix bundled with
+        # security-audit-2026-04-28.
+        source = db.get_source_by_id(source_id)
         if not source:
             raise HTTPException(404, "Kaynak bulunamadi")
 
-        archive_dest = source.get("archive_dest")
+        archive_dest = source.archive_dest
         if not archive_dest:
             raise HTTPException(400, "Arsiv hedefi tanimli degil")
 
@@ -2939,7 +2943,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         engine = ArchiveEngine(db, config)
         result = engine.archive_files(
-            files, archive_dest, source["unc_path"], source_id,
+            files, archive_dest, source.unc_path, source_id,
             archived_by="duplicate_cleanup",
             trigger_type="manual",
             trigger_detail="duplicate_cleanup",
@@ -4709,7 +4713,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     async def restore_snapshot(snapshot_id: str, body: dict, request: Request):
         """Restore the live DB from ``snapshot_id``. Refuses if a live
         connection holds the DB lock — the caller must stop the dashboard
-        first. Body must include ``confirm: true``.
+        first. Body must include ``confirm: true`` and
+        ``safety_token: "RESTORE"`` (audit M-3, mirrors the PURGE /
+        QUARANTINE triple-gate from PR #109/#110).
 
         When ``approvals.enabled=true`` AND ``'snapshot_restore'`` is in
         ``approvals.require_for``, this endpoint queues a pending
@@ -4721,6 +4727,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         body = body or {}
         if not bool(body.get("confirm", False)):
             raise HTTPException(400, "confirm: true required")
+        # Defence-in-depth: even with confirm=true, an attacker who can
+        # forge a request still has to know the literal "RESTORE" token.
+        # Mirrors PURGE_SAFETY_TOKEN_VALUE in DuplicateCleaner.
+        if body.get("safety_token", "") != "RESTORE":
+            raise HTTPException(
+                400, "safety_token must equal 'RESTORE'"
+            )
 
         # Route through approvals when gated. The framework is opt-in;
         # default config keeps this branch dormant.

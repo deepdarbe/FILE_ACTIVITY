@@ -267,6 +267,7 @@ class BackupManager:
             # Quote the path safely — VACUUM INTO uses string literal
             # syntax; double single-quotes inside the literal.
             quoted = out_path.replace("'", "''")
+            # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
             conn.execute(f"VACUUM INTO '{quoted}'")
         finally:
             conn.close()
@@ -446,9 +447,18 @@ class BackupManager:
             )
 
         # Verify integrity of the snapshot file before clobbering the
-        # live DB. SHA-256 from manifest must match disk.
+        # live DB. SHA-256 from manifest must match disk. An empty
+        # manifest sha256 is treated as a hard failure (audit M-1):
+        # historically we silently skipped the check, which means a
+        # tampered manifest or a pre-#77 snapshot could be restored
+        # without integrity proof. Operators must verify by hand.
         actual = self._sha256_file(meta.path)
-        if meta.sha256 and actual != meta.sha256:
+        if not meta.sha256:
+            raise RuntimeError(
+                f"Snapshot {meta.id} has no sha256 sidecar — refusing to restore "
+                "(manifest tampering or pre-#77 snapshot). Manually verify integrity first."
+            )
+        if actual != meta.sha256:
             raise RuntimeError(
                 f"snapshot {snapshot_id} sha256 mismatch — refusing "
                 f"to restore (manifest={meta.sha256[:12]}, "

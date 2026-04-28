@@ -80,7 +80,8 @@ analytics:
     # Yonetici ad-hoc SQL sorgu paneli (#48). DuckDB uzerinden SQLite'a
     # salt-okunur calisir, whitelist tablolar disindaki tum sorgulari
     # reddeder. Audit log'a sorgu kaydi yazilir (event_type=sql_query).
-    enabled: true
+    # Opt-in: SQL ad-hoc panel exposes whitelisted tables to LAN; enable only on hardened deployments.
+    enabled: false
     max_rows: 10000
     timeout_seconds: 30
 

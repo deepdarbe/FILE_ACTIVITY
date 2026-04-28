@@ -95,6 +95,12 @@ def _build_backups_app(tmp_path: Path, enabled: bool = True) -> FastAPI:
         body = body or {}
         if not bool(body.get("confirm", False)):
             raise HTTPException(400, "confirm: true required")
+        # Audit M-3: mirror PURGE / QUARANTINE — confirm alone is not
+        # enough; the literal token must match.
+        if body.get("safety_token", "") != "RESTORE":
+            raise HTTPException(
+                400, "safety_token must equal 'RESTORE'"
+            )
         if not mgr.enabled:
             raise HTTPException(400, "backup feature disabled")
         try:
@@ -182,9 +188,21 @@ def test_restore_requires_confirm(tmp_path: Path):
     assert "confirm" in resp.json()["detail"].lower()
 
 
-def test_restore_unknown_id_returns_404(tmp_path: Path):
+def test_restore_requires_safety_token(tmp_path: Path):
+    """Audit M-3: confirm: true without safety_token is now rejected."""
     client = TestClient(_build_backups_app(tmp_path))
     resp = client.post("/api/system/backups/restore/20990101_000000",
                        json={"confirm": True})
+
+    assert resp.status_code == 400
+    assert "safety_token" in resp.json()["detail"].lower()
+
+
+def test_restore_unknown_id_returns_404(tmp_path: Path):
+    client = TestClient(_build_backups_app(tmp_path))
+    resp = client.post(
+        "/api/system/backups/restore/20990101_000000",
+        json={"confirm": True, "safety_token": "RESTORE"},
+    )
 
     assert resp.status_code == 404
