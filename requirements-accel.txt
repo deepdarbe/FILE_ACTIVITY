@@ -44,3 +44,12 @@ hyperscan>=0.8.2
 # Windows wheels; on Linux/macOS pip falls through to python-magic).
 python-magic>=0.4.27; sys_platform != "win32"
 python-magic-bin>=0.4.14; sys_platform == "win32"
+
+# ──────────────────────────────────────────────────────────────────────
+# Perceptual image hashing (#144 Phase 2)
+#
+# Pure-Python + Pillow (already in requirements.txt). Computes pHash,
+# dHash, and aHash for image files so near-duplicate images can be
+# clustered even when byte-hashes differ (resized, recompressed, etc.).
+# Enable in config.yaml: scanner.compute_image_hashes: true
+imagehash>=4.3,<5

@@ -1041,6 +1041,25 @@ class FileScanner:
             result["report"] = self._generate_auto_report(source_id, source_name)
             progress["status"] = "completed"
 
+        # Perceptual image hash phase (opt-in, issue #144 Phase 2).
+        scanner_cfg = self._full_config.get("scanner", {}) or {}
+        if status == "completed" and bool(scanner_cfg.get("compute_image_hashes", False)):
+            try:
+                progress["phase"] = "image_hashing"
+                ih_stats = self._run_image_hashing(scan_id)
+                result["image_hashing"] = ih_stats
+                logger.info(
+                    "image_hash phase tamamlandi: scan=%d hashed=%d skipped=%d errors=%d",
+                    scan_id,
+                    ih_stats.get("hashed", 0),
+                    ih_stats.get("skipped", 0),
+                    ih_stats.get("errors", 0),
+                )
+            except Exception as e:
+                logger.warning("image_hash phase basarisiz (scan=%d): %s", scan_id, e)
+            finally:
+                progress["phase"] = "completed"
+
         return result
 
     def _run_extension_check(self, scan_id: int) -> dict:
@@ -1160,6 +1179,103 @@ class FileScanner:
         except Exception as e:
             logger.warning("Otomatik rapor hatasi: %s", e)
             return {"generated": False, "error": str(e)}
+
+    def _run_image_hashing(self, scan_id: int) -> dict:
+        """Perceptual-hash post-scan phase (issue #144 Phase 2).
+
+        Streams image files from the completed scan, computes pHash /
+        dHash / aHash via :class:`~src.analyzer.image_hash.ImageHasher`,
+        and upserts rows to ``image_hashes`` in 500-row chunks.
+
+        Image extensions eligible: jpg, jpeg, png, gif, bmp, tiff,
+        tif, webp.
+
+        Returns a summary dict::
+
+            {
+                "scan_id": <int>,
+                "hashed": <int>,
+                "skipped": <int>,   # too large / unreadable
+                "errors": <int>,    # hasher returned None for other reasons
+                "unavailable": <bool>,  # imagehash not installed
+            }
+        """
+        from src.analyzer.image_hash import ImageHasher, IMAGE_EXTENSIONS
+
+        hasher = ImageHasher(self._full_config)
+        if not hasher.available:
+            return {
+                "scan_id": scan_id,
+                "hashed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "unavailable": True,
+            }
+
+        hashed = 0
+        skipped = 0
+        errors = 0
+        chunk: list[dict] = []
+        CHUNK_SIZE = 500
+
+        with self.db.get_cursor() as cur:
+            cur.execute(
+                "SELECT id AS file_id, file_path, extension, file_size "
+                "FROM scanned_files "
+                "WHERE scan_id = ? AND extension IN ({}) "
+                "ORDER BY file_path".format(
+                    ",".join("?" * len(IMAGE_EXTENSIONS))
+                ),
+                (scan_id, *IMAGE_EXTENSIONS),
+            )
+            rows = cur.fetchall()
+
+        for row in rows:
+            file_id = row["file_id"]
+            file_path = row["file_path"]
+
+            result = hasher.compute(file_path)
+            if result is None:
+                # Either too large or unreadable.
+                skipped += 1
+                continue
+
+            chunk.append(
+                {
+                    "file_id": file_id,
+                    "scan_id": scan_id,
+                    "phash": result.get("phash"),
+                    "dhash": result.get("dhash"),
+                    "ahash": result.get("ahash"),
+                }
+            )
+            hashed += 1
+
+            if len(chunk) >= CHUNK_SIZE:
+                try:
+                    self.db.insert_image_hashes(chunk)
+                except Exception as e:
+                    logger.warning("image_hash DB flush hatasi: %s", e)
+                    errors += len(chunk)
+                    hashed -= len(chunk)
+                chunk = []
+
+        # Flush remaining
+        if chunk:
+            try:
+                self.db.insert_image_hashes(chunk)
+            except Exception as e:
+                logger.warning("image_hash DB final flush hatasi: %s", e)
+                errors += len(chunk)
+                hashed -= len(chunk)
+
+        return {
+            "scan_id": scan_id,
+            "hashed": hashed,
+            "skipped": skipped,
+            "errors": errors,
+            "unavailable": False,
+        }
 
     def _print_scan_summary(self, data: dict):
         """Tarama sonrasi konsola ozet rapor yazdir."""
