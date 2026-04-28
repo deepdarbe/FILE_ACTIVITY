@@ -476,8 +476,8 @@ class TestApiSmoke:
             [{"file_path": str(tmp_path / "x.jpg")}],
         )
         resp = client.get(f"/api/security/image-duplicates/export.xlsx?scan_id={scan_id}")
-        # openpyxl must be installed for this to succeed; if not we get 500
+        # openpyxl must be installed for this to succeed; if not we get 501
         if resp.status_code == 200:
             assert b"PK" in resp.content  # ZIP magic bytes (XLSX format)
         else:
-            assert resp.status_code in (500, 422)
+            assert resp.status_code in (501, 500, 422)
