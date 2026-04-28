@@ -206,7 +206,10 @@ class GainReporter:
 
     def save(self, operation: str, before: dict, after: dict,
              delta: Optional[dict] = None,
-             scan_id: Optional[int] = None) -> int:
+             scan_id: Optional[int] = None,
+             source_id: Optional[int] = None,
+             audit_event_id: Optional[int] = None,
+             quarantine_path: Optional[str] = None) -> int:
         """Persist a row to ``gain_reports``. Returns the row id.
 
         ``operation`` is a short machine-readable label
@@ -214,8 +217,18 @@ class GainReporter:
         full snapshot dicts; ``delta`` is computed automatically when
         omitted via :meth:`compute_delta`.
 
-        ``scan_id`` is denormalised onto the row for cheap
-        operation-history filtering — pass it through when known.
+        ``scan_id`` / ``source_id`` are denormalised onto the row for
+        cheap operation-history filtering — pass them through when
+        known. ``audit_event_id`` and ``quarantine_path`` link the row
+        back to the per-file audit event and quarantine destination so
+        the operator can drill from the gain report into the forensic
+        evidence in one click.
+
+        Wrapped in a small retry loop (mirrors
+        :meth:`Database.bulk_insert_scanned_files` from #176) so a
+        transient ``database is locked`` mid-scan does not abort the
+        entire op. Five attempts, exponential backoff (1s, 2s, 4s, 8s,
+        16s) — same envelope as the bulk inserter.
 
         Raises on DB error. Callers should NOT swallow.
         """
@@ -229,38 +242,102 @@ class GainReporter:
         delta_json = json.dumps(delta or {}, sort_keys=True, default=str)
         completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        with self.db.get_cursor() as cur:
-            cur.execute(
-                "INSERT INTO gain_reports "
-                "(operation, scan_id, completed_at, before_json, "
-                "after_json, delta_json) VALUES (?, ?, ?, ?, ?, ?)",
-                (str(operation), scan_id, completed_at,
-                 before_json, after_json, delta_json),
-            )
-            return int(cur.lastrowid)
+        # Late import — sqlite3 is the only error type we discriminate
+        # on, and we don't want to pull it in at module import time.
+        import sqlite3 as _sqlite3
+        import time as _time
+
+        sql = (
+            "INSERT INTO gain_reports "
+            "(operation, source_id, scan_id, completed_at, before_json, "
+            "after_json, delta_json, audit_event_id, quarantine_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        params = (
+            str(operation),
+            int(source_id) if source_id is not None else None,
+            int(scan_id) if scan_id is not None else None,
+            completed_at,
+            before_json,
+            after_json,
+            delta_json,
+            int(audit_event_id) if audit_event_id is not None else None,
+            str(quarantine_path) if quarantine_path else None,
+        )
+
+        backoff = 1.0
+        last_err: Optional[Exception] = None
+        for attempt in range(1, 6):
+            try:
+                with self.db.get_cursor() as cur:
+                    cur.execute(sql, params)
+                    return int(cur.lastrowid)
+            except _sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "database is locked" not in msg and "busy" not in msg:
+                    raise
+                last_err = e
+                if attempt < 5:
+                    logger.warning(
+                        "gain_reports save locked (attempt %d/5), "
+                        "retry in %.1fs: %s", attempt, backoff, e,
+                    )
+                    _time.sleep(backoff)
+                    backoff *= 2
+        logger.error(
+            "gain_reports save exhausted retries (5x): %s", last_err,
+        )
+        if last_err is not None:
+            raise last_err
+        # Unreachable — for static checkers.
+        raise RuntimeError("gain_reports save failed without error")
 
     # ──────────────────────────────────────────────
     # Queries (used by /api/operations/* endpoints)
     # ──────────────────────────────────────────────
 
     def list_reports(self, limit: int = 50,
-                     operation: Optional[str] = None) -> list[dict]:
+                     operation: Optional[str] = None,
+                     source_id: Optional[int] = None,
+                     page: int = 1) -> list[dict]:
         """Recent gain_reports rows, newest first.
 
         ``operation`` filters on the operation label (exact match).
+        ``source_id`` filters by the source the operation was scoped to.
+        ``page`` is 1-based (page=1 returns the first ``limit`` rows).
         ``limit`` is clamped to [1, 500] so a buggy caller cannot
         exhaust the API. JSON columns are pre-decoded so frontends
         don't need to double-parse.
+
+        Read-side query — uses :meth:`Database.get_read_cursor` so we
+        share the read pool from #181 Track A.
         """
         limit = max(1, min(int(limit or 50), 500))
+        try:
+            page = max(1, int(page or 1))
+        except (TypeError, ValueError):
+            page = 1
+        offset = (page - 1) * limit
         sql = "SELECT * FROM gain_reports"
         params: list = []
+        where: list[str] = []
         if operation:
-            sql += " WHERE operation = ?"
+            where.append("operation = ?")
             params.append(str(operation))
-        sql += " ORDER BY started_at DESC, id DESC LIMIT ?"
+        if source_id is not None:
+            where.append("source_id = ?")
+            params.append(int(source_id))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?"
         params.append(limit)
-        with self.db.get_cursor() as cur:
+        params.append(int(offset))
+        cursor_ctx = (
+            self.db.get_read_cursor()
+            if hasattr(self.db, "get_read_cursor")
+            else self.db.get_cursor()
+        )
+        with cursor_ctx as cur:
             cur.execute(sql, params)
             rows = [dict(r) for r in cur.fetchall()]
         for row in rows:
@@ -269,9 +346,40 @@ class GainReporter:
             row["delta"] = self._safe_loads(row.pop("delta_json", "{}"))
         return rows
 
+    def count_reports(self, operation: Optional[str] = None,
+                      source_id: Optional[int] = None) -> int:
+        """Total row count matching the same filters as
+        :meth:`list_reports`. Used by the UI pager.
+        """
+        sql = "SELECT COUNT(*) AS c FROM gain_reports"
+        params: list = []
+        where: list[str] = []
+        if operation:
+            where.append("operation = ?")
+            params.append(str(operation))
+        if source_id is not None:
+            where.append("source_id = ?")
+            params.append(int(source_id))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        cursor_ctx = (
+            self.db.get_read_cursor()
+            if hasattr(self.db, "get_read_cursor")
+            else self.db.get_cursor()
+        )
+        with cursor_ctx as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return int(row["c"] if row and "c" in row.keys() else (row[0] if row else 0))
+
     def get_report(self, report_id: int) -> Optional[dict]:
         """Single row by id; None when missing."""
-        with self.db.get_cursor() as cur:
+        cursor_ctx = (
+            self.db.get_read_cursor()
+            if hasattr(self.db, "get_read_cursor")
+            else self.db.get_cursor()
+        )
+        with cursor_ctx as cur:
             cur.execute(
                 "SELECT * FROM gain_reports WHERE id = ?", (int(report_id),)
             )

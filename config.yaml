@@ -233,6 +233,11 @@ duplicates:
   # The quarantine root MUST live on the same filesystem as the source
   # share — shutil.move falls back to copy+remove across volumes, which
   # defeats the "rename is atomic" property on Windows.
+  bulk_delete_max_files: 500   # convenience mirror — read by execute()
+  hard_delete_allowed: false   # opt-in. When false, mode='hard' on the
+                               # /delete endpoint silently downgrades to
+                               # quarantine and the response carries
+                               # hard_delete_blocked=true.
   quarantine:
     enabled: true               # global kill-switch — flip false in emergencies
     dir: "data/quarantine"
@@ -240,6 +245,7 @@ duplicates:
     require_safety_token: true  # MUST remain true in prod (defence in depth)
     quarantine_days: 30         # Phase 2 auto-purge horizon
     purge_hour: 3               # daily_quarantine_purge cron hour (0-23, default 03:00)
+    days: 30                    # alias: spec uses .days; same as quarantine_days
 
 archiving:
   verify_checksum: true       # SHA-256 doğrulama

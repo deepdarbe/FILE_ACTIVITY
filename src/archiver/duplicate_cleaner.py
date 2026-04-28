@@ -445,6 +445,27 @@ class DuplicateCleaner:
         # ``scan_id_for_report`` so the row is filterable by scan.
         result.after = reporter.capture_after(scope)
         result.delta = reporter.compute_delta(result.before, result.after)
+        # Surface a representative audit_event_id + quarantine_path on
+        # the gain_report row so the UI can deep-link from the history
+        # list straight to the per-file evidence. We pick the first
+        # successful move's audit id and date-bucket dir.
+        first_audit_id = None
+        first_quarantine_path = None
+        for f in result.files:
+            if f.get("outcome") == "moved":
+                if first_audit_id is None:
+                    first_audit_id = f.get("audit_event_id")
+                if first_quarantine_path is None:
+                    qp = f.get("quarantine_path")
+                    if qp:
+                        # Strip the filename so the row points at the
+                        # bucket dir (operator-friendly).
+                        try:
+                            first_quarantine_path = os.path.dirname(qp)
+                        except Exception:
+                            first_quarantine_path = qp
+                if first_audit_id is not None and first_quarantine_path is not None:
+                    break
         try:
             result.gain_report_id = reporter.save(
                 operation="duplicate_quarantine",
@@ -452,6 +473,9 @@ class DuplicateCleaner:
                 after=result.after,
                 delta=result.delta,
                 scan_id=scan_id_for_report,
+                source_id=source_id,
+                audit_event_id=first_audit_id,
+                quarantine_path=first_quarantine_path,
             )
         except Exception as e:
             # If the gain report itself fails we still want operators
@@ -469,6 +493,108 @@ class DuplicateCleaner:
             )
 
         return result
+
+    # ──────────────────────────────────────────────
+    # Unified entry point (issue #83 spec)
+    # ──────────────────────────────────────────────
+
+    def execute(self, file_ids: list[int], mode: str = "quarantine",
+                confirm: bool = False, dry_run: bool = True,
+                safety_token: Optional[str] = None,
+                moved_by: str = "system",
+                source_id: Optional[int] = None) -> dict:
+        """Unified safety-first entry point.
+
+        Spec contract (issue #83):
+          * Default ``dry_run=True`` — destructive ops require an explicit
+            ``confirm=True`` AND a non-default ``dry_run=False``.
+          * If ``dry_run`` is true OR ``confirm`` is false, the call is
+            *forced* into dry-run mode: we run :meth:`preview` and
+            return the would-be effect, never touching disk.
+          * ``mode`` is one of ``"quarantine"`` (default) or ``"hard"``.
+            Hard delete remains opt-in via the
+            ``duplicates.hard_delete_allowed`` config flag, which
+            defaults to ``False``. With the flag off, ``mode="hard"``
+            falls back to quarantine and the response carries
+            ``hard_delete_blocked=True`` so the UI can surface it.
+
+        Returns a plain dict (not a dataclass) shaped as
+        ``{"dry_run": bool, "mode": str, "delta": {...},
+        "audit_event_id": Optional[int], "skipped": {...}, ...}``
+        which is what the dashboard endpoint serialises straight
+        through.
+        """
+        mode = (mode or "quarantine").lower()
+        if mode not in ("quarantine", "hard"):
+            raise ValueError(
+                f"mode must be 'quarantine' or 'hard' (got {mode!r})"
+            )
+
+        # Force dry-run if the caller hasn't both set dry_run=False AND
+        # confirm=True. This is the safety pivot.
+        forced_dry_run = bool(dry_run) or not bool(confirm)
+
+        # Block hard delete unless explicitly allowed in config.
+        dup_cfg = (self.config.get("duplicates") or {})
+        hard_allowed = bool(dup_cfg.get("hard_delete_allowed", False))
+        hard_delete_blocked = False
+        if mode == "hard" and not hard_allowed:
+            hard_delete_blocked = True
+            mode = "quarantine"
+
+        if forced_dry_run:
+            preview = self.preview(file_ids)
+            d = preview.to_dict()
+            d.update({
+                "dry_run": True,
+                "mode": mode,
+                "delta": {
+                    "would_move": preview.would_move,
+                    "total_size_bytes": preview.total_size_bytes,
+                    "total_size_freed_gb": preview.total_size_freed_gb,
+                },
+                "skipped": {
+                    "held": preview.skipped_held,
+                    "last_copy": preview.skipped_last_copy,
+                    "missing": preview.skipped_missing,
+                },
+                "audit_event_id": None,
+                "hard_delete_blocked": hard_delete_blocked,
+            })
+            return d
+
+        # Real run: confirm=True + dry_run=False AND, for the
+        # safety_token gate, the caller must pass the right value (or
+        # the require_safety_token flag must be off).
+        token = safety_token or (
+            SAFETY_TOKEN_VALUE if not self.require_token else ""
+        )
+        result = self.quarantine(
+            file_ids=file_ids,
+            confirm=True,
+            safety_token=token,
+            moved_by=moved_by,
+            source_id=source_id,
+        )
+        d = result.to_dict()
+        # Pick a representative audit_event_id from the moved files.
+        first_audit_id = None
+        for f in result.files:
+            if f.get("outcome") == "moved" and f.get("audit_event_id"):
+                first_audit_id = f["audit_event_id"]
+                break
+        d.update({
+            "dry_run": False,
+            "mode": mode,
+            "audit_event_id": first_audit_id,
+            "skipped": {
+                "held": result.skipped_held,
+                "last_copy": result.skipped_last_copy,
+                "missing": result.skipped_missing,
+            },
+            "hard_delete_blocked": hard_delete_blocked,
+        })
+        return d
 
     # ──────────────────────────────────────────────
     # Internal helpers

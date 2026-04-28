@@ -373,3 +373,173 @@ def test_quarantine_disabled_kill_switch(tmp_path):
             confirm=True,
             safety_token=SAFETY_TOKEN_VALUE,
         )
+
+
+# ──────────────────────────────────────────────
+# execute() unified entry point (issue #83 spec)
+# ──────────────────────────────────────────────
+
+
+def test_execute_default_dry_run_does_not_touch_disk(tmp_path):
+    """execute() with no confirm + default dry_run=True must not move
+    a single file — the operator-misclick guarantee."""
+    db, cleaner, _cfg = _make_cleaner(tmp_path)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "doc.pdf", "size": 40,
+         "paths": ["a/doc.pdf", "b/doc.pdf", "c/doc.pdf"]},
+    ])
+    sorted_ids = sorted(ids.values())
+    result = cleaner.execute(
+        file_ids=sorted_ids[:2],
+        mode="quarantine",
+    )
+    assert result["dry_run"] is True
+    assert result["mode"] == "quarantine"
+    assert result["audit_event_id"] is None
+    # All on-disk source files remain.
+    for p in ids:
+        assert os.path.exists(p)
+
+
+def test_execute_confirm_missing_forces_dry_run(tmp_path):
+    """Even if dry_run=False, a missing/false confirm flips to dry_run."""
+    db, cleaner, _cfg = _make_cleaner(tmp_path)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "doc.pdf", "size": 40,
+         "paths": ["a/doc.pdf", "b/doc.pdf"]},
+    ])
+    sorted_ids = sorted(ids.values())
+    result = cleaner.execute(
+        file_ids=sorted_ids,
+        mode="quarantine",
+        dry_run=False,
+        confirm=False,
+    )
+    assert result["dry_run"] is True
+    for p in ids:
+        assert os.path.exists(p)
+
+
+def test_execute_real_run_moves_and_writes_audit(tmp_path):
+    """confirm=True + dry_run=False + valid token → real move and
+    every per-file action writes an audit row."""
+    db, cleaner, _cfg = _make_cleaner(tmp_path)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "asset.bin", "size": 24,
+         "paths": ["x/asset.bin", "y/asset.bin", "z/asset.bin"]},
+    ])
+    sorted_ids = sorted(ids.values())
+    result = cleaner.execute(
+        file_ids=sorted_ids[:2],
+        mode="quarantine",
+        confirm=True,
+        dry_run=False,
+        safety_token=SAFETY_TOKEN_VALUE,
+        moved_by="tester",
+        source_id=1,
+    )
+    assert result["dry_run"] is False
+    assert result["moved"] == 2
+    assert result["audit_event_id"] is not None
+
+    # Audit events written.
+    with db.get_cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS c FROM file_audit_events "
+            "WHERE event_type = 'duplicate_quarantine_moved'"
+        )
+        assert cur.fetchone()["c"] >= 2
+
+
+def test_execute_hard_mode_blocked_by_default_config(tmp_path):
+    """hard_delete_allowed defaults to false — mode='hard' should
+    silently downgrade to quarantine, with hard_delete_blocked=True."""
+    db, cleaner, _cfg = _make_cleaner(tmp_path)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "k.bin", "size": 16,
+         "paths": ["a/k.bin", "b/k.bin", "c/k.bin"]},
+    ])
+    sorted_ids = sorted(ids.values())
+    result = cleaner.execute(
+        file_ids=sorted_ids[:2],
+        mode="hard",
+        confirm=True,
+        dry_run=False,
+        safety_token=SAFETY_TOKEN_VALUE,
+        source_id=1,
+    )
+    assert result["hard_delete_blocked"] is True
+    assert result["mode"] == "quarantine"
+    # Files were quarantined, not hard-deleted — sources gone, but
+    # quarantine bucket carries them.
+    qroot = tmp_path / "quarantine"
+    assert qroot.exists()
+
+
+def test_execute_invalid_mode_raises(tmp_path):
+    db, cleaner, _cfg = _make_cleaner(tmp_path)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "x.bin", "size": 16, "paths": ["a/x.bin", "b/x.bin"]},
+    ])
+    with pytest.raises(ValueError, match="mode"):
+        cleaner.execute(
+            file_ids=list(ids.values()),
+            mode="bogus",
+        )
+
+
+def test_execute_dry_run_with_legal_hold_counts_skipped(tmp_path):
+    """Dry-run path must surface the legal-hold skip count so the UI
+    can render the warning banner before the operator confirms."""
+    from src.compliance.legal_hold import LegalHoldRegistry
+    db, cleaner, cfg = _make_cleaner(tmp_path)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "p.dat", "size": 64,
+         "paths": ["finance/p.dat", "marketing/p.dat", "ops/p.dat"]},
+    ])
+    reg = LegalHoldRegistry(db, cfg)
+    reg.add_hold(
+        pattern=str(tmp_path / "share" / "finance" / "*"),
+        reason="audit", case_ref="C2", created_by="alice",
+    )
+    result = cleaner.execute(
+        file_ids=list(ids.values()),
+        mode="quarantine",
+    )
+    assert result["dry_run"] is True
+    # The held finance/p.dat must be counted in skipped.held.
+    assert result["skipped"]["held"] >= 1
+
+
+def test_execute_returns_delta_block(tmp_path):
+    """Dry-run response must include a delta block with at least
+    would_move and total_size_bytes for the UI summary line."""
+    db, cleaner, _cfg = _make_cleaner(tmp_path)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "doc.pdf", "size": 100,
+         "paths": ["a/doc.pdf", "b/doc.pdf", "c/doc.pdf"]},
+    ])
+    result = cleaner.execute(
+        file_ids=list(ids.values()),
+        mode="quarantine",
+    )
+    assert "delta" in result
+    assert "would_move" in result["delta"]
+    assert "total_size_bytes" in result["delta"]
+
+
+def test_execute_caps_propagate_from_quarantine(tmp_path):
+    """Real run still enforces the bulk_delete_max_files cap."""
+    db, cleaner, _cfg = _make_cleaner(tmp_path, bulk_delete_max_files=2)
+    ids = _seed_files(db, tmp_path, [
+        {"name": "x.bin", "size": 16,
+         "paths": ["a/x.bin", "b/x.bin", "c/x.bin", "d/x.bin"]},
+    ])
+    with pytest.raises(ValueError, match="exceeds cap"):
+        cleaner.execute(
+            file_ids=list(ids.values()),
+            mode="quarantine",
+            confirm=True,
+            dry_run=False,
+            safety_token=SAFETY_TOKEN_VALUE,
+        )
