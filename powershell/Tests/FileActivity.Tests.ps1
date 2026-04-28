@@ -22,7 +22,12 @@ Describe 'FileActivity Module' {
             'Get-FileActivityRansomware',
             'Invoke-FileActivityArchive',
             'Get-FileActivityAudit',
-            'Test-FileActivityAuditChain'
+            'Test-FileActivityAuditChain',
+            # Issue #151: service control cmdlets
+            'Start-FileActivityService',
+            'Stop-FileActivityService',
+            'Restart-FileActivityService',
+            'Get-FileActivityServiceStatus'
         )
         foreach ($cmd in $expected) {
             $exports | Should -Contain $cmd

@@ -360,13 +360,56 @@ Write-Host "    $InstallDir\fa.cmd <komut>        - CLI (scan, source, restore .
 Write-Host "    $InstallDir\update.cmd            - En son master'a guncelle" -ForegroundColor Cyan
 Write-Host ""
 
-# --- Otomatik baslatma ---
-$answer = Read-Host "  Dashboard simdi baslasin mi? (E/H) [E]"
-if ($answer -ne "H" -and $answer -ne "h") {
-    Write-Host "  Dashboard baslatiliyor..." -ForegroundColor Cyan
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$InstallDir\start_dashboard.cmd`"" -WindowStyle Normal
-    Start-Sleep -Seconds 3
-    Start-Process "http://localhost:$DashPort"
-    Write-Host "  [OK] Dashboard baslatildi. Tarayici acilmadiysa: http://localhost:$DashPort" -ForegroundColor Green
+# --- Issue #151: Servis modu (NSSM) opt-in ---
+# Default H to preserve current behavior; user must explicitly choose service mode.
+Write-Host ""
+Write-Host "  Hizmet olarak yuklensin mi (Windows Service, otomatik baslatma + crash recovery)?" -ForegroundColor White
+Write-Host "  [E] Evet  [H] Hayir (sadece manuel start_dashboard.cmd ile)" -ForegroundColor White
+$svcAnswer = Read-Host "  Secim (E/H) [H]"
+$serviceInstalled = $false
+if ($svcAnswer -eq "E" -or $svcAnswer -eq "e") {
+    $svcScript = Join-Path $InstallDir "deploy\install_service.ps1"
+    if (Test-Path $svcScript) {
+        Write-Host "  Servis kuruluyor (install_service.ps1)..." -ForegroundColor Cyan
+        & powershell -ExecutionPolicy Bypass -File $svcScript -InstallDir $InstallDir
+        if ($LASTEXITCODE -eq 0) { $serviceInstalled = $true }
+    } else {
+        Write-Host "  [UYARI] $svcScript bulunamadi - servis modu atlandi." -ForegroundColor Yellow
+    }
+}
+
+# --- Issue #151: Sistem tepsisi (tray) opt-in (servis kuruluysa anlamli) ---
+if ($serviceInstalled) {
+    Write-Host ""
+    Write-Host "  Sistem tepsisi simgesi yuklensin mi (durum gostergesi + tek tikla yeniden baslat)?" -ForegroundColor White
+    Write-Host "  [E] Evet  [H] Hayir" -ForegroundColor White
+    $trayAnswer = Read-Host "  Secim (E/H) [H]"
+    if ($trayAnswer -eq "E" -or $trayAnswer -eq "e") {
+        $trayScript = Join-Path $InstallDir "deploy\install_tray.ps1"
+        if (Test-Path $trayScript) {
+            & powershell -ExecutionPolicy Bypass -File $trayScript -InstallDir $InstallDir
+        } else {
+            Write-Host "  [UYARI] $trayScript bulunamadi - tray atlandi." -ForegroundColor Yellow
+        }
+    }
+}
+
+# --- Otomatik baslatma (sadece servis modu secilmediyse) ---
+if ($serviceInstalled) {
+    Write-Host ""
+    Write-Host "  Servis kurulu - dashboard zaten arka planda calisiyor." -ForegroundColor Green
+    Write-Host "  Tarayicida acmak icin: http://localhost:$DashPort" -ForegroundColor Yellow
+    try {
+        Start-Process "http://localhost:$DashPort"
+    } catch {}
+} else {
+    $answer = Read-Host "  Dashboard simdi baslasin mi? (E/H) [E]"
+    if ($answer -ne "H" -and $answer -ne "h") {
+        Write-Host "  Dashboard baslatiliyor..." -ForegroundColor Cyan
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$InstallDir\start_dashboard.cmd`"" -WindowStyle Normal
+        Start-Sleep -Seconds 3
+        Start-Process "http://localhost:$DashPort"
+        Write-Host "  [OK] Dashboard baslatildi. Tarayici acilmadiysa: http://localhost:$DashPort" -ForegroundColor Green
+    }
 }
 Write-Host ""

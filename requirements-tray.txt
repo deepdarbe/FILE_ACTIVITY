@@ -1,0 +1,7 @@
+# Optional dependencies for the system tray app (issue #151).
+# Not part of requirements.txt — install only if you want the tray UI.
+#
+#     pip install -r requirements-tray.txt
+#
+pystray>=0.19.5
+Pillow>=10.0.0

@@ -7,6 +7,7 @@
 İçindekiler:
 
 - [Kurulum (Install)](#kurulum-install)
+- [Service Mode Kurulum (issue #151)](#service-mode-kurulum-issue-151)
 - [Güncelleme (Update)](#guncelleme-update)
 - [Sık Karşılaşılan Senaryolar](#sik-karsilasilan-senaryolar)
 - [Performans Ayarı](#performans-ayari)
@@ -54,6 +55,132 @@ EXE'yi bir `config.yaml` yanına koy, çift tıkla. EXE statik bir snapshot —
 otomatik güncelleme istiyorsan kaynak install'u tercih et.
 
 İlgili: README "Quick Setup" bölümü.
+
+---
+
+## Service Mode Kurulum (issue #151)
+
+Operatör şikâyeti: "projeyi kapatmak açmak command prompt'ta işlem yapmak
+zahmetli oluyor". `start_dashboard.cmd` ile cmd penceresi açıp Task
+Manager'dan kapatma akışı dağıtık üretimde kabul edilemez. Service mode
+bu akışı bitirir.
+
+### Mimari
+
+NSSM (Non-Sucking Service Manager, BSD-like license) python.exe + main.py
+`dashboard` subcommand'ını gerçek bir Windows servisi olarak sarar:
+
+- `Start = SERVICE_AUTO_START` — boot'ta otomatik başlar
+- `AppExit Default Restart` — crash sonrası 5 sn delay ile yeniden başlar
+- `AppStdout / AppStderr` — `logs\service.out` ve `logs\service.err`
+  (10 MB'da rotate)
+
+NSSM zip'i `nssm.cc/release/nssm-2.24.zip` adresinden ilk kurulumda
+indirilir, `<InstallDir>\bin\nssm.exe` konumuna düşer.
+
+### Kurulum
+
+`setup-source.ps1` artık iki opt-in soru sorar (default H — geriye dönük
+uyumluluk için davranış değişmemeli):
+
+```
+Hizmet olarak yuklensin mi (Windows Service, otomatik baslatma + crash recovery)?
+[E] Evet  [H] Hayir (sadece manuel start_dashboard.cmd ile)
+```
+
+E seçilirse `deploy\install_service.ps1` çağrılır. Standalone kurmak için
+de manuel:
+
+```powershell
+# Yönetici PowerShell:
+powershell -ExecutionPolicy Bypass -File C:\FileActivity\deploy\install_service.ps1
+```
+
+Tray ikon (opsiyonel — durum göstergesi + sağ tık menü):
+
+```
+Sistem tepsisi simgesi yuklensin mi (durum gostergesi + tek tikla yeniden baslat)?
+[E] Evet  [H] Hayir
+```
+
+E seçilirse `pystray` + `Pillow` venv'e yüklenir, `start_tray.cmd`
+oluşturulur, Startup klasörüne kısayol bırakılır (logon'da otomatik).
+
+### Yönetim — üç yol
+
+**1. Services.msc (klasik):** "FILE ACTIVITY - File Share Monitor" satırı.
+Sağ tık → Start / Stop / Restart.
+
+**2. PowerShell cmdlet'leri** (`Import-Module FileActivity` sonrası):
+
+```powershell
+Start-FileActivityService
+Stop-FileActivityService
+Restart-FileActivityService
+Get-FileActivityServiceStatus    # Status + StartType döner
+
+# Servis kurulu değilse hata fırlatmaz, Status='NotInstalled' döner:
+if ((Get-FileActivityServiceStatus).Status -ne 'Running') {
+    Start-FileActivityService
+}
+```
+
+Her cmdlet yönetici hakkı gerektirir; non-admin session'da Türkçe friendly
+hata döner.
+
+**3. Tray ikon:** Sağ tık → Open Dashboard / Start / Stop / Restart /
+Open Logs Folder / Quit. Status renk kodu:
+
+- yeşil = Running
+- sarı  = StartPending / StopPending / Paused
+- kırmızı = Stopped / NotInstalled
+
+### Loglar
+
+NSSM stdout/stderr ayrı dosyalarda, 10 MB rotation:
+
+- `C:\FileActivity\logs\service.out` — uvicorn / dashboard normal çıktı
+- `C:\FileActivity\logs\service.err` — exception trace, crash detayı
+
+Watchdog/scheduler iç logları yine `config.yaml` `logging.path` altında.
+
+### Geri dönüş (rollback to manual mode)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\FileActivity\deploy\uninstall_service.ps1
+```
+
+NSSM servisi kaldırır. Tray kısayolunu da silmek için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\FileActivity\deploy\uninstall_service.ps1 -RemoveTrayShortcut
+```
+
+`start_dashboard.cmd` her zaman çalışmaya devam eder — debug / standalone
+senaryolar için saklı.
+
+### Smoke testi (servis kurulduktan sonra)
+
+```powershell
+# 1) Status:
+Get-FileActivityServiceStatus
+# Beklenen: Status=Running, StartType=Automatic
+
+# 2) HTTP probe:
+Invoke-RestMethod http://localhost:8085/api/system/status
+
+# 3) Crash recovery testi (son cümle Run as Admin):
+Stop-Process -Name python -Force
+Start-Sleep -Seconds 8
+Get-FileActivityServiceStatus    # NSSM 5 sn delay + restart sonrası tekrar Running
+
+# 4) Reboot persistence:
+Restart-Computer
+# Boot sonrası: Get-Service FileActivity -> Running (login bile gerekmez)
+```
+
+İlgili: issue #151, `deploy\install_service.ps1`,
+`deploy\uninstall_service.ps1`, `src\tray\tray_app.py`.
 
 ---
 
