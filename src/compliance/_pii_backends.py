@@ -31,7 +31,10 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable, Iterator, Optional, Protocol
+from typing import TYPE_CHECKING, Callable, Iterator, Optional, Protocol
+
+if TYPE_CHECKING:
+    from src.compliance.pii.recognizer import PiiHit as _PiiHit
 
 logger = logging.getLogger("file_activity.compliance.pii_backends")
 
@@ -81,6 +84,16 @@ class PatternBackend(Protocol):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Shared constant
+# ──────────────────────────────────────────────────────────────────────
+
+#: Default confidence score assigned to pattern-backend hits.
+#: Used by both ReBackend and HyperscanBackend ``analyze()`` so future
+#: calibration changes only need to touch one place.
+_DEFAULT_PATTERN_CONFIDENCE: float = 0.85
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Stdlib `re` backend (default, always available)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -108,6 +121,28 @@ class ReBackend:
         # Exposed so PiiEngine.patterns keeps its existing shape for any
         # downstream code (and tests) that introspect compiled patterns.
         return self._compiled
+
+    # ── PiiRecognizer interface ────────────────────────────────────────
+
+    @property
+    def supported_entities(self) -> list[str]:
+        """Entity types this backend can detect (== compiled pattern names)."""
+        return list(self._compiled)
+
+    def analyze(self, text: str, context: dict) -> list["_PiiHit"]:
+        """Implement :class:`~src.compliance.pii.recognizer.PiiRecognizer`.
+
+        Delegates to :meth:`scan` so the detection logic is never
+        duplicated. Position information is set to 0 because
+        ``re.findall`` does not return offsets; Phase-2 recognizers
+        that need offsets should use ``finditer`` directly.
+        """
+        from src.compliance.pii.recognizer import PiiHit
+        return [
+            PiiHit(entity_type=name, value=raw, start=0, end=0,
+                   score=_DEFAULT_PATTERN_CONFIDENCE)
+            for name, raw in self.scan(text)
+        ]
 
     def scan(self, text: str) -> Iterator[tuple[str, str]]:
         for name, regex in self._compiled.items():
@@ -298,6 +333,28 @@ class HyperscanBackend:
             result[name] = re.compile("", re.IGNORECASE)
         result.update(self._fallback)
         return result
+
+    # ── PiiRecognizer interface ────────────────────────────────────────
+
+    @property
+    def supported_entities(self) -> list[str]:
+        """Entity types this backend can detect (native + fallback patterns)."""
+        return list(self._ids.values()) + list(self._fallback)
+
+    def analyze(self, text: str, context: dict) -> list["_PiiHit"]:
+        """Implement :class:`~src.compliance.pii.recognizer.PiiRecognizer`.
+
+        Delegates to :meth:`scan`.  Byte offsets from Hyperscan's
+        ``SOM_LEFTMOST`` mode are not yet surfaced here to keep the
+        interface consistent with :class:`ReBackend`; Phase-2 callers
+        that need offsets can call :meth:`scan` directly.
+        """
+        from src.compliance.pii.recognizer import PiiHit
+        return [
+            PiiHit(entity_type=name, value=raw, start=0, end=0,
+                   score=_DEFAULT_PATTERN_CONFIDENCE)
+            for name, raw in self.scan(text)
+        ]
 
     def scan(self, text: str) -> Iterator[tuple[str, str]]:
         # Hyperscan is byte-oriented. Encode once, scan, slice the

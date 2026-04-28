@@ -36,6 +36,7 @@ import time
 from typing import Optional
 
 from src.compliance._pii_backends import make_backend
+from src.compliance.pii.recognizer import ContextRecognizer, PiiHit, PiiRecognizer
 
 logger = logging.getLogger("file_activity.compliance.pii_engine")
 
@@ -96,6 +97,36 @@ class PiiEngine:
         self.patterns: dict[str, "re.Pattern[str]"] = getattr(
             self.backend, "patterns", {}
         )
+
+        # ── Recognizer pipeline (issue #1, Phase 1) ───────────────────
+        # ``compliance.pii.recognizers`` is an optional list of recognizer
+        # names.  When absent the engine defaults to ['hyperscan_or_re']
+        # which reproduces the pre-Phase-1 single-backend behaviour.
+        #
+        # Built-in names:
+        #   'hyperscan_or_re' — the selected PatternBackend (see above)
+        #   'context'         — ContextRecognizer (confidence booster)
+        #
+        # Any unknown name is skipped with a WARNING so typos don't
+        # silently break a production scan.
+        recognizer_names: list[str] = list(
+            cfg.get("recognizers") or ["hyperscan_or_re"]
+        )
+        self._recognizers: list[PiiRecognizer] = []
+        for rname in recognizer_names:
+            rname_norm = str(rname).strip().lower()
+            if rname_norm == "hyperscan_or_re":
+                # The backend already satisfies PiiRecognizer after Phase-1
+                # adaptations; cast is safe.
+                self._recognizers.append(self.backend)  # type: ignore[arg-type]
+            elif rname_norm == "context":
+                self._recognizers.append(ContextRecognizer())
+            else:
+                logger.warning(
+                    "PII recognizer %r is unknown and will be skipped. "
+                    "Built-in names: 'hyperscan_or_re', 'context'.",
+                    rname,
+                )
 
         # Text extensions: user-supplied list wholly replaces defaults
         # if provided (matches the YAML comment "text_extensions"). An
@@ -223,13 +254,39 @@ class PiiEngine:
                 logger.debug("PII scan_file: undecodable %s", path)
                 return result
 
-        # Single pass through the configured backend (stdlib re or
-        # Hyperscan). Backend yields raw matches; redaction policy
-        # below is identical across backends so on-disk findings stay
-        # backend-agnostic.
+        # Drive every registered recognizer in order and merge their
+        # PiiHit outputs.  ``context_signal`` hits (from ContextRecognizer)
+        # carry a confidence boost multiplier but are never persisted as
+        # pii_findings rows, keeping on-disk output byte-identical to the
+        # pre-Phase-1 single-backend path.
+        rec_context: dict = {"file_path": path}
+        all_hits: list[PiiHit] = []
+        for recognizer in self._recognizers:
+            all_hits.extend(recognizer.analyze(text, rec_context))
+
+        # Collect any confidence boost signalled by ContextRecognizer.
+        context_boost = sum(
+            h.score for h in all_hits if h.entity_type == "context_signal"
+        )
+
+        # Group non-context hits; optionally apply boost to scores
+        # (not yet persisted but available for future Phase-2 callers).
+        # New PiiHit objects are created rather than mutating the originals
+        # so callers that retained a reference to the hits list see a
+        # consistent view.
         grouped: dict[str, list[str]] = {}
-        for name, raw_match in self.backend.scan(text):
-            grouped.setdefault(name, []).append(raw_match)
+        for h in all_hits:
+            if h.entity_type == "context_signal":
+                continue
+            if context_boost:
+                h = PiiHit(
+                    entity_type=h.entity_type,
+                    value=h.value,
+                    start=h.start,
+                    end=h.end,
+                    score=min(1.0, h.score + context_boost),
+                )
+            grouped.setdefault(h.entity_type, []).append(h.value)
 
         hits: dict[str, list[str]] = {}
         for name, flat in grouped.items():
