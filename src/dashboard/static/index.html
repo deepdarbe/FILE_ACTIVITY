@@ -6940,6 +6940,49 @@ function loadStandards() {
 }
 
 // ═══════════════════════════════════════════════════
+// MISSING-PAGE STUBS — issue #194 Update #4 (2026-04-29)
+// ═══════════════════════════════════════════════════
+// The sidebar dispatches via `loaders[pageName]()` (line ~2664). The
+// loaders dict referenced `loadPii` and `loadRetention` for sidebar
+// items wired up earlier, but no implementations ever landed in this
+// file — clicking those menus fired:
+//   Uncaught ReferenceError: loadPii is not defined
+//
+// That single ReferenceError was caught by `showPage` but it bubbled
+// to the console and kept the customer's "menüler arası gezinti yok"
+// experience even after PR #193 fixed the prior parse error.
+//
+// These stubs render a "Yakında" placeholder so the menus don't crash;
+// real implementations belong in the next-cycle backlog (frontend
+// integration wave #81 follow-up).
+function loadPii() {
+    const el = document.getElementById('page-pii');
+    if (!el) return;
+    el.innerHTML = `
+        <div style="padding:32px;text-align:center;color:var(--text-muted)">
+            <div style="font-size:48px;margin-bottom:12px">🔒</div>
+            <h2 style="margin:0 0 8px 0;color:var(--text-primary)">PII Bulgular</h2>
+            <p style="margin:0;font-size:13px">Bu sayfa yakında etkinleştirilecek (issue #81 follow-up).
+            Mevcut PII verisi <a href="/api/compliance/pii/findings" target="_blank">/api/compliance/pii/findings</a> endpoint'inden alınabilir.</p>
+        </div>
+    `;
+}
+
+function loadRetention() {
+    const el = document.getElementById('page-retention');
+    if (!el) return;
+    el.innerHTML = `
+        <div style="padding:32px;text-align:center;color:var(--text-muted)">
+            <div style="font-size:48px;margin-bottom:12px">📅</div>
+            <h2 style="margin:0 0 8px 0;color:var(--text-primary)">Saklama Politikaları</h2>
+            <p style="margin:0;font-size:13px">Bu sayfa yakında etkinleştirilecek (issue #81 follow-up).
+            Saklama hesabı için <a href="javascript:loadRetentionAttestation()">attestation endpoint</a>'i
+            kullanılabilir; tam policy CRUD UI yakında gelecek.</p>
+        </div>
+    `;
+}
+
+// ═══════════════════════════════════════════════════
 // PII SUBJECT EXPORT (GDPR Article 17 / 30)
 // ═══════════════════════════════════════════════════
 function openPiiSubjectModal() {
