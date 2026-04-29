@@ -2636,6 +2636,23 @@ function formatSize(bytes) {
 
 function formatNum(n) { return n ? n.toLocaleString('tr-TR') : '0'; }
 
+// Issue #194 update #6: defensive innerHTML setter. Customer prod
+// (2026-04-29 00:55) hit "TypeError: Cannot set properties of null
+// (setting 'innerHTML')" in loadDuplicates / loadGrowth / loadNaming
+// when their browser served stale cached HTML against fresh JS — the
+// IDs the JS targets weren't yet in the DOM the browser had cached.
+// Rather than letting the loader crash and bubble up to a red toast,
+// log a warning and continue. Used in loaders that touch summary
+// cards which may not be present in older HTML versions.
+function _setHtmlSafe(id, html) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.innerHTML = html;
+    } else if (window && window.console) {
+        console.warn('_setHtmlSafe: element not found:', id);
+    }
+}
+
 function destroyChart(id) { if (chartInstances[id]) { chartInstances[id].destroy(); delete chartInstances[id]; } }
 
 const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#f97316','#14b8a6','#a855f7','#6366f1','#84cc16','#e11d48','#0ea5e9','#d946ef','#facc15','#22d3ee','#fb923c','#4ade80','#c084fc'];
@@ -5124,7 +5141,7 @@ async function loadInsights() {
 async function loadNaming() {
     const sourceId = document.getElementById('naming-source')?.value;
     if (!sourceId) {
-        document.getElementById('naming-summary-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>';
+        _setHtmlSafe('naming-summary-cards', '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>');
         // Attach the toggle even without data so the user can switch modes.
         _attachNamingViewToggle();
         return;
@@ -5137,10 +5154,10 @@ async function loadNaming() {
         _psv2PrevWasPartial['naming'] = true;
         _psv2ShowBanner('naming-partial-banner', ps.scan_state, ps.progress);
         const namingCount = (ps.summary && ps.summary.anomalies_so_far && ps.summary.anomalies_so_far.naming) || 0;
-        document.getElementById('naming-summary-cards').innerHTML = `
+        _setHtmlSafe('naming-summary-cards', `
             <div class="card danger"><div class="card-label">Adlandirma Ihlalleri</div><div class="card-value">${formatNum(namingCount)}</div><div class="card-sub">Kismi veri</div></div>
             <div class="card warning"><div class="card-label">Detay</div><div class="card-value" style="font-size:14px">Tarama devam ediyor</div><div class="card-sub">Tarama bitince tam rapor goruntulenecek</div></div>
-        `;
+        `);
         const reqTable = document.getElementById('naming-req-table');
         if (reqTable) reqTable.innerHTML = '<div style="padding:20px;color:var(--text-muted)">Tarama tamamlandiktan sonra kural detaylari goruntulenecek</div>';
         const bpTable = document.getElementById('naming-bp-table');
@@ -5167,13 +5184,13 @@ async function loadNaming() {
         const reqViolations = data.summary?.total_requirement_violations || 0;
         const bpViolations = data.summary?.total_bp_violations || 0;
 
-        document.getElementById('naming-summary-cards').innerHTML = `
+        _setHtmlSafe('naming-summary-cards', `
             <div class="card accent"><div class="card-label">Toplam Dosya</div><div class="card-value">${formatNum(total)}</div></div>
             <div class="card success"><div class="card-label">Zorunlu Uyumlu</div><div class="card-value">${formatNum(reqOk)}</div><div class="card-sub">${data.requirement_compliance || 0}%</div></div>
             <div class="card purple"><div class="card-label">Tam Uyumlu</div><div class="card-value">${formatNum(fullOk)}</div><div class="card-sub">${data.full_compliance || 0}%</div></div>
             <div class="card danger"><div class="card-label">Zorunlu Ihlal</div><div class="card-value">${formatNum(reqViolations)}</div></div>
             <div class="card warning"><div class="card-label">BP Sapma</div><div class="card-value">${formatNum(bpViolations)}</div></div>
-        `;
+        `);
 
         // Skor gauge
         const score = data.compliance_score || 0;
@@ -5885,8 +5902,8 @@ async function loadDuplicates(page) {
     dupCurrentPage = page || 1;
     const sourceId = document.getElementById('dup-source')?.value;
     if (!sourceId) {
-        document.getElementById('dup-summary-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>';
-        document.getElementById('dup-table').innerHTML = '';
+        _setHtmlSafe('dup-summary-cards', '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>');
+        _setHtmlSafe('dup-table', '');
         // Still attach the toggle so it appears even without a source.
         _attachDuplicatesViewToggle();
         return;
@@ -5903,11 +5920,11 @@ async function loadDuplicates(page) {
         if (expBtn) expBtn.style.display = (data.total_groups > 0) ? '' : 'none';
 
         // Ozet kartlar
-        document.getElementById('dup-summary-cards').innerHTML = `
+        _setHtmlSafe('dup-summary-cards', `
             <div class="card accent"><div class="card-label">Kopya Gruplar</div><div class="card-value">${formatNum(data.total_groups || 0)}</div></div>
             <div class="card danger"><div class="card-label">Israf Edilen Alan</div><div class="card-value">${formatSize(data.total_waste_size || 0)}</div></div>
             <div class="card warning"><div class="card-label">Toplam Kopya Dosya</div><div class="card-value">${formatNum(data.total_files || 0)}</div></div>
-        `;
+        `);
 
         // Tablo
         const table = document.getElementById('dup-table');
@@ -6537,7 +6554,7 @@ let growthCharts = {};
 async function loadGrowth() {
     const sourceId = document.getElementById('growth-source')?.value;
     if (!sourceId) {
-        document.getElementById('growth-summary-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>';
+        _setHtmlSafe('growth-summary-cards', '<div style="padding:20px;color:var(--text-muted)">Lutfen bir kaynak secin</div>');
         return;
     }
 
@@ -6551,11 +6568,11 @@ async function loadGrowth() {
         const totalGrowth = yearly.length >= 2 ? yearly[yearly.length-1].total_size - yearly[0].total_size : 0;
         const monthlyAvg = monthly.length >= 2 ? Math.round((monthly[monthly.length-1].total_size - monthly[0].total_size) / monthly.length) : 0;
 
-        document.getElementById('growth-summary-cards').innerHTML = `
+        _setHtmlSafe('growth-summary-cards', `
             <div class="card accent"><div class="card-label">Toplam Buyume</div><div class="card-value">${formatSize(Math.abs(totalGrowth))}</div></div>
             <div class="card warning"><div class="card-label">Aylik Ortalama</div><div class="card-value">${formatSize(Math.abs(monthlyAvg))}</div></div>
             <div class="card purple"><div class="card-label">Tarama Sayisi</div><div class="card-value">${formatNum(data.total_scans || 0)}</div></div>
-        `;
+        `);
 
         // Yillik grafik
         if (yearly.length) {
