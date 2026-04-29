@@ -5939,6 +5939,7 @@ async function loadDuplicates(page) {
 
         // Tablo
         const table = document.getElementById('dup-table');
+        if (table) {
         if (groups.length) {
             table.innerHTML = `
                 <thead><tr><th style="width:30px"></th><th>Dosya Adi</th><th>Boyut</th><th>Kopya Sayisi</th><th>Israf</th><th>Detay</th></tr></thead>
@@ -5972,10 +5973,12 @@ async function loadDuplicates(page) {
         } else {
             table.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:12px">Kopya dosya bulunamadi</div>';
         }
+        }  // /if (table)
 
         // Sayfalama
         const totalPages = data.total_pages || 1;
         const pag = document.getElementById('dup-pagination');
+        if (pag) {
         if (totalPages > 1) {
             let html = '';
             if (dupCurrentPage > 1) html += `<button class="btn btn-sm btn-outline" onclick="loadDuplicates(${dupCurrentPage-1})">Onceki</button>`;
@@ -5987,6 +5990,7 @@ async function loadDuplicates(page) {
         } else {
             pag.innerHTML = '';
         }
+        }  // /if (pag)
 
         dupSelectedFiles.clear();
         updateDupSelection();
