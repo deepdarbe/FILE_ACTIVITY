@@ -303,6 +303,26 @@ if (Test-Path $pywin32PI) {
     & $venvPy $pywin32PI -install 2>&1 | Out-Null
 }
 
+# Issue #194 D7 — config flag-rot migrator. Only on update (existing
+# config), not first install. Bumps known-stale safety defaults that
+# the customer's preserved file would otherwise silently keep on the
+# old (broken) value — see src/utils/config_migrator.py:MIGRATIONS.
+# Backs the original up to config.yaml.bak-<UTC ts> before any write.
+# Failures are non-fatal: config keeps working, operator just doesn't
+# pick up the new default automatically.
+if ($existingConfig) {
+    Write-Host "  Config flag-rot kontrolu (D7)..." -ForegroundColor Gray
+    Push-Location $InstallDir
+    try {
+        & $venvPy -m src.utils.config_migrator --config "$InstallDir\config\config.yaml" --quiet
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [UYARI] config_migrator exit=$LASTEXITCODE; mevcut config aynen birakildi" -ForegroundColor Yellow
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 # --- 5. Launcher scriptleri ---
 Write-Host "[5/6] Launcher scriptleri..." -ForegroundColor Yellow
 
