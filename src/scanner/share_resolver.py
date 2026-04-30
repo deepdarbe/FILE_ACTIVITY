@@ -4,6 +4,7 @@ Hem UNC yollarini (\\\\server\\share) hem lokal yollari (E:\\Paylasim) destekler
 """
 
 import os
+import sys
 import logging
 from typing import Optional
 
@@ -30,9 +31,24 @@ def is_local_path(path: str) -> bool:
     return False
 
 
+def is_posix_path(path: str) -> bool:
+    """POSIX absolute path (Linux/macOS — Docker test image)."""
+    return path.startswith("/")
+
+
 def validate_path(path: str) -> bool:
-    """Yolun gecerli formatini kontrol et (UNC veya lokal)."""
-    return is_unc_path(path) or is_local_path(path)
+    """Yolun gecerli formatini kontrol et (UNC, lokal Windows veya POSIX).
+
+    POSIX kabulü yalnızca Windows dışı platformlarda devrede; production
+    deployment Windows üzerinde olduğu için gerçek müşteri davranışı
+    değişmez. Bu kapı issue #194 D5 (Linux Docker integration test image)
+    için açıldı.
+    """
+    if is_unc_path(path) or is_local_path(path):
+        return True
+    if sys.platform != "win32" and is_posix_path(path):
+        return True
+    return False
 
 
 def test_connectivity(path: str) -> tuple[bool, str]:
