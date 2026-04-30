@@ -34,8 +34,13 @@ jobs:
       - name: YAML config smoke check (catch unresolved merge markers)
         run: |
           python -c "import yaml; yaml.safe_load(open('config.yaml'))"
-          # Bare grep guard for stray conflict markers in any tracked text file
-          if grep -RnE '^(<<<<<<< |======= ?$|>>>>>>> )' \
+          # Bare grep guard for stray conflict markers in any tracked text
+          # file. Only the ``<<<<<<<`` and ``>>>>>>>`` halves are checked:
+          # a bare ``=======`` line collides with reStructuredText section
+          # underlines (e.g. ``src/compliance/dcat.py``), and every real
+          # conflict carries the other two markers anyway, so dropping
+          # the middle alternative loses no detection power.
+          if grep -RnE '^(<<<<<<< |>>>>>>> )' \
               --include='*.py' --include='*.yml' --include='*.yaml' \
               --include='*.md' --include='*.html' --include='*.cmd' \
               --include='*.ps1' --include='*.txt' \
