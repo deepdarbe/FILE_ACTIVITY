@@ -297,9 +297,36 @@ _OK_STATUSES = {
 
 @pytest.fixture(scope="module")
 def html_paths() -> list[str]:
+    """Extract every ``/api/...`` literal reachable from the dashboard.
+
+    #194 D3: the inline JS that previously lived inside ``index.html``
+    has been split into ``static/js/dashboard.js``. Read both that file
+    and any other ``<script src="/static/...">`` reference so the
+    smoke test still sees every API URL the frontend can hit.
+    """
     with open(INDEX_HTML, "r", encoding="utf-8") as f:
         html = f.read()
-    return sorted(_extract_paths(html))
+    # Only ``/static/js/...`` files are concatenated (the post-#194 D3
+    # convention for "extracted-from-inline" JS). Component files under
+    # ``/static/components/`` carry JSDoc placeholder URLs that would
+    # leak into the extractor as fake routes.
+    parts = [html]
+    seen: set[str] = set()
+    static_root = os.path.dirname(INDEX_HTML)
+    for m in re.finditer(
+        r'<script[^>]*\bsrc\s*=\s*["\'](/static/js/[^"\']+)["\']',
+        html, re.IGNORECASE,
+    ):
+        rel = m.group(1)
+        if rel in seen:
+            continue
+        seen.add(rel)
+        sub = rel[len("/static/"):]
+        target = os.path.join(static_root, sub)
+        if os.path.isfile(target):
+            with open(target, "r", encoding="utf-8") as jf:
+                parts.append(jf.read())
+    return sorted(_extract_paths("\n".join(parts)))
 
 
 @pytest.fixture(scope="module")
