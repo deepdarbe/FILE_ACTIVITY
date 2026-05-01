@@ -68,15 +68,6 @@ class _StubEmailNotifier:
         return {"available": False, "configured": False}
 
 
-class _StubAnalytics:
-    available = False
-
-    def health(self):
-        return {"available": False, "configured": False}
-
-    def close(self):
-        pass
-
 
 _BASE_CONFIG = {
     # Issue #158 C-1: disable auth for TestClient runs.
@@ -98,7 +89,6 @@ def app_client(tmp_path):
     db.connect()
     app = create_app(
         db, _BASE_CONFIG,
-        analytics=_StubAnalytics(),
         ad_lookup=_StubADLookup(),
         email_notifier=_StubEmailNotifier(),
     )

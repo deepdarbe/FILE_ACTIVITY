@@ -68,16 +68,6 @@ class _StubEmailNotifier:
         return {"available": False, "configured": False}
 
 
-class _StubAnalytics:
-    available = False
-
-    def health(self):
-        return {"available": False, "configured": False}
-
-    def close(self):
-        pass
-
-
 _DASHBOARD_CONFIG: dict = {
     "dashboard": {"auth": {"enabled": False}},
     "security": {
@@ -277,7 +267,6 @@ def dashboard_client(scanned_corpus):
     app = create_app(
         scanned_corpus["db"],
         _DASHBOARD_CONFIG,
-        analytics=_StubAnalytics(),
         ad_lookup=_StubADLookup(),
         email_notifier=_StubEmailNotifier(),
     )

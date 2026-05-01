@@ -31,9 +31,6 @@ from src.storage.database import Database  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-class _StubAnalytics:
-    available = False
-
 
 class _StubADLookup:
     pass
@@ -81,7 +78,6 @@ def client(seeded_db, tmp_path):
     app = create_app(
         db=database,
         config=_make_config(),
-        analytics=_StubAnalytics(),
         ad_lookup=_StubADLookup(),
         email_notifier=_StubEmailNotifier(),
     )

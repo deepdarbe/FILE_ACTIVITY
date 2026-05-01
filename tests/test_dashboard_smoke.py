@@ -102,16 +102,6 @@ class _StubEmailNotifier:
         return {"available": False, "configured": False}
 
 
-class _StubAnalytics:
-    available = False
-
-    def health(self):  # noqa: D401 - stub
-        return {"available": False, "configured": False}
-
-    def close(self):  # pragma: no cover - defensive
-        pass
-
-
 _BASE_CONFIG: dict[str, Any] = {
     # Issue #158 C-1: smoke test drives endpoints via TestClient,
     # whose ``client.host`` ("testclient") isn't on the localhost
@@ -338,7 +328,6 @@ def app_and_routes(tmp_path_factory):
     app = create_app(
         db,
         _BASE_CONFIG,
-        analytics=_StubAnalytics(),
         ad_lookup=_StubADLookup(),
         email_notifier=_StubEmailNotifier(),
     )

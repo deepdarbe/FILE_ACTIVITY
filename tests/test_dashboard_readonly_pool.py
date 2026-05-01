@@ -74,15 +74,6 @@ def db(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _StubAnalytics:
-    available = False
-
-    def health(self):
-        return {"available": False, "configured": False}
-
-    def close(self):  # pragma: no cover - defensive
-        pass
-
 
 class _StubADLookup:
     available = False
@@ -402,7 +393,6 @@ def test_endpoint_get_sources_succeeds_during_running_scan(db):
     app = create_app(
         db=db,
         config=_make_config(),
-        analytics=_StubAnalytics(),
         ad_lookup=_StubADLookup(),
         email_notifier=_StubEmailNotifier(),
     )

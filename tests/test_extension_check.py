@@ -258,12 +258,6 @@ _BASE_CONFIG = {
 }
 
 
-class _StubAnalytics:
-    available = False
-
-    def close(self):
-        pass
-
 
 @pytest.fixture
 def api_client(tmp_path):
@@ -287,7 +281,6 @@ def api_client(tmp_path):
     app = create_app(
         db,
         _BASE_CONFIG,
-        analytics=_StubAnalytics(),
     )
     return TestClient(app), source_id, scan_id
 
