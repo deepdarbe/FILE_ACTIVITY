@@ -156,8 +156,15 @@ $pythonCmd = $py.Command
 
 # --- 2. Kaynak kodu indir ---
 Write-Host "[2/6] Kaynak kod indiriliyor ($Branch)..." -ForegroundColor Yellow
-$zipPath     = "$env:TEMP\fileactivity-$Branch.zip"
-$extractPath = "$env:TEMP\fileactivity-$Branch-extract"
+# GitHub branch adlari ``/`` icerebilir (ornek: ``claude/load-session-...``)
+# fakat Windows path'inde ``/`` dizin ayracidir; sanitize edilmemis sekilde
+# ``$env:TEMP\fileactivity-$Branch.zip`` yazilirsa
+# ``Temp\fileactivity-claude\load-session-...zip`` non-existent dizine
+# yazilmaya calisilir ve indirme "Could not find a part of the path"
+# ile bozulur.
+$BranchSafe  = $Branch -replace '[\\/:*?"<>|]', '_'
+$zipPath     = "$env:TEMP\fileactivity-$BranchSafe.zip"
+$extractPath = "$env:TEMP\fileactivity-$BranchSafe-extract"
 if (Test-Path $zipPath)     { Remove-Item $zipPath -Force }
 if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
 
