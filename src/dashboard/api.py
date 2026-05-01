@@ -2395,6 +2395,41 @@ def create_app(db, config, ad_lookup=None, email_notifier=None,
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if scan_id:
             kpi = db.get_scan_summary(scan_id)
+            # #194 update — self-heal stale summary_json. Customer's
+            # 2026-05-01 prod test showed Genel Bakis cards stuck at
+            # TOPLAM DOSYA: 0 while ``scanned_files`` was clearly
+            # populated (AI Onerileri rendered "797 risky", "98 771
+            # empty" etc.). The cached summary_json was written at a
+            # partial moment and never refreshed. Same pattern as
+            # ``/api/risk-score`` (#199): if summary's total_files is 0
+            # but ``scan_runs.total_files`` is non-zero, the cache is
+            # stale — recompute on the fly so the customer doesn't have
+            # to POST ``/recompute`` manually. ``compute_scan_summary``
+            # also persists the fresh value, so the cache is hot for
+            # the next caller too.
+            if kpi and (kpi.get("total_files") or 0) == 0:
+                with db.get_read_cursor() as _cur:
+                    _row = _cur.execute(
+                        "SELECT total_files FROM scan_runs WHERE id=?",
+                        (scan_id,),
+                    ).fetchone()
+                if _row and (_row["total_files"] or 0) > 0:
+                    logger.info(
+                        "overview: summary_json shows total_files=0 but "
+                        "scan_runs.total_files=%d for scan_id=%d — "
+                        "self-healing via compute_scan_summary",
+                        _row["total_files"], scan_id,
+                    )
+                    try:
+                        kpi = db.compute_scan_summary(scan_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "overview: self-heal compute_scan_summary "
+                            "failed for scan_id=%d: %s — falling through "
+                            "to partial / no-data response",
+                            scan_id, exc,
+                        )
+                        kpi = None
             if kpi:
                 # Boyutlari formatla
                 kpi["total_size_formatted"] = format_size(kpi.get("total_size", 0))
