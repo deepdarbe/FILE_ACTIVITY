@@ -64,12 +64,6 @@ class _StubEmailNotifier:
         return False
 
 
-class _StubAnalytics:
-    available = False
-
-    def close(self):  # pragma: no cover - defensive
-        pass
-
 
 _BASE_CONFIG = {
     # Issue #158 C-1: dashboard auth defaults ON. TestClient's
@@ -144,7 +138,6 @@ def client(tmp_path):
     app = create_app(
         db,
         _BASE_CONFIG,
-        analytics=_StubAnalytics(),
         ad_lookup=_StubADLookup(orphans=["DOMAIN\\alice"]),
         email_notifier=_StubEmailNotifier(),
     )

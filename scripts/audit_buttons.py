@@ -326,9 +326,46 @@ def audit(html: str) -> dict[str, Any]:
 
 
 def audit_file(path: str = DEFAULT_HTML_PATH) -> dict[str, Any]:
-    """Convenience wrapper: read ``path`` and run :func:`audit` on it."""
+    """Convenience wrapper: read ``path`` and run :func:`audit` on it.
+
+    #194 D3: the dashboard's inline JS has been extracted to
+    ``static/js/dashboard.js`` (and any other ``/static/...`` JS the
+    HTML references). The function definitions live there now while
+    onclick handlers stay in the HTML, so a naive ``audit(html_only)``
+    treats every handler as an orphan. Resolution: read each
+    ``<script src="/static/...">`` JS file referenced by the HTML and
+    concatenate the bodies before parsing — the regexes that pick out
+    function definitions vs. onclick attributes are mutually exclusive
+    by syntax, so concat doesn't produce false positives.
+    """
+    import re as _re
     with open(path, "r", encoding="utf-8") as f:
-        return audit(f.read())
+        html = f.read()
+
+    # Resolve every <script src="/static/js/..."> to its on-disk file.
+    # Only ``/static/js/`` paths are concatenated (the post-#194 D3
+    # convention for "extracted-from-inline" dashboard JS); component
+    # files under ``/static/components/`` carry their own private
+    # closures + JSDoc placeholder paths and would create false-positive
+    # duplicate-definition / orphan-onclick noise.
+    static_root = os.path.dirname(path)
+    src_re = _re.compile(
+        r'<script[^>]*\bsrc\s*=\s*["\'](/static/js/[^"\']+)["\']',
+        _re.IGNORECASE,
+    )
+    parts = [html]
+    seen: set[str] = set()
+    for m in src_re.finditer(html):
+        rel = m.group(1)
+        if rel in seen:
+            continue
+        seen.add(rel)
+        sub = rel[len("/static/"):]
+        target = os.path.join(static_root, sub)
+        if os.path.isfile(target):
+            with open(target, "r", encoding="utf-8") as jf:
+                parts.append(jf.read())
+    return audit("\n".join(parts))
 
 
 # ---------------------------------------------------------------------------

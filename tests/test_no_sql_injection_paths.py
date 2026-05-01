@@ -38,9 +38,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "src"
 
 # Files (module dotted paths) that hold the audited f-string SQL sites.
+# ``src.storage.analytics`` was removed in #194 D2 (DuckDB engine
+# eliminated; aggregates moved to plain SQLite).
 PROTECTED_MODULES = {
     "src.storage.backup_manager",
-    "src.storage.analytics",
     "src.playground.data_access",
 }
 

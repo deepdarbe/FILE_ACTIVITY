@@ -456,13 +456,15 @@ def _read_version() -> str:
 APP_VERSION = _read_version()
 
 
-def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
+def create_app(db, config, ad_lookup=None, email_notifier=None,
                operations_registry=None):
     """FastAPI uygulamasini olustur.
 
-    analytics: Opsiyonel AnalyticsEngine. Verilmezse config.analytics'e gore
-    olusturulur; DuckDB yoksa veya basarisiz olursa `available=False` ile
-    doner ve endpoint'ler SQLite fallback'ine duser.
+    DuckDB analitik motoru #194 D2 kapsaminda kaldirildi (spike olcumu:
+    DuckDB ATTACH SQLite'a 32-152x daha yavas; bkz.
+    docs/architecture/duckdb-removal-spike-2026-04-30.md). Tum aggregate
+    sorgular artik dogrudan ``Database.get_*`` (read-only pool) uzerinden
+    cevaplanir.
 
     ad_lookup: Opsiyonel ADLookup. Verilmezse config.active_directory'den
     olusturulur; ldap3 yoksa veya enabled=false ise available=False ile
@@ -475,7 +477,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # ─────────────────────────────────────────────────────────────────
     # Issue #77 Phase 2 — auto-restore on SQLite corruption.
     #
-    # Run BEFORE any heavy DB init (analytics ATTACH, scheduler boot,
+    # Run BEFORE any heavy DB init (scheduler boot,
     # backfill jobs). The probe is read-only via a transient
     # connection; if corruption is detected AND
     # ``backup.auto_restore_on_corruption`` is true we forensic-rename
@@ -535,9 +537,6 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             except Exception:
                 pass
 
-    if analytics is None:
-        from src.storage.analytics import AnalyticsEngine
-        analytics = AnalyticsEngine(db.db_path, config.get("analytics", {}))
     if ad_lookup is None:
         from src.user_activity.ad_lookup import ADLookup
         ad_lookup = ADLookup(db, config)
@@ -570,7 +569,6 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return await call_next(request)
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
-    app.state.analytics = analytics
     app.state.ad_lookup = ad_lookup
     app.state.email_notifier = email_notifier
     # Phase 2 banner state — frontend reads via /api/system/last-restore.
@@ -1596,22 +1594,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         raise HTTPException(500, "Rapor olusturulamadi")
 
     # --- DRILL-DOWN API ---
-
-    def _run_drilldown(duckdb_fn, sqlite_fn):
-        """DuckDB varsa oradan calistir, yoksa SQLite'a dus.
-
-        duckdb_fn: AnalyticsEngine uzerinde cagrilacak bound method
-        sqlite_fn: db (Database) uzerinde cagrilacak bound method
-        Her ikisi de (*args) -> {"total": int, "files": list} doner.
-        """
-        def call(*args):
-            if analytics.available:
-                try:
-                    return duckdb_fn(*args)
-                except Exception as e:
-                    logger.warning("DuckDB drilldown basarisiz, SQLite fallback: %s", e)
-            return sqlite_fn(*args)
-        return call
+    # #194 D2 — DuckDB engine kaldirildi; aggregate'ler dogrudan SQLite
+    # read-only pool'undan cevaplaniyor (32-152x daha hizli).
 
     @app.get("/api/drilldown/frequency/{source_id}")
     async def drilldown_frequency(source_id: int, min_days: int = 0,
@@ -1623,8 +1607,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_frequency, db.get_files_by_frequency)
-        result = run(src.id, scan_id, min_days, max_days, limit, offset)
+        result = db.get_files_by_frequency(
+            src.id, scan_id, min_days, max_days, limit, offset,
+        )
         result["page"] = page
         result["limit"] = limit
         return result
@@ -1638,8 +1623,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_extension, db.get_files_by_extension)
-        result = run(src.id, scan_id, extension, limit, offset)
+        result = db.get_files_by_extension(
+            src.id, scan_id, extension, limit, offset,
+        )
         result["page"] = page
         result["limit"] = limit
         return result
@@ -1654,8 +1640,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_size_range, db.get_files_by_size_range)
-        result = run(src.id, scan_id, min_bytes, max_bytes, limit, offset)
+        result = db.get_files_by_size_range(
+            src.id, scan_id, min_bytes, max_bytes, limit, offset,
+        )
         result["page"] = page
         result["limit"] = limit
         return result
@@ -1669,8 +1656,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_owner, db.get_files_by_owner)
-        result = run(src.id, scan_id, owner, limit, offset)
+        result = db.get_files_by_owner(
+            src.id, scan_id, owner, limit, offset,
+        )
         result["page"] = page
         result["limit"] = limit
         return result
@@ -2407,6 +2395,41 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if scan_id:
             kpi = db.get_scan_summary(scan_id)
+            # #194 update — self-heal stale summary_json. Customer's
+            # 2026-05-01 prod test showed Genel Bakis cards stuck at
+            # TOPLAM DOSYA: 0 while ``scanned_files`` was clearly
+            # populated (AI Onerileri rendered "797 risky", "98 771
+            # empty" etc.). The cached summary_json was written at a
+            # partial moment and never refreshed. Same pattern as
+            # ``/api/risk-score`` (#199): if summary's total_files is 0
+            # but ``scan_runs.total_files`` is non-zero, the cache is
+            # stale — recompute on the fly so the customer doesn't have
+            # to POST ``/recompute`` manually. ``compute_scan_summary``
+            # also persists the fresh value, so the cache is hot for
+            # the next caller too.
+            if kpi and (kpi.get("total_files") or 0) == 0:
+                with db.get_read_cursor() as _cur:
+                    _row = _cur.execute(
+                        "SELECT total_files FROM scan_runs WHERE id=?",
+                        (scan_id,),
+                    ).fetchone()
+                if _row and (_row["total_files"] or 0) > 0:
+                    logger.info(
+                        "overview: summary_json shows total_files=0 but "
+                        "scan_runs.total_files=%d for scan_id=%d — "
+                        "self-healing via compute_scan_summary",
+                        _row["total_files"], scan_id,
+                    )
+                    try:
+                        kpi = db.compute_scan_summary(scan_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "overview: self-heal compute_scan_summary "
+                            "failed for scan_id=%d: %s — falling through "
+                            "to partial / no-data response",
+                            scan_id, exc,
+                        )
+                        kpi = None
             if kpi:
                 # Boyutlari formatla
                 kpi["total_size_formatted"] = format_size(kpi.get("total_size", 0))
@@ -2774,25 +2797,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                                 min_size: int = 0):
         """Kopya dosya raporu - gruplandirmali.
 
-        DuckDB kurulu ve ATTACH basarili ise tek-gecis CTE ile calisir,
-        aksi halde SQLite yoluna duser.
+        #194 D2: DuckDB ATTACH yerine dogrudan SQLite read-only pool
+        kullanilir. ``Database.get_duplicate_groups`` ayni CTE'yi calistirir
+        ve ATTACH overhead'i (~70 ms / istek) odenmez.
         """
         from src.utils.size_formatter import format_size
-        result = None
-        if analytics.available:
-            try:
-                scan_id = db.get_latest_scan_id(source_id, include_running=False)
-                if scan_id:
-                    result = analytics.get_duplicate_groups(
-                        scan_id, min_size, page, page_size
-                    )
-            except Exception as e:
-                logger.warning("DuckDB duplicate sorgusu basarisiz, SQLite fallback: %s", e)
-                result = None
-        if result is None:
-            result = db.get_duplicate_groups(
-                source_id, min_size=min_size, page=page, page_size=page_size
-            )
+        result = db.get_duplicate_groups(
+            source_id, min_size=min_size, page=page, page_size=page_size,
+        )
         # Boyut formatlama
         result["total_waste_size_formatted"] = format_size(result.get("total_waste_size", 0))
         for g in result.get("groups", []):
@@ -3594,15 +3606,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/growth/{source_id}")
     async def growth_stats(source_id: int):
-        """Yillik/aylik/gunluk buyume istatistikleri."""
-        stats = None
-        if analytics.available:
-            try:
-                stats = analytics.get_growth_stats(source_id)
-            except Exception as e:
-                logger.warning("DuckDB growth sorgusu basarisiz, SQLite fallback: %s", e)
-        if stats is None:
-            stats = db.get_growth_stats(source_id)
+        """Yillik/aylik/gunluk buyume istatistikleri (#194 D2 sonrasi
+        dogrudan SQLite)."""
+        stats = db.get_growth_stats(source_id)
         creators = db.get_top_file_creators(source_id)
         stats["top_creators"] = creators
         return stats
@@ -3978,7 +3984,17 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "time": datetime.now().isoformat(),
             "version": APP_VERSION,
             "database": db.health_check(),
-            "analytics": analytics.health(),
+            # #194 D2 — DuckDB engine kaldirildi. Frontend bu anahtari hala
+            # okuyabilir; sabit "removed" yaniti veriyoruz ki eski
+            # health-banner mantigi 'unavailable' degil 'kaldirildi' gorsun.
+            "analytics": {
+                "available": False,
+                "configured": False,
+                "removed_in": "D2 (2026-04-30)",
+                "reason": "DuckDB ATTACH was 32-152x slower than SQLite "
+                          "on this workload; see "
+                          "docs/architecture/duckdb-removal-spike-2026-04-30.md",
+            },
             "email": email_notifier.health(),
             "wal_warning": wal_warning,
             "pii_backend": pii_backend_info,
@@ -3987,8 +4003,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/system/analytics")
     async def analytics_status():
-        """DuckDB analitik motor durumunu dondur."""
-        return analytics.health()
+        """DuckDB analitik motoru #194 D2 ile kaldirildi. Bu endpoint
+        geri uyumluluk icin korunuyor; frontend health-card sayfasi
+        hala bu yolu cagirabilir."""
+        return {
+            "available": False,
+            "configured": False,
+            "removed_in": "D2 (2026-04-30)",
+        }
 
     # --- NOTIFICATIONS API ---
 
@@ -4262,16 +4284,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/db/stats")
     async def db_stats():
-        """Veritabani istatistikleri."""
-        if analytics.available:
-            try:
-                wal_path = db.db_path + "-wal"
-                shm_path = db.db_path + "-shm"
-                tables = ["scanned_files", "scan_runs", "archived_files",
-                          "user_access_logs", "sources"]
-                return analytics.get_db_stats(tables, db.db_path, wal_path, shm_path)
-            except Exception as e:
-                logger.warning("DuckDB db_stats basarisiz, SQLite fallback: %s", e)
+        """Veritabani istatistikleri (#194 D2 sonrasi dogrudan SQLite)."""
         return db.get_db_stats()
 
     @app.post("/api/db/cleanup")

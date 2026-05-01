@@ -54,15 +54,6 @@ class _StubEmailNotifier:
         return {"available": False, "configured": False}
 
 
-class _StubAnalytics:
-    available = False
-
-    def health(self):
-        return {"available": False, "configured": False}
-
-    def close(self):  # pragma: no cover - defensive
-        pass
-
 
 def _base_config() -> dict:
     return {
@@ -161,7 +152,6 @@ def client(tmp_path, monkeypatch):
     app = create_app(
         db,
         cfg,
-        analytics=_StubAnalytics(),
         ad_lookup=_StubADLookup(),
         email_notifier=_StubEmailNotifier(),
     )

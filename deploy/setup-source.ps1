@@ -23,7 +23,21 @@
 .NOTES
     Veri korumali guncelleme: data/, logs/, reports/, config/config.yaml
     Yeniden yazilir: src/, main.py, requirements.txt, deploy/, scripts/
+
+.PARAMETER Branch
+    Hangi git branch'inden kaynak kodu cekilecek. Varsayilan: master.
+    Test branch'lerini denemek icin kullanilir; ornek:
+        & setup-source.ps1 -Branch claude/load-session-continue-4R301
+    Pipe-iex akisi parametre kabul etmedigi icin test branch'lerinde
+    setup-source.ps1 once Invoke-WebRequest ile dosyaya indirilmeli,
+    sonra -Branch parametresi ile cagrilmalidir.
 #>
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$false)]
+    [string]$Branch = "master"
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -31,7 +45,6 @@ $ErrorActionPreference = "Stop"
 $InstallDir   = "C:\FileActivity"
 $RepoOwner    = "deepdarbe"
 $RepoName     = "FILE_ACTIVITY"
-$Branch       = "master"
 $RepoZipUrl   = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$Branch.zip"
 $DashPort     = 8085
 $PythonVersion = "3.11.9"
@@ -143,8 +156,15 @@ $pythonCmd = $py.Command
 
 # --- 2. Kaynak kodu indir ---
 Write-Host "[2/6] Kaynak kod indiriliyor ($Branch)..." -ForegroundColor Yellow
-$zipPath     = "$env:TEMP\fileactivity-$Branch.zip"
-$extractPath = "$env:TEMP\fileactivity-$Branch-extract"
+# GitHub branch adlari ``/`` icerebilir (ornek: ``claude/load-session-...``)
+# fakat Windows path'inde ``/`` dizin ayracidir; sanitize edilmemis sekilde
+# ``$env:TEMP\fileactivity-$Branch.zip`` yazilirsa
+# ``Temp\fileactivity-claude\load-session-...zip`` non-existent dizine
+# yazilmaya calisilir ve indirme "Could not find a part of the path"
+# ile bozulur.
+$BranchSafe  = $Branch -replace '[\\/:*?"<>|]', '_'
+$zipPath     = "$env:TEMP\fileactivity-$BranchSafe.zip"
+$extractPath = "$env:TEMP\fileactivity-$BranchSafe-extract"
 if (Test-Path $zipPath)     { Remove-Item $zipPath -Force }
 if (Test-Path $extractPath) { Remove-Item $extractPath -Recurse -Force }
 
@@ -303,6 +323,26 @@ if (Test-Path $pywin32PI) {
     & $venvPy $pywin32PI -install 2>&1 | Out-Null
 }
 
+# Issue #194 D7 — config flag-rot migrator. Only on update (existing
+# config), not first install. Bumps known-stale safety defaults that
+# the customer's preserved file would otherwise silently keep on the
+# old (broken) value — see src/utils/config_migrator.py:MIGRATIONS.
+# Backs the original up to config.yaml.bak-<UTC ts> before any write.
+# Failures are non-fatal: config keeps working, operator just doesn't
+# pick up the new default automatically.
+if ($existingConfig) {
+    Write-Host "  Config flag-rot kontrolu (D7)..." -ForegroundColor Gray
+    Push-Location $InstallDir
+    try {
+        & $venvPy -m src.utils.config_migrator --config "$InstallDir\config\config.yaml" --quiet
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [UYARI] config_migrator exit=$LASTEXITCODE; mevcut config aynen birakildi" -ForegroundColor Yellow
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 # --- 5. Launcher scriptleri ---
 Write-Host "[5/6] Launcher scriptleri..." -ForegroundColor Yellow
 
@@ -328,14 +368,22 @@ Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 # devam eder (snapshot olmadan da olabilir, ama update durmamali).
 $updateCmd = @"
 @echo off
-echo FILE ACTIVITY guncelleniyor (master branch)...
+REM Branch override: ``update.cmd <branch>`` test branch'lerini ceker.
+REM Bos birakilirsa varsayilan master akisi (basit irm ^| iex).
+set "FA_UPDATE_BRANCH=%~1"
+echo FILE ACTIVITY guncelleniyor...
 echo  - Pre-update SQLite snapshot aliniyor...
 cd /d "$InstallDir"
 "$InstallDir\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update"
-if errorlevel 1 (
-    echo  [!] Snapshot basarisiz - update yine de devam ediyor
+if errorlevel 1 echo   [!] Snapshot basarisiz - update yine de devam ediyor
+
+if "%FA_UPDATE_BRANCH%"=="" (
+    echo  - Branch: $Branch ^(varsayilan^)
+    powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/setup-source.ps1 | iex"
+) else (
+    echo  - Branch: %FA_UPDATE_BRANCH% ^(test akisi^)
+    powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; `$tmp = Join-Path `$env:TEMP 'fa-setup-source.ps1'; irm 'https://raw.githubusercontent.com/$RepoOwner/$RepoName/%FA_UPDATE_BRANCH%/deploy/setup-source.ps1' -OutFile `$tmp; & `$tmp -Branch '%FA_UPDATE_BRANCH%'"
 )
-powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/setup-source.ps1 | iex"
 "@
 Set-Content "$InstallDir\update.cmd" $updateCmd
 

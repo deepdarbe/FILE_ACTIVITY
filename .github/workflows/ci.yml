@@ -33,9 +33,19 @@ jobs:
 
       - name: YAML config smoke check (catch unresolved merge markers)
         run: |
+          # PyYAML isn't shipped with ``actions/setup-python``; install it
+          # explicitly so the ``import yaml`` below is deterministic across
+          # runner image refreshes (the step has been flaky-named for this
+          # exact reason — see CLAUDE.md's CI flake reality section).
+          python -m pip install --quiet pyyaml
           python -c "import yaml; yaml.safe_load(open('config.yaml'))"
-          # Bare grep guard for stray conflict markers in any tracked text file
-          if grep -RnE '^(<<<<<<< |======= ?$|>>>>>>> )' \
+          # Bare grep guard for stray conflict markers in any tracked text
+          # file. Only the ``<<<<<<<`` and ``>>>>>>>`` halves are checked:
+          # a bare ``=======`` line collides with reStructuredText section
+          # underlines (e.g. ``src/compliance/dcat.py``), and every real
+          # conflict carries the other two markers anyway, so dropping
+          # the middle alternative loses no detection power.
+          if grep -RnE '^(<<<<<<< |>>>>>>> )' \
               --include='*.py' --include='*.yml' --include='*.yaml' \
               --include='*.md' --include='*.html' --include='*.cmd' \
               --include='*.ps1' --include='*.txt' \
@@ -43,6 +53,15 @@ jobs:
             echo "::error::Unresolved Git conflict markers detected"
             exit 1
           fi
+
+      # #194 D3 — node --check on every inline <script> block in the
+      # dashboard HTML. PR #193 lost a function declaration in a merge
+      # and broke every sidebar menu in production because nothing in
+      # CI parsed the inline JS. ubuntu-latest ships Node.js so no
+      # extra setup step is needed.
+      - name: JS parse check (inline <script> in dashboard HTML)
+        run: |
+          python scripts/check_inline_js.py
 
       # NOTE: the previous "Import-level smoke test for cross-platform
       # modules" step (pip install duckdb pydantic + heredoc importing
