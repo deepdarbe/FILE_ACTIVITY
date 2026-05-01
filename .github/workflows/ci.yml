@@ -54,6 +54,15 @@ jobs:
             exit 1
           fi
 
+      # #194 D3 — node --check on every inline <script> block in the
+      # dashboard HTML. PR #193 lost a function declaration in a merge
+      # and broke every sidebar menu in production because nothing in
+      # CI parsed the inline JS. ubuntu-latest ships Node.js so no
+      # extra setup step is needed.
+      - name: JS parse check (inline <script> in dashboard HTML)
+        run: |
+          python scripts/check_inline_js.py
+
       # NOTE: the previous "Import-level smoke test for cross-platform
       # modules" step (pip install duckdb pydantic + heredoc importing
       # AnalyticsEngine) was removed in #68. The new `tests` job below
