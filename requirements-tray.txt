@@ -4,4 +4,4 @@
 #     pip install -r requirements-tray.txt
 #
 pystray>=0.19.5
-Pillow>=10.0.0
+Pillow>=12.2.0
