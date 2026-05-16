@@ -44,6 +44,35 @@ jobs:
             exit 1
           fi
 
+      # Issue #194 stabilization-week Wave 5 — frontend + config CI guards.
+      # ci_guards.py runs five lightweight, deterministic checks that
+      # would have caught today's hotfix regressions (PR #193 / #197 /
+      # #200 / #202) in seconds. Gating because every check is
+      # deterministic — flaky CI cannot misfire here.
+      - name: Frontend + config guards (scripts/ci_guards.py)
+        run: |
+          python scripts/ci_guards.py
+
+      # node --check on the extracted <script> blob inside index.html
+      # would have caught PR #193's JS parse regression in one second.
+      # Uses the system node from setup-node, not a project dep.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: node --check on extracted dashboard script
+        run: |
+          python -c "
+          import re, sys
+          html = open('src/dashboard/static/index.html').read()
+          scripts = re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>', html, re.DOTALL)
+          if not scripts:
+              print('::error::no inline <script> block found in index.html', file=sys.stderr)
+              sys.exit(1)
+          open('/tmp/extracted.js','w').write('\n//---next-block---\n'.join(scripts))
+          "
+          node --check /tmp/extracted.js
+
       # NOTE: the previous "Import-level smoke test for cross-platform
       # modules" step (pip install duckdb pydantic + heredoc importing
       # AnalyticsEngine) was removed in #68. The new `tests` job below
