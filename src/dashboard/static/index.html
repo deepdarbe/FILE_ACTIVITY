@@ -2653,6 +2653,15 @@ function _setHtmlSafe(id, html) {
     }
 }
 
+function _setTextSafe(id, text) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.textContent = text == null ? '' : String(text);
+    } else if (window && window.console) {
+        console.warn('_setTextSafe: element not found:', id);
+    }
+}
+
 function destroyChart(id) { if (chartInstances[id]) { chartInstances[id].destroy(); delete chartInstances[id]; } }
 
 const COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#f97316','#14b8a6','#a855f7','#6366f1','#84cc16','#e11d48','#0ea5e9','#d946ef','#facc15','#22d3ee','#fb923c','#4ade80','#c084fc'];
@@ -3506,7 +3515,7 @@ async function loadOverview() {
         ['ov-files','ov-size','ov-stale-pct','ov-owners','ov-risky','ov-dups'].forEach(id => {
             const el = document.getElementById(id); if(el) el.textContent = '-';
         });
-        document.getElementById('ov-risk-text').textContent = '--';
+        _setTextSafe('ov-risk-text', '--');
         updatePartialBanner(null, null);
         return;
     }
@@ -3538,40 +3547,44 @@ async function loadOverview() {
         const rs = riskData.risk_score || 0;
         const kpi = riskData.kpis || {};
 
-        // Risk gauge
+        // Risk gauge — all DOM access guarded so stale HTML / missing
+        // page wrapper doesn't crash the whole loader.
         const circumference = 213.6;
         const offset = circumference - (circumference * rs / 100);
         const gauge = document.getElementById('ov-risk-gauge');
-        gauge.style.strokeDashoffset = offset;
-        gauge.style.stroke = rs >= 70 ? 'var(--danger)' : rs >= 40 ? 'var(--warning)' : 'var(--success)';
-        document.getElementById('ov-risk-text').textContent = rs;
+        if (gauge) {
+            gauge.style.strokeDashoffset = offset;
+            gauge.style.stroke = rs >= 70 ? 'var(--danger)' : rs >= 40 ? 'var(--warning)' : 'var(--success)';
+        }
+        _setTextSafe('ov-risk-text', rs);
         const lvl = riskData.risk_level || 'good';
         const lvlMap = {critical:'Kritik', warning:'Uyari', good:'Iyi'};
-        document.getElementById('ov-risk-level').textContent = lvlMap[lvl] || lvl;
+        _setTextSafe('ov-risk-level', lvlMap[lvl] || lvl);
 
-        document.getElementById('ov-stale-pct').textContent = (kpi.stale_pct || 0) + '%';
-        document.getElementById('ov-stale-sub').textContent = formatNum(kpi.stale_count || 0) + ' dosya, ' + formatSize(kpi.stale_size || 0);
+        _setTextSafe('ov-stale-pct', (kpi.stale_pct || 0) + '%');
+        _setTextSafe('ov-stale-sub', formatNum(kpi.stale_count || 0) + ' dosya, ' + formatSize(kpi.stale_size || 0));
 
-        document.getElementById('ov-files').textContent = formatNum(riskData.total_files || 0);
+        _setTextSafe('ov-files', formatNum(riskData.total_files || 0));
         const growth = trendData.growth;
-        document.getElementById('ov-files-sub').textContent = growth ? ((growth.file_diff >= 0 ? '+' : '') + formatNum(growth.file_diff) + ' son tarama') : '';
+        _setTextSafe('ov-files-sub', growth ? ((growth.file_diff >= 0 ? '+' : '') + formatNum(growth.file_diff) + ' son tarama') : '');
 
-        document.getElementById('ov-size').textContent = formatSize(riskData.total_size || 0);
-        document.getElementById('ov-size-sub').textContent = growth ? ((growth.size_diff >= 0 ? '+' : '') + formatSize(growth.size_diff) + ' son tarama') : '';
+        _setTextSafe('ov-size', formatSize(riskData.total_size || 0));
+        _setTextSafe('ov-size-sub', growth ? ((growth.size_diff >= 0 ? '+' : '') + formatSize(growth.size_diff) + ' son tarama') : '');
 
-        document.getElementById('ov-owners').textContent = kpi.owner_count || 0;
-        document.getElementById('ov-owners-sub').textContent = kpi.owner_count <= 1 ? 'read_owner aktif edin' : 'benzersiz sahip';
+        _setTextSafe('ov-owners', kpi.owner_count || 0);
+        _setTextSafe('ov-owners-sub', kpi.owner_count <= 1 ? 'read_owner aktif edin' : 'benzersiz sahip');
 
-        document.getElementById('ov-risky').textContent = formatNum(kpi.risky_files || 0);
+        _setTextSafe('ov-risky', formatNum(kpi.risky_files || 0));
 
-        document.getElementById('ov-dups').textContent = formatNum(kpi.dup_groups || 0);
+        _setTextSafe('ov-dups', formatNum(kpi.dup_groups || 0));
 
         // Age distribution chart (horizontal bar) — frequency endpoint'i yavas
         // olabilir, arka planda doldur. Once bos yer tut, cevap gelince ciz.
         destroyChart('ov-age-chart');
         freqPromise.then(freqData => {
             const freq = freqData.frequency || [];
-            if (freq.length) {
+            const ageCanvas = document.getElementById('ov-age-chart');
+            if (freq.length && ageCanvas) {
                 const ageColors = freq.map(f => {
                     const d = f.days || 0;
                     if (d >= 365) return '#ef4444';
@@ -3579,7 +3592,7 @@ async function loadOverview() {
                     if (d >= 90) return '#eab308';
                     return '#10b981';
                 });
-                chartInstances['ov-age-chart'] = new Chart(document.getElementById('ov-age-chart'), {
+                chartInstances['ov-age-chart'] = new Chart(ageCanvas, {
                     type: 'bar', data: {
                         labels: freq.map(f => f.label),
                         datasets: [{
@@ -3595,8 +3608,9 @@ async function loadOverview() {
         // Growth trend chart (line)
         const scans = trendData.scans || [];
         destroyChart('ov-trend-chart');
-        if (scans.length) {
-            chartInstances['ov-trend-chart'] = new Chart(document.getElementById('ov-trend-chart'), {
+        const trendCanvas = document.getElementById('ov-trend-chart');
+        if (scans.length && trendCanvas) {
+            chartInstances['ov-trend-chart'] = new Chart(trendCanvas, {
                 type: 'line', data: {
                     labels: scans.map(s => (s.started_at || '').substring(5, 16)),
                     datasets: [
@@ -4189,8 +4203,8 @@ function renderTreemap() {
 
     svg.attr('viewBox', `0 0 ${w} ${h}`);
 
-    const colorMode = document.getElementById('treemap-color').value;
-    const sizeMode = document.getElementById('treemap-size').value;
+    const colorMode = document.getElementById('treemap-color')?.value || 'extension';
+    const sizeMode = document.getElementById('treemap-size')?.value || 'size';
 
     const root = d3.hierarchy(treemapData)
         .sum(d => sizeMode === 'count' ? (d.count || 1) : (d.value || d.size || 1))
@@ -5101,21 +5115,25 @@ async function loadInsights() {
         const circumference = 326.7;
         const offset = circumference - (circumference * score / 100);
         const gauge = document.getElementById('insights-gauge');
-        gauge.style.strokeDashoffset = offset;
-        gauge.style.stroke = score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--danger)';
-        document.getElementById('insights-score-text').textContent = score;
+        if (gauge) {
+            gauge.style.strokeDashoffset = offset;
+            gauge.style.stroke = score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--danger)';
+        }
+        _setTextSafe('insights-score-text', score);
 
         const desc = score >= 80 ? 'Cok iyi durumda' : score >= 60 ? 'Iyi, iyilestirme mevcut' : score >= 40 ? 'Orta - aksiyon gerekli' : 'Kritik - acil mudahale';
-        document.getElementById('insights-score-desc').textContent = desc;
+        _setTextSafe('insights-score-desc', desc);
 
         // Reclaimable space
         const reclaim = insights.find(i => i.category === 'recommendation' && i.impact_size);
         const reclaimEl = document.getElementById('insights-reclaimable');
-        if (reclaim) {
-            reclaimEl.style.display = 'block';
-            document.getElementById('insights-reclaim-value').textContent = formatSize(reclaim.impact_size);
-        } else {
-            reclaimEl.style.display = 'none';
+        if (reclaimEl) {
+            if (reclaim) {
+                reclaimEl.style.display = 'block';
+                _setTextSafe('insights-reclaim-value', formatSize(reclaim.impact_size));
+            } else {
+                reclaimEl.style.display = 'none';
+            }
         }
 
         // Render insight cards
@@ -5123,7 +5141,7 @@ async function loadInsights() {
         const sevIcons = { critical: '🔴', warning: '🟡', info: '🔵', success: '🟢' };
         const catIcons = { storage: '💾', stale: '📅', duplicates: '📋', security: '🔒', growth: '📈', recommendation: '✨', audit: '📝' };
 
-        document.getElementById('insights-list').innerHTML = insights.length ? insights.map(i => `
+        _setHtmlSafe('insights-list', insights.length ? insights.map(i => `
             <div style="background:var(--bg-card);border:1px solid var(--border);border-left:4px solid ${sevColors[i.severity] || 'var(--border-light)'};border-radius:var(--radius);padding:16px 20px;display:flex;align-items:flex-start;gap:14px">
                 <div style="font-size:22px;flex-shrink:0">${catIcons[i.category] || sevIcons[i.severity] || '📌'}</div>
                 <div style="flex:1;min-width:0">
@@ -5141,7 +5159,7 @@ async function loadInsights() {
                     </div>
                 </div>
             </div>
-        `).join('') : '<div style="text-align:center;padding:60px;color:var(--text-muted)">Insight bulunamadi. Once bir tarama yapin.</div>';
+        `).join('') : '<div style="text-align:center;padding:60px;color:var(--text-muted)">Insight bulunamadi. Once bir tarama yapin.</div>');
     } catch(e) { notify(e.message, 'error'); }
 }
 
@@ -5208,67 +5226,74 @@ async function loadNaming() {
         const circumference = 213.6;
         const offset = circumference - (circumference * score / 100);
         const gauge = document.getElementById('naming-gauge');
-        gauge.style.strokeDashoffset = offset;
-        gauge.style.stroke = score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--danger)';
-        document.getElementById('naming-score-text').textContent = Math.round(score);
-        document.getElementById('naming-req-pct').textContent = (data.requirement_compliance || 0) + '%';
-        document.getElementById('naming-full-pct').textContent = (data.full_compliance || 0) + '%';
+        if (gauge) {
+            gauge.style.strokeDashoffset = offset;
+            gauge.style.stroke = score >= 70 ? 'var(--success)' : score >= 40 ? 'var(--warning)' : 'var(--danger)';
+        }
+        _setTextSafe('naming-score-text', Math.round(score));
+        _setTextSafe('naming-req-pct', (data.requirement_compliance || 0) + '%');
+        _setTextSafe('naming-full-pct', (data.full_compliance || 0) + '%');
 
         // Zorunlu kurallar tablosu
         const reqs = data.requirements || [];
         const reqTable = document.getElementById('naming-req-table');
-        if (reqs.length) {
-            reqTable.innerHTML = `
-                <thead><tr><th>Kod</th><th>Kural</th><th>Ihlal Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
-                <tbody>${reqs.map(r => `<tr>
-                    <td><strong>${escapeHtml(r.code)}</strong></td>
-                    <td>${escapeHtml(r.label)}</td>
-                    <td>${formatNum(r.count)}</td>
-                    <td>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <div style="flex:1;height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden;min-width:60px">
-                                <div style="width:${Math.min(r.percentage, 100)}%;height:100%;background:${r.severity==='critical'?'var(--danger)':'var(--warning)'};border-radius:3px"></div>
+        if (reqTable) {
+            if (reqs.length) {
+                reqTable.innerHTML = `
+                    <thead><tr><th>Kod</th><th>Kural</th><th>Ihlal Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
+                    <tbody>${reqs.map(r => `<tr>
+                        <td><strong>${escapeHtml(r.code)}</strong></td>
+                        <td>${escapeHtml(r.label)}</td>
+                        <td>${formatNum(r.count)}</td>
+                        <td>
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <div style="flex:1;height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden;min-width:60px">
+                                    <div style="width:${Math.min(r.percentage, 100)}%;height:100%;background:${r.severity==='critical'?'var(--danger)':'var(--warning)'};border-radius:3px"></div>
+                                </div>
+                                <span style="font-size:11px;min-width:40px">${r.percentage}%</span>
                             </div>
-                            <span style="font-size:11px;min-width:40px">${r.percentage}%</span>
-                        </div>
-                    </td>
-                    <td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(r.severity||'')}</span></td>
-                    <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(r.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
-                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(r.code)}', ${sourceId})">Dosyalari Gor</button></td>
-                </tr>`).join('')}</tbody>
-            `;
-        } else {
-            reqTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--success);font-size:13px">Tum dosyalar zorunlu kurallara uyumlu!</div>';
+                        </td>
+                        <td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(r.severity||'')}</span></td>
+                        <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(r.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
+                        <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(r.code)}', ${sourceId})">Dosyalari Gor</button></td>
+                    </tr>`).join('')}</tbody>
+                `;
+            } else {
+                reqTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--success);font-size:13px">Tum dosyalar zorunlu kurallara uyumlu!</div>';
+            }
         }
 
         // Best practices tablosu
         const bps = data.best_practices || [];
         const bpTable = document.getElementById('naming-bp-table');
-        if (bps.length) {
-            bpTable.innerHTML = `
-                <thead><tr><th>Kod</th><th>Uygulama</th><th>Sapma Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
-                <tbody>${bps.map(b => `<tr>
-                    <td><strong>${escapeHtml(b.code)}</strong></td>
-                    <td>${escapeHtml(b.label)}</td>
-                    <td>${formatNum(b.count)}</td>
-                    <td>
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <div style="flex:1;height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden;min-width:60px">
-                                <div style="width:${Math.min(b.percentage, 100)}%;height:100%;background:${b.severity==='warning'?'var(--warning)':'var(--info)'};border-radius:3px"></div>
+        if (bpTable) {
+            if (bps.length) {
+                bpTable.innerHTML = `
+                    <thead><tr><th>Kod</th><th>Uygulama</th><th>Sapma Sayisi</th><th>Oran</th><th>Ciddiyet</th><th>Ornekler</th><th>Islem</th></tr></thead>
+                    <tbody>${bps.map(b => `<tr>
+                        <td><strong>${escapeHtml(b.code)}</strong></td>
+                        <td>${escapeHtml(b.label)}</td>
+                        <td>${formatNum(b.count)}</td>
+                        <td>
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <div style="flex:1;height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden;min-width:60px">
+                                    <div style="width:${Math.min(b.percentage, 100)}%;height:100%;background:${b.severity==='warning'?'var(--warning)':'var(--info)'};border-radius:3px"></div>
+                                </div>
+                                <span style="font-size:11px;min-width:40px">${b.percentage}%</span>
                             </div>
-                            <span style="font-size:11px;min-width:40px">${b.percentage}%</span>
-                        </div>
-                    </td>
-                    <td><span class="badge ${b.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(b.severity||'')}</span></td>
-                    <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(b.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
-                    <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(b.code)}', ${sourceId})">Dosyalari Gor</button></td>
-                </tr>`).join('')}</tbody>
-            `;
-        } else {
-            bpTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--success);font-size:13px">Tum dosyalar en iyi uygulamalara uyumlu!</div>';
+                        </td>
+                        <td><span class="badge ${b.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(b.severity||'')}</span></td>
+                        <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(b.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
+                        <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(b.code)}', ${sourceId})">Dosyalari Gor</button></td>
+                    </tr>`).join('')}</tbody>
+                `;
+            } else {
+                bpTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--success);font-size:13px">Tum dosyalar en iyi uygulamalara uyumlu!</div>';
+            }
         }
         // Export butonunu goster
-        document.getElementById('naming-export-btn').style.display = '';
+        const exportBtn = document.getElementById('naming-export-btn');
+        if (exportBtn) exportBtn.style.display = '';
 
         // Issue #80: reusable entity-list ile ihlal eden dosyalari listele
         renderMitNamingEntityList(sourceId, data);
@@ -5718,11 +5743,11 @@ async function loadArchiveHistory(page) {
         const totalOps = data.total || 0;
         const archiveOps = ops.filter(o => o.operation_type === 'archive').length;
         const restoreOps = ops.filter(o => o.operation_type === 'restore').length;
-        document.getElementById('ah-summary-cards').innerHTML = `
+        _setHtmlSafe('ah-summary-cards', `
             <div class="card accent"><div class="card-label">Toplam Islem</div><div class="card-value">${formatNum(totalOps)}</div></div>
             <div class="card warning"><div class="card-label">Bu Sayfada</div><div class="card-value">${ops.length}</div></div>
             <div class="card purple"><div class="card-label">Sayfa</div><div class="card-value">${data.page}/${data.total_pages}</div></div>
-        `;
+        `);
 
         // Tablo
         const statusBadge = (s) => {
@@ -5732,39 +5757,43 @@ async function loadArchiveHistory(page) {
         const typeBadge = (t) => t === 'archive' ? '<span class="badge badge-accent">Arsiv</span>' : '<span class="badge badge-success">Geri Yukleme</span>';
 
         const table = document.getElementById('ah-table');
-        if (ops.length) {
-            table.innerHTML = `
-                <thead><tr><th>ID</th><th>Tarih</th><th>Tur</th><th>Tetikleyen</th><th>Dosya</th><th>Boyut</th><th>Durum</th><th>Detay</th></tr></thead>
-                <tbody>${ops.map(o => `<tr>
-                    <td>${o.id}</td>
-                    <td>${(o.started_at||'').substring(0,19)}</td>
-                    <td>${typeBadge(o.operation_type)}</td>
-                    <td><span style="font-size:11px">${o.trigger_type||'-'} ${o.trigger_detail ? '('+o.trigger_detail+')' : ''}</span></td>
-                    <td>${formatNum(o.total_files)}</td>
-                    <td>${o.total_size_formatted || formatSize(o.total_size)}</td>
-                    <td>${statusBadge(o.status)}</td>
-                    <td>
-                        <button class="btn btn-sm btn-outline" onclick="showOperationFiles(${o.id})">Dosyalar</button>
-                        ${o.operation_type==='archive' && o.status==='completed' ? `<button class="btn btn-sm btn-success" onclick="restoreByOperation(${o.id})">Geri Yukle</button>` : ''}
-                    </td>
-                </tr>`).join('')}</tbody>
-            `;
-        } else {
-            table.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:12px">Filtrelere uygun islem bulunamadi</div>';
+        if (table) {
+            if (ops.length) {
+                table.innerHTML = `
+                    <thead><tr><th>ID</th><th>Tarih</th><th>Tur</th><th>Tetikleyen</th><th>Dosya</th><th>Boyut</th><th>Durum</th><th>Detay</th></tr></thead>
+                    <tbody>${ops.map(o => `<tr>
+                        <td>${o.id}</td>
+                        <td>${(o.started_at||'').substring(0,19)}</td>
+                        <td>${typeBadge(o.operation_type)}</td>
+                        <td><span style="font-size:11px">${o.trigger_type||'-'} ${o.trigger_detail ? '('+o.trigger_detail+')' : ''}</span></td>
+                        <td>${formatNum(o.total_files)}</td>
+                        <td>${o.total_size_formatted || formatSize(o.total_size)}</td>
+                        <td>${statusBadge(o.status)}</td>
+                        <td>
+                            <button class="btn btn-sm btn-outline" onclick="showOperationFiles(${o.id})">Dosyalar</button>
+                            ${o.operation_type==='archive' && o.status==='completed' ? `<button class="btn btn-sm btn-success" onclick="restoreByOperation(${o.id})">Geri Yukle</button>` : ''}
+                        </td>
+                    </tr>`).join('')}</tbody>
+                `;
+            } else {
+                table.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:12px">Filtrelere uygun islem bulunamadi</div>';
+            }
         }
 
         // Sayfalama
         const pag = document.getElementById('ah-pagination');
-        if (data.total_pages > 1) {
-            let html = '';
-            if (ahCurrentPage > 1) html += `<button class="btn btn-sm btn-outline" onclick="loadArchiveHistory(${ahCurrentPage-1})">Onceki</button>`;
-            for (let i = Math.max(1, ahCurrentPage-2); i <= Math.min(data.total_pages, ahCurrentPage+2); i++) {
-                html += `<button class="btn btn-sm ${i===ahCurrentPage?'btn-primary':'btn-outline'}" onclick="loadArchiveHistory(${i})">${i}</button>`;
+        if (pag) {
+            if (data.total_pages > 1) {
+                let html = '';
+                if (ahCurrentPage > 1) html += `<button class="btn btn-sm btn-outline" onclick="loadArchiveHistory(${ahCurrentPage-1})">Onceki</button>`;
+                for (let i = Math.max(1, ahCurrentPage-2); i <= Math.min(data.total_pages, ahCurrentPage+2); i++) {
+                    html += `<button class="btn btn-sm ${i===ahCurrentPage?'btn-primary':'btn-outline'}" onclick="loadArchiveHistory(${i})">${i}</button>`;
+                }
+                if (ahCurrentPage < data.total_pages) html += `<button class="btn btn-sm btn-outline" onclick="loadArchiveHistory(${ahCurrentPage+1})">Sonraki</button>`;
+                pag.innerHTML = html;
+            } else {
+                pag.innerHTML = '';
             }
-            if (ahCurrentPage < data.total_pages) html += `<button class="btn btn-sm btn-outline" onclick="loadArchiveHistory(${ahCurrentPage+1})">Sonraki</button>`;
-            pag.innerHTML = html;
-        } else {
-            pag.innerHTML = '';
         }
         _attachArchiveHistoryViewToggle();
     } catch(e) { console.error('Archive history error:', e); }
@@ -6000,14 +6029,17 @@ async function loadDuplicates(page) {
 
 // Issue #84 — Gorsel ↔ Profesyonel mod toggle for Kopya Dosyalar.
 function _renderDuplicatesVisual() {
-    document.getElementById('dup-visual-host').style.display = '';
-    document.getElementById('dup-grid-host').style.display = 'none';
-    document.getElementById('dup-grid-host').innerHTML = '';
+    const v = document.getElementById('dup-visual-host');
+    const g = document.getElementById('dup-grid-host');
+    if (v) v.style.display = '';
+    if (g) { g.style.display = 'none'; g.innerHTML = ''; }
 }
 
 function _renderDuplicatesGrid() {
     const host = document.getElementById('dup-grid-host');
-    document.getElementById('dup-visual-host').style.display = 'none';
+    const v = document.getElementById('dup-visual-host');
+    if (v) v.style.display = 'none';
+    if (!host) return;
     host.style.display = '';
     if (typeof renderEntityList !== 'function') {
         host.innerHTML = '<div style="padding:20px;color:var(--text-muted)">entity-list yuklenmedi</div>';
@@ -6590,8 +6622,9 @@ async function loadGrowth() {
         `);
 
         // Yillik grafik
-        if (yearly.length) {
-            const ctx = document.getElementById('growth-yearly-chart').getContext('2d');
+        const yCanvas = yearly.length ? document.getElementById('growth-yearly-chart') : null;
+        if (yCanvas) {
+            const ctx = yCanvas.getContext('2d');
             if (growthCharts.yearly) growthCharts.yearly.destroy();
             growthCharts.yearly = new Chart(ctx, {
                 type: 'bar',
@@ -6625,8 +6658,9 @@ async function loadGrowth() {
         }
 
         // Aylik grafik
-        if (monthly.length) {
-            const ctx = document.getElementById('growth-monthly-chart').getContext('2d');
+        const mCanvas = monthly.length ? document.getElementById('growth-monthly-chart') : null;
+        if (mCanvas) {
+            const ctx = mCanvas.getContext('2d');
             if (growthCharts.monthly) growthCharts.monthly.destroy();
             growthCharts.monthly = new Chart(ctx, {
                 type: 'line',
@@ -6652,8 +6686,9 @@ async function loadGrowth() {
         }
 
         // Gunluk grafik
-        if (daily.length) {
-            const ctx = document.getElementById('growth-daily-chart').getContext('2d');
+        const dCanvas = daily.length ? document.getElementById('growth-daily-chart') : null;
+        if (dCanvas) {
+            const ctx = dCanvas.getContext('2d');
             if (growthCharts.daily) growthCharts.daily.destroy();
             growthCharts.daily = new Chart(ctx, {
                 type: 'line',
@@ -6688,27 +6723,29 @@ async function loadGrowth() {
         // En cok dosya olusturanlar
         const creators = data.top_creators || [];
         const creatorsTable = document.getElementById('growth-creators-table');
-        if (creators.length) {
-            creatorsTable.innerHTML = `
-                <thead><tr><th>Kullanici</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Oran</th></tr></thead>
-                <tbody>${creators.map(c => `
-                    <tr>
-                        <td><strong>${escapeHtml(c.owner || 'Bilinmiyor')}</strong></td>
-                        <td>${formatNum(c.file_count)}</td>
-                        <td>${formatSize(c.total_size)}</td>
-                        <td>
-                            <div style="display:flex;align-items:center;gap:8px">
-                                <div style="flex:1;height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden">
-                                    <div style="width:${c.percentage || 0}%;height:100%;background:var(--accent);border-radius:3px"></div>
+        if (creatorsTable) {
+            if (creators.length) {
+                creatorsTable.innerHTML = `
+                    <thead><tr><th>Kullanici</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Oran</th></tr></thead>
+                    <tbody>${creators.map(c => `
+                        <tr>
+                            <td><strong>${escapeHtml(c.owner || 'Bilinmiyor')}</strong></td>
+                            <td>${formatNum(c.file_count)}</td>
+                            <td>${formatSize(c.total_size)}</td>
+                            <td>
+                                <div style="display:flex;align-items:center;gap:8px">
+                                    <div style="flex:1;height:6px;background:var(--bg-secondary);border-radius:3px;overflow:hidden">
+                                        <div style="width:${c.percentage || 0}%;height:100%;background:var(--accent);border-radius:3px"></div>
+                                    </div>
+                                    <span style="font-size:11px;color:var(--text-muted)">${(c.percentage || 0).toFixed(1)}%</span>
                                 </div>
-                                <span style="font-size:11px;color:var(--text-muted)">${(c.percentage || 0).toFixed(1)}%</span>
-                            </div>
-                        </td>
-                    </tr>
-                `).join('')}</tbody>
-            `;
-        } else {
-            creatorsTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px">Veri bulunamadi</div>';
+                            </td>
+                        </tr>
+                    `).join('')}</tbody>
+                `;
+            } else {
+                creatorsTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px">Veri bulunamadi</div>';
+            }
         }
     } catch(e) { console.error('Growth load error:', e); }
 }
@@ -7718,9 +7755,9 @@ async function executeApproval(id, btn) {
                 // Ozet bilgiyi aninda goster (ağır sorguları beklemeden)
                 const summary = initData.summaries?.[autoId];
                 if (summary?.has_data) {
-                    document.getElementById('ov-files').textContent = formatNum(summary.file_count);
-                    document.getElementById('ov-size').textContent = summary.total_size_formatted || formatSize(summary.total_size);
-                    document.getElementById('ov-risk-text').textContent = '...';
+                    _setTextSafe('ov-files', formatNum(summary.file_count));
+                    _setTextSafe('ov-size', summary.total_size_formatted || formatSize(summary.total_size));
+                    _setTextSafe('ov-risk-text', '...');
 
                     // Yukleniyor gostergesi — loadOverview insightsPromise'i
                     // arka planda baslatacak, hazir olunca icerik gelecek.
@@ -7901,11 +7938,13 @@ function renderEntityList(containerId, items, columns, opts = {}) {
 async function loadOrphanSids() {
     const flags = await getSecurityFlags();
     const banner = document.getElementById('orphan-sids-banner');
-    if (!flags.orphan_sid.enabled) {
-        banner.style.display = 'block';
-        banner.textContent = 'Bu ozellik kapali — config.yaml > security.orphan_sid.enabled: true ile aciliyor.';
-    } else {
-        banner.style.display = 'none';
+    if (banner) {
+        if (!flags.orphan_sid.enabled) {
+            banner.style.display = 'block';
+            banner.textContent = 'Bu ozellik kapali — config.yaml > security.orphan_sid.enabled: true ile aciliyor.';
+        } else {
+            banner.style.display = 'none';
+        }
     }
 
     const sourceId = document.getElementById('orphan-sids-source')?.value;
@@ -7914,7 +7953,7 @@ async function loadOrphanSids() {
     const csvBtn = document.getElementById('orphan-sids-csv-btn');
     const reBtn = document.getElementById('orphan-sids-reassign-btn');
     if (!sourceId) {
-        summary.innerHTML = '';
+        if (summary) summary.innerHTML = '';
         renderEntityList('orphan-sids-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
         if (xlsxBtn) xlsxBtn.style.display = 'none';
         if (csvBtn) csvBtn.style.display = 'none';
@@ -7927,7 +7966,7 @@ async function loadOrphanSids() {
 
     try {
         const data = await api(`/security/orphan-sids/${sourceId}`);
-        summary.innerHTML = `
+        if (summary) summary.innerHTML = `
             <div class="card accent"><div class="card-label">Toplam Dosya</div><div class="card-value">${formatNum(data.total_files || 0)}</div></div>
             <div class="card warning"><div class="card-label">Yetim Dosya</div><div class="card-value">${formatNum(data.total_orphan_files || 0)}</div></div>
             <div class="card danger"><div class="card-label">Yetim SID</div><div class="card-value">${formatNum((data.orphan_sids || []).length)}</div></div>
@@ -8012,20 +8051,23 @@ async function submitOrphanReassign() {
 async function loadRansomwareAlerts() {
     const flags = await getSecurityFlags();
     const banner = document.getElementById('ransomware-banner');
-    if (!flags.ransomware.enabled) {
-        banner.style.display = 'block';
-        banner.textContent = 'Bu ozellik kapali — config.yaml > security.ransomware.enabled: true ile aciliyor.';
-    } else {
-        banner.style.display = 'none';
+    if (banner) {
+        if (!flags.ransomware.enabled) {
+            banner.style.display = 'block';
+            banner.textContent = 'Bu ozellik kapali — config.yaml > security.ransomware.enabled: true ile aciliyor.';
+        } else {
+            banner.style.display = 'none';
+        }
     }
-    const win = parseInt(document.getElementById('ransomware-window').value || '1440', 10);
+    const win = parseInt(document.getElementById('ransomware-window')?.value || '1440', 10);
     const summary = document.getElementById('ransomware-summary');
     try {
-        const alerts = await api(`/security/ransomware/alerts?since_minutes=${win}`);
+        const rawAlerts = await api(`/security/ransomware/alerts?since_minutes=${win}`);
+        const alerts = Array.isArray(rawAlerts) ? rawAlerts : [];
         const total = alerts.length;
         const ackd = alerts.filter(a => a.acknowledged_at).length;
         const critical = alerts.filter(a => (a.severity || '').toLowerCase() === 'critical').length;
-        summary.innerHTML = `
+        if (summary) summary.innerHTML = `
             <div class="card ${total ? 'danger' : 'success'}"><div class="card-label">Toplam Uyari</div><div class="card-value">${formatNum(total)}</div><div class="card-sub">${win} dk pencere</div></div>
             <div class="card warning"><div class="card-label">Kritik</div><div class="card-value">${formatNum(critical)}</div></div>
             <div class="card success"><div class="card-label">Onaylanan</div><div class="card-value">${formatNum(ackd)}</div></div>
@@ -8173,11 +8215,13 @@ let _extAnomalyRows = [];               // last fetched rows
 async function loadExtensionAnomalies() {
     const flags = await getSecurityFlags();
     const banner = document.getElementById('ext-anomaly-banner');
-    if (!flags.extension_anomalies || !flags.extension_anomalies.enabled) {
-        banner.style.display = 'block';
-        banner.textContent = 'Bu ozellik kapali — config.yaml > scanner.detect_wrong_extensions: true ile aciliyor (libmagic gerektirir).';
-    } else {
-        banner.style.display = 'none';
+    if (banner) {
+        if (!flags.extension_anomalies || !flags.extension_anomalies.enabled) {
+            banner.style.display = 'block';
+            banner.textContent = 'Bu ozellik kapali — config.yaml > scanner.detect_wrong_extensions: true ile aciliyor (libmagic gerektirir).';
+        } else {
+            banner.style.display = 'none';
+        }
     }
 
     const sourceId = document.getElementById('ext-anomaly-source')?.value;
@@ -8185,7 +8229,7 @@ async function loadExtensionAnomalies() {
     const summary = document.getElementById('ext-anomaly-summary');
     const xlsxBtn = document.getElementById('ext-anomaly-xlsx-btn');
     if (!sourceId) {
-        summary.innerHTML = '';
+        if (summary) summary.innerHTML = '';
         renderEntityList('ext-anomaly-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
         if (xlsxBtn) xlsxBtn.style.display = 'none';
         return;
@@ -8199,7 +8243,7 @@ async function loadExtensionAnomalies() {
         _psv2PrevWasPartial['extension-anomalies'] = true;
         _psv2ShowBanner('ext-anomaly-partial-banner', ps.scan_state, ps.progress);
         const extCount = (ps.summary && ps.summary.anomalies_so_far && ps.summary.anomalies_so_far.extension) || 0;
-        summary.innerHTML = `
+        if (summary) summary.innerHTML = `
             <div class="card warning"><div class="card-label">Tahmini Uzanti Anomalisi</div><div class="card-value">${formatNum(extCount)}</div><div class="card-sub">Kismi veri</div></div>
             <div class="card accent"><div class="card-label">Detay</div><div class="card-value" style="font-size:14px">Tarama devam ediyor</div><div class="card-sub">Tarama bitince detay goruntulenecek</div></div>
         `;
@@ -8220,7 +8264,7 @@ async function loadExtensionAnomalies() {
         if (severity) qs.set('severity', severity);
         const data = await api(`/security/extension-anomalies?${qs.toString()}`);
         const bs = data.by_severity || {};
-        summary.innerHTML = `
+        if (summary) summary.innerHTML = `
             <div class="card danger"><div class="card-label">Kritik</div><div class="card-value">${formatNum(bs.critical || 0)}</div></div>
             <div class="card warning"><div class="card-label">Yuksek</div><div class="card-value">${formatNum(bs.high || 0)}</div></div>
             <div class="card accent"><div class="card-label">Orta</div><div class="card-value">${formatNum(bs.medium || 0)}</div></div>
@@ -9214,11 +9258,14 @@ async function loadImageDuplicates() {
     const xlsxBtn = document.getElementById('imgdup-xlsx-btn');
     const featureBanner = document.getElementById('imgdup-feature-banner');
 
-    // Populate source dropdown once
+    // Populate source dropdown once.
+    // GET /api/sources returns a raw list — not {sources: [...]} like
+    // /api/dashboard/init does. The previous `srcs.sources || []` always
+    // resolved to [] so the dropdown stayed empty.
     if (sourceEl && sourceEl.options.length <= 1) {
         try {
             const srcs = await api('/sources');
-            (srcs.sources || []).forEach(s => {
+            (Array.isArray(srcs) ? srcs : (srcs && srcs.sources) || []).forEach(s => {
                 const o = document.createElement('option');
                 o.value = s.id;
                 o.textContent = s.name;
