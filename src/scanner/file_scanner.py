@@ -1024,6 +1024,58 @@ class FileScanner:
         # falling back to scan_runs).
         if status == "completed" and file_count > 0:
             progress["phase"] = "analysis"
+
+            # Issue #175 — size-enrich must run BEFORE compute_scan_summary
+            # and AI insights. MFT enumeration emits file_size=0 for every
+            # row; enrich populates real sizes via os.stat. Computing the
+            # summary or insights before enrich produces the customer-visible
+            # "TOPLAM DOSYA: 0 / BOYUT: 0 B" bug on Genel Bakis.
+            try:
+                self._run_size_enrich(scan_id)
+                if v2_builder is not None:
+                    try:
+                        elapsed_so_far = max(
+                            0.001, time.time() - start_time,
+                        )
+                        v2_builder.flush_to_db(
+                            scan_state="enrich",
+                            rate_per_sec=float(file_count) / elapsed_so_far,
+                            active_dir=progress.get("current_dir", "") or "",
+                        )
+                    except Exception as e:  # pragma: no cover
+                        logger.debug(
+                            "v2_builder enrich flush failed: %s", e,
+                        )
+            except Exception as e:
+                logger.warning(
+                    "Size-enrich pasi basarisiz (scan_id=%d): %s",
+                    scan_id, e,
+                )
+
+            # Issue #144 Phase 1 — opt-in wrong-extension detection.
+            # Default OFF (perf cost: libmagic.from_file() per scanned
+            # file). When enabled, run as a separate post-scan phase so
+            # the main MFT/SMB walk never blocks on libmagic.
+            if self.config.get("detect_wrong_extensions", False):
+                try:
+                    ext_result = self._run_extension_check(scan_id)
+                    if v2_builder is not None and isinstance(ext_result, dict):
+                        try:
+                            v2_builder.increment_anomaly(
+                                "extension",
+                                int(ext_result.get("anomalies", 0) or 0),
+                            )
+                        except Exception:  # pragma: no cover
+                            pass
+                except Exception as e:
+                    logger.warning(
+                        "Extension-check pasi basarisiz (scan_id=%d): %s",
+                        scan_id, e,
+                    )
+
+            # KPI summary + AI insights — these read scanned_files
+            # aggregates and MUST run after _run_size_enrich above so that
+            # summary_json carries real total_size / size_buckets / age_buckets.
             try:
                 t0 = time.time()
                 self.db.compute_scan_summary(scan_id)
@@ -1046,61 +1098,6 @@ class FileScanner:
                 )
             except Exception as e:
                 logger.warning("AI insights hesaplanamadi (scan_id=%d): %s", scan_id, e)
-
-            # Issue #144 Phase 1 — opt-in wrong-extension detection.
-            # Default OFF (perf cost: libmagic.from_file() per scanned
-            # file). When enabled, run as a separate post-scan phase so
-            # the main MFT/SMB walk never blocks on libmagic.
-            if self.config.get("detect_wrong_extensions", False):
-                try:
-                    ext_result = self._run_extension_check(scan_id)
-                    # Issue #181 Track B1 — fold the anomaly count into
-                    # the v2 builder so the dashboard's anomalies card
-                    # lights up before the scan completes.
-                    if v2_builder is not None and isinstance(ext_result, dict):
-                        try:
-                            v2_builder.increment_anomaly(
-                                "extension",
-                                int(ext_result.get("anomalies", 0) or 0),
-                            )
-                        except Exception:  # pragma: no cover
-                            pass
-                except Exception as e:
-                    logger.warning(
-                        "Extension-check pasi basarisiz (scan_id=%d): %s",
-                        scan_id, e,
-                    )
-
-            # Issue #175 — post-walk size + timestamp enrich. Streams
-            # scanned_files rows for this scan, fills file_size / mtime
-            # via os.stat (or FSCTL on local NTFS). Gated by
-            # scanner.enrich_sizes (default ON because the customer's #1
-            # KPI was BOYUT showing 0 B).
-            try:
-                self._run_size_enrich(scan_id)
-                # Issue #181 Track B1 — after enrich, size + age buckets
-                # finally have data to populate. Flush the v2 dict with
-                # the ``enrich`` scan_state so the dashboard knows it's
-                # safe to render the BOYUT/YAS cards.
-                if v2_builder is not None:
-                    try:
-                        elapsed_so_far = max(
-                            0.001, time.time() - start_time,
-                        )
-                        v2_builder.flush_to_db(
-                            scan_state="enrich",
-                            rate_per_sec=float(file_count) / elapsed_so_far,
-                            active_dir=progress.get("current_dir", "") or "",
-                        )
-                    except Exception as e:  # pragma: no cover
-                        logger.debug(
-                            "v2_builder enrich flush failed: %s", e,
-                        )
-            except Exception as e:
-                logger.warning(
-                    "Size-enrich pasi basarisiz (scan_id=%d): %s",
-                    scan_id, e,
-                )
 
         # Issue #181 Track B1 — final flush at scan completion. Always
         # runs (even on failure / cancel) so the dashboard's last
