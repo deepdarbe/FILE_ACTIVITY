@@ -204,3 +204,66 @@ def test_custom_token_env_name(monkeypatch):
         "/api/ping", headers={"Authorization": "Bearer custom-tok"}
     )
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Reverse-proxy unmasking (backend audit Class 10 / issue #194).
+#
+# When the dashboard sits behind a reverse proxy on the same host, the
+# TCP peer is always 127.0.0.1 (the proxy). Without XFF awareness the
+# allow_unauth_localhost branch silently fires for every remote request
+# and turns the dashboard into an unauthenticated service.
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_with_remote_xff_does_not_bypass_auth(monkeypatch):
+    """Proxy IP is loopback (127.0.0.1) BUT X-Forwarded-For carries a
+    real remote IP — auth must still be enforced."""
+    monkeypatch.setenv("FILEACTIVITY_DASHBOARD_TOKEN", "s3cret")
+    app = _build_app(_default_cfg(), force_client_host="127.0.0.1")
+    client = TestClient(app)
+    resp = client.get(
+        "/api/ping",
+        headers={"X-Forwarded-For": "203.0.113.42"},
+    )
+    assert resp.status_code == 401
+
+
+def test_proxy_with_loopback_xff_still_bypasses(monkeypatch):
+    """Proxy IP is loopback AND XFF says loopback — caller is genuinely
+    on the same host as the proxy → bypass should still fire."""
+    monkeypatch.delenv("FILEACTIVITY_DASHBOARD_TOKEN", raising=False)
+    app = _build_app(_default_cfg(), force_client_host="127.0.0.1")
+    client = TestClient(app)
+    resp = client.get(
+        "/api/ping",
+        headers={"X-Forwarded-For": "127.0.0.1"},
+    )
+    assert resp.status_code == 200
+
+
+def test_direct_remote_cannot_spoof_xff(monkeypatch):
+    """Defense: a direct LAN client sets XFF to 127.0.0.1 hoping to
+    impersonate localhost. Because their immediate peer is NOT loopback,
+    XFF is ignored entirely."""
+    monkeypatch.setenv("FILEACTIVITY_DASHBOARD_TOKEN", "s3cret")
+    app = _build_app(_default_cfg(), force_client_host="10.0.0.5")
+    client = TestClient(app)
+    resp = client.get(
+        "/api/ping",
+        headers={"X-Forwarded-For": "127.0.0.1"},
+    )
+    assert resp.status_code == 401
+
+
+def test_xff_first_entry_used_for_chain(monkeypatch):
+    """XFF chain "real-client, proxy1, proxy2" — only the leftmost
+    entry (the original client) is consulted."""
+    monkeypatch.setenv("FILEACTIVITY_DASHBOARD_TOKEN", "s3cret")
+    app = _build_app(_default_cfg(), force_client_host="127.0.0.1")
+    client = TestClient(app)
+    resp = client.get(
+        "/api/ping",
+        headers={"X-Forwarded-For": "203.0.113.42, 127.0.0.1, 127.0.0.1"},
+    )
+    assert resp.status_code == 401

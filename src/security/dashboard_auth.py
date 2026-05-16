@@ -44,6 +44,44 @@ logger = logging.getLogger("file_activity.security.dashboard_auth")
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
+def resolve_effective_client_host(request: Any) -> str:
+    """Return the client IP to use for security decisions.
+
+    Without this helper, ``request.client.host`` is the IMMEDIATE TCP
+    peer — which behind a reverse proxy (nginx/IIS on loopback) is
+    always 127.0.0.1, so a localhost bypass like ``allow_unauth_localhost``
+    or the ``/api/system/list-dir`` localhost-only check would silently
+    fire for every remote request reaching the proxy.
+
+    Rule: only honour ``X-Forwarded-For`` when the immediate peer is
+    itself a loopback address — that is the trusted-proxy signal. A
+    remote attacker who is NOT going through a loopback-bound proxy
+    cannot forge their way to ``client.host == 127.0.0.1`` and therefore
+    cannot inject a fake XFF either.
+
+    XFF format per RFC 7239 / convention: ``client, proxy1, proxy2``.
+    The leftmost entry is the original client; we use that for the
+    "is this localhost" check.
+    """
+    client = getattr(request, "client", None)
+    direct_host = (getattr(client, "host", "") or "") if client is not None else ""
+
+    if direct_host not in _LOCAL_HOSTS:
+        return direct_host
+
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return direct_host
+    try:
+        xff = headers.get("X-Forwarded-For", "") or ""
+    except Exception:
+        return direct_host
+    if not xff:
+        return direct_host
+    first = xff.split(",", 1)[0].strip()
+    return first or direct_host
+
+
 class DashboardAuth:
     """Per-process bearer-token gate for the FastAPI dashboard.
 
@@ -93,10 +131,11 @@ class DashboardAuth:
         if not self.enabled:
             return True
 
-        client_host = ""
-        client = getattr(request, "client", None)
-        if client is not None:
-            client_host = getattr(client, "host", "") or ""
+        # Use the resolved effective client (honours X-Forwarded-For only
+        # when the immediate peer is loopback). Without this, a reverse
+        # proxy on the same host turns every remote request into a fake
+        # "localhost" call and silently bypasses auth.
+        client_host = resolve_effective_client_host(request)
 
         if self.allow_unauth_localhost and client_host in _LOCAL_HOSTS:
             return True

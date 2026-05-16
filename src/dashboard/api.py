@@ -3919,8 +3919,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.post("/api/system/open-folder")
     async def open_folder(request: Request):
         """Dizini Windows Explorer'da ac (yalnizca yerel istemci icin)."""
+        from src.security.dashboard_auth import resolve_effective_client_host
         body = await request.json()
-        client_host = (request.client.host if request.client else "")
+        client_host = resolve_effective_client_host(request)
         return open_folder_impl(body, client_host)
 
     @app.get("/api/system/list-dir")
@@ -3934,8 +3935,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         Bos ``path`` -> mantiksal kokleri dondurur (Windows surucu harfleri
         veya POSIX "/"). 5000 girisle sinirlanmis, 'dir'>'file' siralanmis.
         Uzaktan istemci icin 403; var olmayan yol icin 404.
+
+        Uses ``resolve_effective_client_host`` (honours X-Forwarded-For
+        when peer is loopback) so a reverse proxy on the same host
+        cannot turn every LAN request into a fake "localhost" call.
         """
-        client_host = (request.client.host if request.client else "")
+        from src.security.dashboard_auth import resolve_effective_client_host
+        client_host = resolve_effective_client_host(request)
         return list_dir_impl(path, client_host, show_hidden=show_hidden)
 
     @app.get("/api/system/health")
