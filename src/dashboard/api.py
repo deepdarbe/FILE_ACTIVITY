@@ -920,6 +920,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         s = Source(name=data.name, unc_path=data.unc_path, archive_dest=data.archive_dest)
         try:
             sid = db.add_source(s)
+            try:
+                db.insert_audit_event_simple(
+                    source_id=sid, event_type="source_created", username="admin",
+                    file_path=None,
+                    details=f"name={data.name};unc_path={data.unc_path}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for source_created: %s", e)
             return {"id": sid, "message": f"Kaynak eklendi: {data.name}"}
         except Exception as e:
             raise HTTPException(400, str(e))
@@ -928,6 +936,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     async def remove_source(source_id: int):
         src = _get_source(db, source_id)
         if db.remove_source(src.name):
+            try:
+                db.insert_audit_event_simple(
+                    source_id=source_id, event_type="source_deleted", username="admin",
+                    file_path=None,
+                    details=f"name={src.name};unc_path={src.unc_path}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for source_deleted: %s", e)
             return {"message": f"Kaynak silindi: {src.name}"}
         raise HTTPException(500, "Silme basarisiz")
 
@@ -1538,6 +1554,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
         pol = ArchivePolicy(name=data.name, source_id=data.source_id, rules_json=rules)
         pid = db.add_policy(pol)
+        try:
+            db.insert_audit_event_simple(
+                source_id=data.source_id, event_type="policy_created", username="admin",
+                file_path=None,
+                details=f"policy_id={pid};name={data.name}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for policy_created: %s", e)
         return {"id": pid, "message": f"Politika olusturuldu: {data.name}"}
 
     @app.delete("/api/policies/{policy_id}")
@@ -1546,6 +1570,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not pol:
             raise HTTPException(404, "Politika bulunamadi")
         if db.remove_policy(pol["name"]):
+            try:
+                db.insert_audit_event_simple(
+                    source_id=pol.get("source_id"), event_type="policy_deleted",
+                    username="admin", file_path=None,
+                    details=f"policy_id={policy_id};name={pol['name']}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for policy_deleted: %s", e)
             return {"message": f"Politika silindi: {pol['name']}"}
         raise HTTPException(500, "Silme basarisiz")
 
@@ -1578,11 +1610,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             policy_id=policy_id, cron_expression=data.cron_expression
         )
         tid = db.add_scheduled_task(task)
+        try:
+            db.insert_audit_event_simple(
+                source_id=source_id_val, event_type="schedule_created", username="admin",
+                file_path=None,
+                details=f"task_id={tid};type={data.task_type};cron={data.cron_expression}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for schedule_created: %s", e)
         return {"id": tid, "message": "Zamanlanmis gorev olusturuldu"}
 
     @app.delete("/api/schedules/{task_id}")
     async def remove_schedule(task_id: int):
         if db.remove_scheduled_task(task_id):
+            try:
+                db.insert_audit_event_simple(
+                    source_id=None, event_type="schedule_deleted", username="admin",
+                    file_path=None, details=f"task_id={task_id}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for schedule_deleted: %s", e)
             return {"message": "Gorev silindi"}
         raise HTTPException(404, "Gorev bulunamadi")
 
@@ -1960,6 +2007,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.post("/api/anomalies/{anomaly_id}/acknowledge")
     async def acknowledge_anomaly(anomaly_id: int, by_user: str = "admin"):
         db.acknowledge_anomaly(anomaly_id, by_user)
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="anomaly_acknowledged", username=by_user,
+                file_path=None, details=f"anomaly_id={anomaly_id}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for anomaly_acknowledged: %s", e)
         return {"message": "Anomali onaylandi"}
 
     # --- FILE WATCHER API ---
@@ -1981,6 +2035,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         watcher = FileWatcher(db, src.id, src.unc_path, interval,
                                 ransomware_detector=ransomware)
         watcher.start()
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="watcher_started", username="admin",
+                file_path=None, details=f"interval={watcher.interval}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for watcher_started: %s", e)
         return {"status": "started", "interval": watcher.interval}
 
     @app.post("/api/watcher/{source_id}/stop")
@@ -1988,6 +2049,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         from src.scanner.file_watcher import _watchers
         if source_id in _watchers:
             _watchers[source_id].stop()
+            try:
+                db.insert_audit_event_simple(
+                    source_id=source_id, event_type="watcher_stopped", username="admin",
+                    file_path=None, details=None,
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for watcher_stopped: %s", e)
             return {"status": "stopped"}
         return {"status": "not_running"}
 
@@ -4291,6 +4359,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             cwd=os.path.dirname(update_cmd),
         )
         logger.info("Guncelleme tetiklendi: %s", update_cmd)
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="system_update_triggered", username="admin",
+                file_path=update_cmd, details="dashboard-initiated update.cmd",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for system_update_triggered: %s", e)
         return {
             "status": "started",
             "message": "Guncelleme baslatildi. 30-60 saniye sonra dashboard'u yenileyin.",
@@ -4721,6 +4796,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             )
             if cur.rowcount == 0:
                 raise HTTPException(404, f"Uyari bulunamadi (ID: {alert_id})")
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="ransomware_alert_acknowledged",
+                username=by_user, file_path=None, details=f"alert_id={alert_id}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for ransomware_alert_acknowledged: %s", e)
         return {"acknowledged": True, "id": alert_id, "by": by_user}
 
     @app.post("/api/security/ransomware/canaries/{source_id}/deploy")
@@ -4729,6 +4811,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         src = _get_source(db, source_id)
         det = _get_detector()
         placed = det.deploy_canaries(src.id, src.unc_path)
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="ransomware_canaries_deployed",
+                username="admin", file_path=src.unc_path,
+                details=f"placed={placed};names={sorted(det.canary_names)}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for ransomware_canaries_deployed: %s", e)
         return {
             "source_id": src.id,
             "share_root": src.unc_path,
@@ -5274,6 +5364,15 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 (by_user, f"-{int(since_minutes)}"),
             )
             rowcount = cur.rowcount or 0
+        try:
+            db.insert_audit_event_simple(
+                source_id=None,
+                event_type="ransomware_alerts_acknowledged_bulk",
+                username=by_user, file_path=None,
+                details=f"rows_updated={int(rowcount)};since_minutes={int(since_minutes)}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for ransomware bulk-ack: %s", e)
         return {
             "acknowledged": True,
             "rows_updated": int(rowcount),
