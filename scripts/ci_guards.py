@@ -32,7 +32,6 @@ workflow run a single check at a time; with no flag every check runs.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
