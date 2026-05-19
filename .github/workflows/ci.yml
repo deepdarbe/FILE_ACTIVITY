@@ -34,8 +34,13 @@ jobs:
       - name: YAML config smoke check (catch unresolved merge markers)
         run: |
           python -c "import yaml; yaml.safe_load(open('config.yaml'))"
-          # Bare grep guard for stray conflict markers in any tracked text file
-          if grep -RnE '^(<<<<<<< |======= ?$|>>>>>>> )' \
+          # Bare grep guard for stray conflict markers in any tracked text file.
+          # Only flag the unambiguous <<<<<<< / >>>>>>> markers — git always
+          # emits both, so checking just these is sufficient. The middle
+          # ======= marker is dropped because it collides with reStructuredText
+          # heading underlines (e.g. src/compliance/dcat.py:9), which produced
+          # a latent false positive that lived in master from PR #169 onward.
+          if grep -RnE '^(<<<<<<<|>>>>>>>) ' \
               --include='*.py' --include='*.yml' --include='*.yaml' \
               --include='*.md' --include='*.html' --include='*.cmd' \
               --include='*.ps1' --include='*.txt' \
