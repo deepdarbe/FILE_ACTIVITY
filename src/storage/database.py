@@ -612,6 +612,12 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_ext ON scanned_files(source_id, scan_id, extension)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_size ON scanned_files(source_id, scan_id, file_size)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_owner ON scanned_files(source_id, scan_id, owner)")
+        # Issue #194 Wave 6 — composite (scan_id, file_path) supports the
+        # size-enrich UPDATE WHERE clause. Without it each of the 600+
+        # chunks per 3M-file scan does a partial scan within idx_sf_scan
+        # → O(N) per row → 30+ minute enrich pass. With this index the
+        # UPDATE is O(log N) and enrich completes in seconds.
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_scan_path ON scanned_files(scan_id, file_path)")
 
         # Arsivlenmis dosyalar
         cur.execute("""
