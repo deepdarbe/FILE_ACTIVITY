@@ -193,7 +193,10 @@ def check_system(ctx):
 @cli.command("version")
 def version():
     """Versiyon bilgisi."""
-    click.echo("FILE ACTIVITY v1.0.0")
+    # Single source of truth — same VERSION file the --version eager
+    # callback reads. The literal "v1.0.0" that used to live here
+    # drifted years past the actual release tag (#194 config audit).
+    click.echo(f"FILE ACTIVITY v{_read_version_string()}")
     click.echo("Windows File Share Analysis & Archiving System")
 
 

@@ -73,7 +73,7 @@ Dashboard: **http://localhost:8085**
 
 ## Dashboard authentication (issue #158)
 
-Since v1.9.0-rc2 the dashboard ships with a **bearer-token gate enabled by default** and binds to **127.0.0.1** unless the operator explicitly opts into a LAN bind. The token never lives in `config.yaml` — it is read from the `FILEACTIVITY_DASHBOARD_TOKEN` environment variable.
+Since v1.9 the dashboard ships with a **bearer-token gate enabled by default** and binds to **127.0.0.1** unless the operator explicitly opts into a LAN bind. The token never lives in `config.yaml` — it is read from the `FILEACTIVITY_DASHBOARD_TOKEN` environment variable.
 
 ### Local single-host install (no token needed)
 
