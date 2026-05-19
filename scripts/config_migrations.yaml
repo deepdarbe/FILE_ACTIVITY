@@ -1,0 +1,54 @@
+# Config migration rules — issue #194 stabilization week / Wave 8 / D7
+#
+# Each rule documents a safe-default flag flip we've shipped where the
+# pre-flip value was unsafe enough that operators should be migrated
+# even if their config.yaml is preserved across updates by
+# setup-source.ps1. The migrator (scripts/migrate_config.py) only
+# touches a key when the customer's CURRENT value equals
+# ``old_default`` — that is the "this looks like the previous shipped
+# default, not an operator customisation" signal. Any other value (an
+# explicit operator choice) is left alone.
+#
+# Format (each entry):
+#   - path:         "dot.separated.yaml.path"
+#     old_default:  <previous shipped value>
+#     new_default:  <current shipped value>
+#     reason:       short string written to the migration log
+#     pr:           "#NNN" of the shipping PR (audit trail)
+
+migrations:
+  # PR #174 — DuckDB ATTACH(READ_WRITE) per flush window deadlocks
+  # against the writer pool on multi-million-row scans. Customer's WAL
+  # leaked to 13+ GB and the scan kept hitting "database is locked".
+  # New default is the executemany path which uses busy_timeout + retry.
+  - path: "scanner.parquet_staging.enabled"
+    old_default: true
+    new_default: false
+    reason: "PR #174 — parquet_staging caused WAL contention + 'database is locked' on multi-million-row scans"
+    pr: "#174"
+
+  # PR #158 H-1 — dashboard previously bound 0.0.0.0:8085 unauth on
+  # every install. Default flipped to loopback + bearer-token gate.
+  - path: "dashboard.host"
+    old_default: "0.0.0.0"
+    new_default: "127.0.0.1"
+    reason: "PR #158 — dashboard now binds loopback by default; operators on a LAN deployment must explicitly set 0.0.0.0"
+    pr: "#158"
+
+  # PR #131 — corruption_check=quick used to open the DB read-only at
+  # startup and run an `integrity_check` that took 60+ seconds on
+  # multi-GB DBs while the service appeared to hang.
+  - path: "backup.corruption_check_mode"
+    old_default: "quick"
+    new_default: "skip"
+    reason: "PR #131 — quick mode added 60+s startup pause on multi-GB DBs"
+    pr: "#131"
+
+  # PR #14 — polling watcher backend was the bootstrap default before
+  # watchdog landed. On local NTFS the event-driven backend is
+  # strictly better (sub-second event latency vs. 60s poll loop).
+  - path: "watcher.backend"
+    old_default: "polling"
+    new_default: "watchdog"
+    reason: "PR #14 — watchdog backend supersedes polling for local NTFS"
+    pr: "#14"
