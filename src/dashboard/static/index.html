@@ -2758,6 +2758,7 @@ function populateSourceSelect(id) {
 
 function renderSources() {
     const c = document.getElementById('source-list');
+    if (!c) return;
     if (!sources.length) { c.innerHTML = '<div class="empty-state"><div class="icon">📁</div><h3>Kaynak Bulunamadi</h3><p>"+ Kaynak Ekle" ile dosya paylasim kaynagi ekleyin.</p></div>'; return; }
     c.innerHTML = sources.map(s => {
         // Issue #177 — build delta line from cached trend data
@@ -3778,20 +3779,24 @@ async function loadFrequency() {
         if (labels.length) {
             const counts = labels.map(k => ab[k] || 0);
             const barColors = bucketDays.map(d => d >= 365 ? '#ef4444' : d >= 180 ? '#f59e0b' : d >= 90 ? '#eab308' : '#10b981');
-            document.getElementById('freq-cards').innerHTML = labels.map((k, i) => {
+            _setHtmlSafe('freq-cards', labels.map((k, i) => {
                 const d = bucketDays[i] || 0;
                 const c = counts[i];
                 const color = d >= 365 ? 'var(--danger)' : d >= 180 ? 'var(--warning)' : d >= 90 ? '#eab308' : 'var(--success)';
                 return `<div class="card" style="border-top:3px solid ${color}"><div class="card-label">${escapeHtml(k)}</div><div class="card-value" style="font-size:22px">${formatNum(c)}</div><div class="card-sub">Kismi veri</div></div>`;
-            }).join('');
+            }).join(''));
             destroyChart('freq-chart');
-            chartInstances['freq-chart'] = new Chart(document.getElementById('freq-chart'), {
-                type: 'bar', data: { labels, datasets: [{ label: 'Dosya Sayisi', data: counts, backgroundColor: barColors.map(c=>c+'99'), borderColor: barColors, borderWidth: 1, borderRadius: 6, yAxisID: 'y' }] },
-                options: { responsive: true, plugins: { legend: { display: true } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
-            });
-            document.getElementById('freq-table-wrap').style.display = 'none';
+            const freqCanvas = document.getElementById('freq-chart');
+            if (freqCanvas) {
+                chartInstances['freq-chart'] = new Chart(freqCanvas, {
+                    type: 'bar', data: { labels, datasets: [{ label: 'Dosya Sayisi', data: counts, backgroundColor: barColors.map(c=>c+'99'), borderColor: barColors, borderWidth: 1, borderRadius: 6, yAxisID: 'y' }] },
+                    options: { responsive: true, plugins: { legend: { display: true } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
+                });
+            }
+            const tw = document.getElementById('freq-table-wrap');
+            if (tw) tw.style.display = 'none';
         } else {
-            document.getElementById('freq-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>';
+            _setHtmlSafe('freq-cards', '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>');
         }
         _psv2StartPoll(sid, 'frequency', loadFrequency);
         return;
@@ -3844,16 +3849,17 @@ async function loadFrequency() {
             <button class="btn btn-sm btn-success" onclick="showDrilldown('365+ Gun Arsivle', '/drilldown/frequency/${sid}?min_days=365', {source_id:${parseInt(sid)}, filter_type:'frequency', min_days:365})">Arsivle</button>
         </div>` + cardsHtml;
     }
-    document.getElementById('freq-cards').innerHTML = cardsHtml;
+    _setHtmlSafe('freq-cards', cardsHtml);
 
     // Chart
     destroyChart('freq-chart');
-    if (freq.length) {
+    const freqCanvas = freq.length ? document.getElementById('freq-chart') : null;
+    if (freqCanvas) {
         const barColors = freq.map(f => {
             const d = f.days || 0;
             return d >= 365 ? '#ef4444' : d >= 180 ? '#f59e0b' : d >= 90 ? '#eab308' : '#10b981';
         });
-        chartInstances['freq-chart'] = new Chart(document.getElementById('freq-chart'), {
+        chartInstances['freq-chart'] = new Chart(freqCanvas, {
             type: 'bar', data: {
                 labels: freq.map(f => f.label),
                 datasets: [
@@ -3864,8 +3870,9 @@ async function loadFrequency() {
     }
 
     // Table
-    document.getElementById('freq-table-wrap').style.display = 'block';
-    document.getElementById('freq-table').innerHTML = `
+    const fTableWrap = document.getElementById('freq-table-wrap');
+    if (fTableWrap) fTableWrap.style.display = 'block';
+    _setHtmlSafe('freq-table', `
         <thead><tr><th>Kriter</th><th>Durum</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Yuzde</th></tr></thead>
         <tbody>${freq.map((f, i) => {
             const minD = f.days || 0;
@@ -3873,7 +3880,7 @@ async function loadFrequency() {
             const maxParam = maxD ? `&max_days=${maxD}` : '';
             return `<tr class="clickable-row" onclick="showDrilldown('${escapeHtml(f.label)}', '/drilldown/frequency/${sid}?min_days=${minD}${maxParam}', {source_id:${sid}, filter_type:'frequency', min_days:${minD}${maxD?`, max_days:${maxD}`:''}})"><td>${escapeHtml(f.label)}</td><td>${staleBadge(minD)}</td><td>${formatNum(f.file_count)}</td><td>${escapeHtml(f.total_size_formatted)}</td><td>${total ? (f.file_count/total*100).toFixed(1)+'%' : '-'}</td></tr>`;
         }).join('')}</tbody>
-    `;
+    `);
 
     // Issue #84 — wire view toggle (visual = histogram above; grid = file list).
     window.__freqLastSourceId = sid;
@@ -3970,23 +3977,25 @@ async function loadTypes() {
         const byExt = (ps.summary && ps.summary.by_extension) || [];
         const top = byExt.slice(0, 15);
         destroyChart('types-pie-chart');
-        if (top.length) {
-            chartInstances['types-pie-chart'] = new Chart(document.getElementById('types-pie-chart'), {
+        const tPieCanvas = top.length ? document.getElementById('types-pie-chart') : null;
+        if (tPieCanvas) {
+            chartInstances['types-pie-chart'] = new Chart(tPieCanvas, {
                 type: 'doughnut', data: { labels: top.map(t=>'.'+escapeHtml(t.ext||'')), datasets: [{ data: top.map(t=>t.size_bytes||0), backgroundColor: COLORS, borderWidth: 0 }] },
                 options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } } } }
             });
         }
         destroyChart('types-count-chart');
-        if (top.length) {
-            chartInstances['types-count-chart'] = new Chart(document.getElementById('types-count-chart'), {
+        const tCntCanvas = top.length ? document.getElementById('types-count-chart') : null;
+        if (tCntCanvas) {
+            chartInstances['types-count-chart'] = new Chart(tCntCanvas, {
                 type: 'bar', data: { labels: top.map(t=>'.'+escapeHtml(t.ext||'')), datasets: [{ label: 'Dosya Sayisi', data: top.map(t=>t.count||0), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
                 options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
             });
         }
-        document.getElementById('types-table').innerHTML = `
+        _setHtmlSafe('types-table', `
             <thead><tr><th>Uzanti</th><th>Sayi</th><th>Toplam Boyut</th></tr></thead>
             <tbody>${byExt.slice(0,30).map(t => `<tr><td><strong>.${escapeHtml(t.ext||'')}</strong></td><td>${formatNum(t.count||0)}</td><td>${formatSize(t.size_bytes||0)}</td></tr>`).join('')}</tbody>
-        `;
+        `);
         _psv2StartPoll(sid, 'types', loadTypes);
         return;
     }
@@ -4003,15 +4012,17 @@ async function loadTypes() {
     const top = types.slice(0, 15);
 
     destroyChart('types-pie-chart');
-    if (top.length) {
-        chartInstances['types-pie-chart'] = new Chart(document.getElementById('types-pie-chart'), {
+    const tPieCanvas2 = top.length ? document.getElementById('types-pie-chart') : null;
+    if (tPieCanvas2) {
+        chartInstances['types-pie-chart'] = new Chart(tPieCanvas2, {
             type: 'doughnut', data: { labels: top.map(t=>'.'+t.extension), datasets: [{ data: top.map(t=>t.total_size||0), backgroundColor: COLORS, borderWidth: 0 }] },
             options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } } } }
         });
     }
     destroyChart('types-count-chart');
-    if (top.length) {
-        chartInstances['types-count-chart'] = new Chart(document.getElementById('types-count-chart'), {
+    const tCntCanvas2 = top.length ? document.getElementById('types-count-chart') : null;
+    if (tCntCanvas2) {
+        chartInstances['types-count-chart'] = new Chart(tCntCanvas2, {
             type: 'bar', data: { labels: top.map(t=>'.'+t.extension), datasets: [{ label: 'Dosya Sayisi', data: top.map(t=>t.file_count), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
             options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
         });
@@ -4026,10 +4037,10 @@ async function loadTypes() {
         return '';
     }
 
-    document.getElementById('types-table').innerHTML = `
+    _setHtmlSafe('types-table', `
         <thead><tr><th>Uzanti</th><th>Risk</th><th>Sayi</th><th>Toplam</th><th>Ortalama</th><th>Min</th><th>Max</th></tr></thead>
         <tbody>${types.slice(0,30).map(t => `<tr class="clickable-row" onclick="showDrilldown('.${t.extension} Dosyalari', '/drilldown/type/${sid}?extension=${encodeURIComponent(t.extension)}', {source_id:${sid}, filter_type:'type', extension:'${t.extension}'})"><td><strong>.${t.extension}</strong></td><td>${typeRiskBadge(t.extension, t.total_size||0)}</td><td>${formatNum(t.file_count)}</td><td>${t.total_size_formatted}</td><td>${t.avg_size_formatted}</td><td>${t.min_size_formatted}</td><td>${t.max_size_formatted}</td></tr>`).join('')}</tbody>
-    `;
+    `);
 }
 
 // ═══════════════════════════════════════════════════
@@ -4050,23 +4061,26 @@ async function loadSizes() {
         const labels = bucketOrder.filter(k => sb.hasOwnProperty(k));
         if (labels.length) {
             const counts = labels.map(k => sb[k] || 0);
-            document.getElementById('sizes-cards').innerHTML = labels.map((k, i) => `
+            _setHtmlSafe('sizes-cards', labels.map((k, i) => `
                 <div class="card" style="border-top:3px solid ${COLORS[i%COLORS.length]}">
                     <div class="card-label">${escapeHtml(k)}</div>
                     <div class="card-value" style="font-size:22px">${formatNum(counts[i])}</div>
                     <div class="card-sub">Kismi veri</div>
-                </div>`).join('');
+                </div>`).join(''));
             destroyChart('sizes-chart');
-            chartInstances['sizes-chart'] = new Chart(document.getElementById('sizes-chart'), {
-                type: 'bar', data: { labels, datasets: [{ label: 'Dosya Sayisi', data: counts, backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 6 }] },
-                options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
-            });
-            document.getElementById('sizes-table').innerHTML = `
+            const sChartCanvas = document.getElementById('sizes-chart');
+            if (sChartCanvas) {
+                chartInstances['sizes-chart'] = new Chart(sChartCanvas, {
+                    type: 'bar', data: { labels, datasets: [{ label: 'Dosya Sayisi', data: counts, backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 6 }] },
+                    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
+                });
+            }
+            _setHtmlSafe('sizes-table', `
                 <thead><tr><th>Kategori</th><th>Dosya Sayisi</th></tr></thead>
                 <tbody>${labels.map((k, i) => `<tr><td>${escapeHtml(k)}</td><td>${formatNum(counts[i])}</td></tr>`).join('')}</tbody>
-            `;
+            `);
         } else {
-            document.getElementById('sizes-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>';
+            _setHtmlSafe('sizes-cards', '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>');
         }
         _psv2StartPoll(sid, 'sizes', loadSizes);
         return;
@@ -4082,7 +4096,7 @@ async function loadSizes() {
     const data = await api(`/reports/sizes/${sid}`);
     const sizes = data.sizes || [];
 
-    document.getElementById('sizes-cards').innerHTML = sizes.map((s, i) => {
+    _setHtmlSafe('sizes-cards', sizes.map((s, i) => {
         const maxParam = s.max_bytes != null ? `&max_bytes=${s.max_bytes}` : '';
         return `
         <div class="card clickable-row" style="border-top:3px solid ${COLORS[i%COLORS.length]}"
@@ -4092,22 +4106,25 @@ async function loadSizes() {
             <div class="card-value" style="font-size:22px">${formatNum(s.file_count)}</div>
             <div class="card-sub">${s.total_size_formatted}</div>
         </div>`;
-    }).join('');
+    }).join(''));
 
     destroyChart('sizes-chart');
-    chartInstances['sizes-chart'] = new Chart(document.getElementById('sizes-chart'), {
-        type: 'bar', data: { labels: sizes.map(s=>s.label), datasets: [
-            { label: 'Dosya Sayisi', data: sizes.map(s=>s.file_count), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 6 }
-        ] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
-    });
+    const sChartCanvas2 = document.getElementById('sizes-chart');
+    if (sChartCanvas2) {
+        chartInstances['sizes-chart'] = new Chart(sChartCanvas2, {
+            type: 'bar', data: { labels: sizes.map(s=>s.label), datasets: [
+                { label: 'Dosya Sayisi', data: sizes.map(s=>s.file_count), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 6 }
+            ] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: '#1e293b' } }, x: { grid: { display: false } } } }
+        });
+    }
 
-    document.getElementById('sizes-table').innerHTML = `
+    _setHtmlSafe('sizes-table', `
         <thead><tr><th>Kategori</th><th>Aralik</th><th>Dosya Sayisi</th><th>Toplam Boyut</th></tr></thead>
         <tbody>${sizes.map(s => {
             const maxParam = s.max_bytes != null ? `&max_bytes=${s.max_bytes}` : '';
             return `<tr class="clickable-row" onclick="showDrilldown('${s.label}', '/drilldown/size/${sid}?min_bytes=${s.min_bytes||0}${maxParam}', {source_id:${sid}, filter_type:'size', min_bytes:${s.min_bytes||0}${s.max_bytes!=null?`, max_bytes:${s.max_bytes}`:''}})"><td>${s.label}</td><td>${s.range_formatted || '-'}</td><td>${formatNum(s.file_count)}</td><td>${s.total_size_formatted}</td></tr>`;
         }).join('')}</tbody>
-    `;
+    `);
 }
 
 // ═══════════════════════════════════════════════════
@@ -4273,16 +4290,17 @@ async function loadUsers() {
             if (byOwner.length) {
                 const totalSize = byOwner.reduce((s, o) => s + (o.size_bytes || 0), 0);
                 const totalFiles = byOwner.reduce((s, o) => s + (o.count || 0), 0);
-                document.getElementById('user-cards').innerHTML = `
+                _setHtmlSafe('user-cards', `
                     <div class="card accent"><div class="card-label">Dosya Sahipleri</div><div class="card-value">${byOwner.length}</div></div>
                     <div class="card success"><div class="card-label">Toplam Boyut</div><div class="card-value" style="font-size:18px">${formatSize(totalSize)}</div></div>
                     <div class="card purple"><div class="card-label">Toplam Dosya</div><div class="card-value">${formatNum(totalFiles)}</div></div>
                     <div class="card warning"><div class="card-label">Veri Kaynagi</div><div class="card-value" style="font-size:14px">Kismi Veri</div><div class="card-sub">Tarama devam ediyor</div></div>
-                `;
+                `);
                 const topBySize = byOwner.slice(0, 8);
                 destroyChart('users-donut-chart');
-                if (topBySize.length) {
-                    chartInstances['users-donut-chart'] = new Chart(document.getElementById('users-donut-chart'), {
+                const uDonut = topBySize.length ? document.getElementById('users-donut-chart') : null;
+                if (uDonut) {
+                    chartInstances['users-donut-chart'] = new Chart(uDonut, {
                         type: 'doughnut', data: { labels: topBySize.map(o => o.owner || 'Bilinmiyor'), datasets: [{ data: topBySize.map(o => o.size_bytes || 0), backgroundColor: COLORS.slice(0, topBySize.length), borderWidth: 0 }] },
                         options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } },
                             tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + formatSize(ctx.raw) } } } }
@@ -4290,19 +4308,20 @@ async function loadUsers() {
                 }
                 destroyChart('users-top-chart');
                 const topByCount = byOwner.slice(0, 10);
-                if (topByCount.length) {
-                    chartInstances['users-top-chart'] = new Chart(document.getElementById('users-top-chart'), {
+                const uTop = topByCount.length ? document.getElementById('users-top-chart') : null;
+                if (uTop) {
+                    chartInstances['users-top-chart'] = new Chart(uTop, {
                         type: 'bar', data: { labels: topByCount.map(o => o.owner || 'Bilinmiyor'), datasets: [{ label: 'Dosya Sayisi', data: topByCount.map(o => o.count || 0), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
                         options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
                     });
                 }
-                document.getElementById('users-table').innerHTML = `
+                _setHtmlSafe('users-table', `
                     <thead><tr><th>Sahip</th><th>Dosya Sayisi</th><th>Toplam Boyut</th></tr></thead>
                     <tbody>${byOwner.map(o => `<tr><td><strong>${escapeHtml(o.owner||'Bilinmiyor')}</strong></td><td>${formatNum(o.count||0)}</td><td>${formatSize(o.size_bytes||0)}</td></tr>`).join('')}</tbody>
-                `;
-                document.getElementById('users-heatmap').innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:12px">Heatmap tarama tamamlandiktan sonra goruntulenecek</div>';
+                `);
+                _setHtmlSafe('users-heatmap', '<div style="padding:20px;color:var(--text-muted);font-size:12px">Heatmap tarama tamamlandiktan sonra goruntulenecek</div>');
             } else {
-                document.getElementById('user-cards').innerHTML = '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>';
+                _setHtmlSafe('user-cards', '<div style="padding:20px;color:var(--text-muted)">Kismi veri yok \u2014 Tarama tamamlandiktan sonra goruntulenecek</div>');
             }
             _psv2StartPoll(psSid, 'users', loadUsers);
             return;
@@ -4324,22 +4343,23 @@ async function loadUsers() {
             const totalSize = owners.reduce((s, o) => s + (o.total_size || 0), 0);
             const totalFiles = owners.reduce((s, o) => s + (o.file_count || 0), 0);
 
-            document.getElementById('user-cards').innerHTML = `
+            _setHtmlSafe('user-cards', `
                 <div class="card accent"><div class="card-label">Dosya Sahipleri</div><div class="card-value">${owners.length}</div></div>
                 <div class="card success"><div class="card-label">Toplam Boyut</div><div class="card-value" style="font-size:18px">${formatSize(totalSize)}</div></div>
                 <div class="card purple"><div class="card-label">Toplam Dosya</div><div class="card-value">${formatNum(totalFiles)}</div></div>
                 <div class="card warning"><div class="card-label">Veri Kaynagi</div><div class="card-value" style="font-size:14px">Dosya Sahipligi</div><div class="card-sub">Event Log yok</div></div>
-            `;
+            `);
 
             // Donut chart: owner distribution by SIZE
             destroyChart('users-donut-chart');
             const topBySize = owners.slice(0, 8);
-            if (topBySize.length) {
+            const uDonutFO = topBySize.length ? document.getElementById('users-donut-chart') : null;
+            if (uDonutFO) {
                 const otherSize = totalSize - topBySize.reduce((s, o) => s + (o.total_size || 0), 0);
                 const labels = topBySize.map(o => o.owner || 'Bilinmiyor');
                 const sizes = topBySize.map(o => o.total_size || 0);
                 if (otherSize > 0 && owners.length > 8) { labels.push('Diger'); sizes.push(otherSize); }
-                chartInstances['users-donut-chart'] = new Chart(document.getElementById('users-donut-chart'), {
+                chartInstances['users-donut-chart'] = new Chart(uDonutFO, {
                     type: 'doughnut', data: { labels, datasets: [{ data: sizes, backgroundColor: COLORS.slice(0, labels.length), borderWidth: 0 }] },
                     options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } },
                         tooltip: { callbacks: { label: (ctx) => ctx.label + ': ' + formatSize(ctx.raw) + ' (' + ((ctx.raw/Math.max(totalSize,1))*100).toFixed(1) + '%)' } } } }
@@ -4349,20 +4369,21 @@ async function loadUsers() {
             // Bar chart: top 10 owners by file count
             destroyChart('users-top-chart');
             const topByCount = owners.slice(0, 10);
-            if (topByCount.length) {
-                chartInstances['users-top-chart'] = new Chart(document.getElementById('users-top-chart'), {
+            const uTopFO = topByCount.length ? document.getElementById('users-top-chart') : null;
+            if (uTopFO) {
+                chartInstances['users-top-chart'] = new Chart(uTopFO, {
                     type: 'bar', data: { labels: topByCount.map(o=>o.owner||'Bilinmiyor'), datasets: [{ label: 'Dosya Sayisi', data: topByCount.map(o=>o.file_count||0), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
                     options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
                 });
             }
 
             // Heatmap: empty
-            document.getElementById('users-heatmap').innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:12px">Event log verisi yok - heatmap kullanilamiyor</div>';
+            _setHtmlSafe('users-heatmap', '<div style="padding:20px;color:var(--text-muted);font-size:12px">Event log verisi yok - heatmap kullanilamiyor</div>');
 
             // Owner table with drill-down + archive button
             const srcSelect = document.getElementById('freq-source') || document.getElementById('types-source') || document.getElementById('overview-source');
             const defaultSid = srcSelect ? srcSelect.value : (sources.length ? sources[0].id : '');
-            document.getElementById('users-table').innerHTML = `
+            _setHtmlSafe('users-table', `
                 <thead><tr><th>Sahip</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Yuzde</th><th>Islem</th></tr></thead>
                 <tbody>${owners.length ? owners.map(o => {
                     const pct = totalSize > 0 ? ((o.total_size||0)/totalSize*100).toFixed(1) : '0';
@@ -4374,46 +4395,53 @@ async function loadUsers() {
                         <td style="display:flex;gap:4px"><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();drilldownOwner('${ownerEsc}', '${defaultSid}')">Dosyalar</button><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();showDrilldown('Arsivle: ${ownerEsc}', '/drilldown/owner/${defaultSid}?owner=${encodeURIComponent(o.owner||'')}', {source_id:${parseInt(defaultSid)||0}, filter_type:'owner', owner:'${ownerEsc}'})">Arsivle</button></td>
                     </tr>`;
                 }).join('') : '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Sahiplik verisi bulunamadi. config.yaml dosyasinda read_owner: true yapin.</td></tr>'}</tbody>
-            `;
+            `);
         } else {
             // Normal: event log data available
             const topUsers = data.top_users || [];
 
-            document.getElementById('user-cards').innerHTML = `
+            _setHtmlSafe('user-cards', `
                 <div class="card accent"><div class="card-label">Aktif Kullanici</div><div class="card-value">${topUsers.length}</div></div>
-            `;
+            `);
 
             destroyChart('users-donut-chart');
             destroyChart('users-top-chart');
             if (topUsers.length) {
                 // Donut by access count
-                chartInstances['users-donut-chart'] = new Chart(document.getElementById('users-donut-chart'), {
-                    type: 'doughnut', data: { labels: topUsers.slice(0,8).map(u=>u.username), datasets: [{ data: topUsers.slice(0,8).map(u=>u.access_count||u.count||0), backgroundColor: COLORS.slice(0,8), borderWidth: 0 }] },
-                    options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } } } }
-                });
-                chartInstances['users-top-chart'] = new Chart(document.getElementById('users-top-chart'), {
-                    type: 'bar', data: { labels: topUsers.slice(0,10).map(u=>u.username), datasets: [{ label: 'Erisim', data: topUsers.slice(0,10).map(u=>u.access_count||u.count||0), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
-                    options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
-                });
+                const uDonutEL = document.getElementById('users-donut-chart');
+                if (uDonutEL) {
+                    chartInstances['users-donut-chart'] = new Chart(uDonutEL, {
+                        type: 'doughnut', data: { labels: topUsers.slice(0,8).map(u=>u.username), datasets: [{ data: topUsers.slice(0,8).map(u=>u.access_count||u.count||0), backgroundColor: COLORS.slice(0,8), borderWidth: 0 }] },
+                        options: { responsive: true, cutout: '60%', plugins: { legend: { position: 'right', labels: { boxWidth: 10, padding: 6, font: { size: 11 } } } } }
+                    });
+                }
+                const uTopEL = document.getElementById('users-top-chart');
+                if (uTopEL) {
+                    chartInstances['users-top-chart'] = new Chart(uTopEL, {
+                        type: 'bar', data: { labels: topUsers.slice(0,10).map(u=>u.username), datasets: [{ label: 'Erisim', data: topUsers.slice(0,10).map(u=>u.access_count||u.count||0), backgroundColor: COLORS.map(c=>c+'99'), borderColor: COLORS, borderWidth: 1, borderRadius: 4 }] },
+                        options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, grid: { color: '#1e293b' } }, y: { grid: { display: false } } } }
+                    });
+                }
             }
 
             const heatData = data.heatmap || await api('/users/heatmap', { silent: true }).catch(()=>({matrix:[], days:[], max_value:1}));
             renderHeatmap(heatData);
 
-            document.getElementById('users-table').innerHTML = `
+            _setHtmlSafe('users-table', `
                 <thead><tr><th>Kullanici</th><th>Erisim</th><th>Islem</th></tr></thead>
                 <tbody>${topUsers.slice(0,20).map(u => { const userEsc = escapeHtml(u.username||''); return `<tr><td><strong>${userEsc}</strong></td><td>${formatNum(u.access_count||u.count||0)}</td>
                     <td style="display:flex;gap:4px">
                         <button class="btn btn-sm btn-outline" onclick="loadUserDetail('${userEsc}')">Detay</button>
                         <button class="btn btn-sm btn-outline" style="border-color:var(--accent);color:var(--accent)" onclick="loadUserEfficiency('${userEsc}')">Verimlilik</button>
                     </td></tr>`; }).join('')}</tbody>
-            `;
+            `);
         }
     } catch(e) { console.error(e); }
 }
 
 function renderHeatmap(data) {
     const el = document.getElementById('users-heatmap');
+    if (!el) return;
     if (!data || !data.matrix || !data.matrix.length) { el.innerHTML = '<div style="padding:20px;color:var(--text-muted);font-size:12px">Heatmap verisi yok</div>'; return; }
     const days = data.days || ['Pzt','Sal','Car','Per','Cum','Cmt','Paz'];
     const max = data.max_value || 1;
@@ -4582,19 +4610,19 @@ async function loadAnomalies() {
             const naming = anom.naming || 0;
             const extension = anom.extension || 0;
             const ransomware = anom.ransomware || 0;
-            document.getElementById('anomaly-cards').innerHTML = `
+            _setHtmlSafe('anomaly-cards', `
                 <div class="card danger"><div class="card-label">Adlandirma</div><div class="card-value">${formatNum(naming)}</div><div class="card-sub">Kismi veri</div></div>
                 <div class="card warning"><div class="card-label">Uzanti Anomalisi</div><div class="card-value">${formatNum(extension)}</div><div class="card-sub">Kismi veri</div></div>
                 <div class="card accent"><div class="card-label">Ransomware Belirtisi</div><div class="card-value">${formatNum(ransomware)}</div><div class="card-sub">Kismi veri</div></div>
-            `;
-            document.getElementById('anomaly-table').innerHTML = `
+            `);
+            _setHtmlSafe('anomaly-table', `
                 <thead><tr><th>Tur</th><th>Sayim</th><th>Not</th></tr></thead>
                 <tbody>
                     <tr><td>Adlandirma</td><td>${formatNum(naming)}</td><td style="color:var(--text-muted)">Tarama tamamlandiktan sonra detay goruntulenecek</td></tr>
                     <tr><td>Uzanti Anomalisi</td><td>${formatNum(extension)}</td><td style="color:var(--text-muted)">Tarama tamamlandiktan sonra detay goruntulenecek</td></tr>
                     <tr><td>Ransomware Belirtisi</td><td>${formatNum(ransomware)}</td><td style="color:var(--text-muted)">Tarama tamamlandiktan sonra detay goruntulenecek</td></tr>
                 </tbody>
-            `;
+            `);
             _psv2StartPoll(psSid, 'anomalies', loadAnomalies);
             return;
         }
@@ -4612,22 +4640,24 @@ async function loadAnomalies() {
         const alerts = Array.isArray(data) ? data : [];
 
         const badge = document.getElementById('anomaly-badge');
-        if (alerts.length > 0) { badge.style.display = 'inline'; badge.textContent = alerts.length; }
-        else { badge.style.display = 'none'; }
+        if (badge) {
+            if (alerts.length > 0) { badge.style.display = 'inline'; badge.textContent = alerts.length; }
+            else { badge.style.display = 'none'; }
+        }
 
         const crit = alerts.filter(a => a.severity === 'critical').length;
         const warn = alerts.filter(a => a.severity === 'warning').length;
 
-        document.getElementById('anomaly-cards').innerHTML = `
+        _setHtmlSafe('anomaly-cards', `
             <div class="card danger"><div class="card-label">Kritik</div><div class="card-value">${crit}</div></div>
             <div class="card warning"><div class="card-label">Uyari</div><div class="card-value">${warn}</div></div>
             <div class="card accent"><div class="card-label">Toplam</div><div class="card-value">${alerts.length}</div></div>
-        `;
+        `);
 
-        document.getElementById('anomaly-table').innerHTML = `
+        _setHtmlSafe('anomaly-table', `
             <thead><tr><th>Tur</th><th>Ciddiyet</th><th>Kullanici</th><th>Aciklama</th></tr></thead>
             <tbody>${alerts.length ? alerts.map(a => `<tr><td>${escapeHtml(a.alert_type||a.type||'')}</td><td><span class="badge badge-${a.severity==='critical'?'danger':'warning'}">${escapeHtml(a.severity||'')}</span></td><td>${escapeHtml(a.username||'-')}</td><td>${escapeHtml(a.description||'')}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-muted)">Anomali bulunamadi ✅</td></tr>'}</tbody>
-        `;
+        `);
     } catch(e) { console.error(e); }
 }
 
@@ -4637,39 +4667,41 @@ async function loadAnomalies() {
 async function loadArchive() {
     try {
         const stats = await api('/archive/stats', { silent: true });
-        document.getElementById('archive-cards').innerHTML = `
+        _setHtmlSafe('archive-cards', `
             <div class="card accent"><div class="card-label">Arsivlenen</div><div class="card-value">${formatNum(stats.total_archived)}</div></div>
             <div class="card success"><div class="card-label">Su An Arsivde</div><div class="card-value">${formatNum(stats.currently_archived)}</div></div>
             <div class="card warning"><div class="card-label">Geri Yuklenen</div><div class="card-value">${formatNum(stats.total_restored)}</div></div>
             <div class="card purple"><div class="card-label">Arsiv Boyutu</div><div class="card-value">${formatSize(stats.archived_size)}</div></div>
-        `;
+        `);
     } catch(e) {}
 
     // Islem gecmisi yukle
     try {
         const ops = await api('/archive/operations', { silent: true });
         const opTable = document.getElementById('archive-operations-table');
-        if (ops && ops.length) {
-            const statusBadge = (s) => {
-                const colors = { completed: 'badge-success', running: 'badge-info', failed: 'badge-danger', partial: 'badge-warning' };
-                return `<span class="badge ${colors[s]||'badge-info'}">${s}</span>`;
-            };
-            const typeBadge = (t) => t === 'archive' ? '<span class="badge badge-accent">Arsiv</span>' : '<span class="badge badge-success">Geri Yukleme</span>';
-            opTable.innerHTML = `
-                <thead><tr><th>ID</th><th>Tarih</th><th>Tur</th><th>Tetikleyen</th><th>Dosya</th><th>Boyut</th><th>Durum</th><th>Islem</th></tr></thead>
-                <tbody>${ops.map(o => `<tr style="cursor:pointer" onclick="showOperationDetail(${o.id})">
-                    <td>${o.id}</td>
-                    <td>${(o.started_at||'').substring(0,19)}</td>
-                    <td>${typeBadge(o.operation_type)}</td>
-                    <td><span style="font-size:11px">${o.trigger_type||'-'} ${o.trigger_detail ? '('+o.trigger_detail+')' : ''}</span></td>
-                    <td>${formatNum(o.total_files)}</td>
-                    <td>${formatSize(o.total_size)}</td>
-                    <td>${statusBadge(o.status)}</td>
-                    <td>${o.operation_type==='archive' && o.status==='completed' ? `<button class="btn btn-sm btn-success" onclick="event.stopPropagation();restoreByOperation(${o.id})">Geri Yukle</button>` : ''}</td>
-                </tr>`).join('')}</tbody>
-            `;
-        } else {
-            opTable.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:12px">Henuz arsiv islemi yapilmamis</div>';
+        if (opTable) {
+            if (ops && ops.length) {
+                const statusBadge = (s) => {
+                    const colors = { completed: 'badge-success', running: 'badge-info', failed: 'badge-danger', partial: 'badge-warning' };
+                    return `<span class="badge ${colors[s]||'badge-info'}">${s}</span>`;
+                };
+                const typeBadge = (t) => t === 'archive' ? '<span class="badge badge-accent">Arsiv</span>' : '<span class="badge badge-success">Geri Yukleme</span>';
+                opTable.innerHTML = `
+                    <thead><tr><th>ID</th><th>Tarih</th><th>Tur</th><th>Tetikleyen</th><th>Dosya</th><th>Boyut</th><th>Durum</th><th>Islem</th></tr></thead>
+                    <tbody>${ops.map(o => `<tr style="cursor:pointer" onclick="showOperationDetail(${o.id})">
+                        <td>${o.id}</td>
+                        <td>${(o.started_at||'').substring(0,19)}</td>
+                        <td>${typeBadge(o.operation_type)}</td>
+                        <td><span style="font-size:11px">${o.trigger_type||'-'} ${o.trigger_detail ? '('+o.trigger_detail+')' : ''}</span></td>
+                        <td>${formatNum(o.total_files)}</td>
+                        <td>${formatSize(o.total_size)}</td>
+                        <td>${statusBadge(o.status)}</td>
+                        <td>${o.operation_type==='archive' && o.status==='completed' ? `<button class="btn btn-sm btn-success" onclick="event.stopPropagation();restoreByOperation(${o.id})">Geri Yukle</button>` : ''}</td>
+                    </tr>`).join('')}</tbody>
+                `;
+            } else {
+                opTable.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);font-size:12px">Henuz arsiv islemi yapilmamis</div>';
+            }
         }
     } catch(e) { console.error('Operations load error:', e); }
 }
