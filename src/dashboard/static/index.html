@@ -5287,7 +5287,7 @@ async function loadNaming() {
                         </td>
                         <td><span class="badge ${r.severity==='critical'?'badge-danger':r.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(r.severity||'')}</span></td>
                         <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(r.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
-                        <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(r.code)}', ${sourceId})">Dosyalari Gor</button></td>
+                        <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(r.code)}', ${Number(sourceId)||0})">Dosyalari Gor</button></td>
                     </tr>`).join('')}</tbody>
                 `;
             } else {
@@ -5316,7 +5316,7 @@ async function loadNaming() {
                         </td>
                         <td><span class="badge ${b.severity==='warning'?'badge-warning':'badge-info'}">${escapeHtml(b.severity||'')}</span></td>
                         <td style="font-size:11px;color:var(--text-muted);max-width:250px;word-break:break-word">${(b.samples||[]).slice(0,3).map(escapeHtml).join('<br>')}</td>
-                        <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(b.code)}', ${sourceId})">Dosyalari Gor</button></td>
+                        <td><button class="btn btn-sm btn-outline" onclick="showNamingFiles('${escapeHtml(b.code)}', ${Number(sourceId)||0})">Dosyalari Gor</button></td>
                     </tr>`).join('')}</tbody>
                 `;
             } else {
