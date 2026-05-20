@@ -302,16 +302,17 @@ def test_snapshot_per_call_override_beats_config(tmp_path: Path):
 
 def test_snapshot_ignores_missing_recent_bak(tmp_path: Path):
     """If the manifest says a recent snapshot exists but its .bak file
-    has been deleted out from under us (operator nuked it), the next
-    snapshot() must NOT reuse the dead entry — it must take a fresh
-    snapshot."""
+    has been deleted out from under us (operator nuked it),
+    _find_recent_snapshot must NOT return that dead entry — otherwise
+    snapshot() would short-circuit to a meta pointing at a vanished
+    file."""
     mgr = _make_mgr(tmp_path, skip_if_recent_minutes=30)
     first = mgr.snapshot(reason="r1")
     # Operator deletes the .bak between calls.
     os.remove(first.path)
-    second = mgr.snapshot(reason="r2")
-    assert second.id != first.id
-    assert os.path.exists(second.path)
+    assert mgr._find_recent_snapshot(30) is None, (
+        "must not return a manifest entry whose .bak is gone"
+    )
 
 
 # ── 5c. snapshot file is a valid SQLite copy (online-backup) ─

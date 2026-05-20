@@ -406,7 +406,7 @@ class BackupManager:
             )
             try:
                 quoted = out_path.replace("'", "''")
-                # CODEQL-SAFE: out_path is built from config + timestamp, never user input.
+                # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
                 src.execute(f"VACUUM INTO '{quoted}'")
             except sqlite3.Error:
                 raise
