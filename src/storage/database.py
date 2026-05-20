@@ -612,6 +612,12 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_ext ON scanned_files(source_id, scan_id, extension)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_size ON scanned_files(source_id, scan_id, file_size)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_src_scan_owner ON scanned_files(source_id, scan_id, owner)")
+        # Issue #194 Wave 6 — composite (scan_id, file_path) supports the
+        # size-enrich UPDATE WHERE clause. Without it each of the 600+
+        # chunks per 3M-file scan does a partial scan within idx_sf_scan
+        # → O(N) per row → 30+ minute enrich pass. With this index the
+        # UPDATE is O(log N) and enrich completes in seconds.
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_scan_path ON scanned_files(scan_id, file_path)")
 
         # Arsivlenmis dosyalar
         cur.execute("""
@@ -1329,14 +1335,56 @@ class Database:
         # the last in-flight value but updated_at moves so dashboard stops
         # polling.
         final_phase = "completed" if status == "completed" else status
-        with self.get_cursor() as cur:
-            cur.execute("""
+
+        # Issue #194 Wave 6 — cross-check the caller's in-memory counter
+        # against SELECT COUNT(*). The caller (file_scanner.scan_source)
+        # increments file_count per record yielded by the walker; if the
+        # stager or bulk_insert_scanned_files lost rows (silent retry
+        # exhaustion, executemany partial failure), counter > rows. In
+        # the reverse direction, if a second scan interleaves on the
+        # same scan_id (shouldn't happen, but the schema allows it),
+        # counter < rows. Either way the SELECT is the source of truth
+        # for what the dashboard will subsequently render.
+        try:
+            with self.get_read_cursor() as cur:
+                row = cur.execute(
+                    "SELECT COUNT(*) AS c, COALESCE(SUM(file_size),0) AS s "
+                    "FROM scanned_files WHERE scan_id=?",
+                    (scan_id,),
+                ).fetchone()
+            actual_files = int(row["c"]) if row else 0
+            actual_size = int(row["s"]) if row else 0
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("complete_scan_run COUNT cross-check failed: %s", e)
+            actual_files = total_files
+            actual_size = total_size
+
+        if actual_files != int(total_files):
+            logger.warning(
+                "complete_scan_run scan_id=%d: in-memory counter=%d but "
+                "SELECT COUNT(*) returned %d — using SELECT value",
+                scan_id, int(total_files), actual_files,
+            )
+            total_files = actual_files
+        if actual_size != int(total_size):
+            logger.warning(
+                "complete_scan_run scan_id=%d: in-memory size=%d but "
+                "SELECT SUM(file_size) returned %d — using SELECT value",
+                scan_id, int(total_size), actual_size,
+            )
+            total_size = actual_size
+
+        self._execute_write_with_retry(
+            "complete_scan_run",
+            """
                 UPDATE scan_runs
                 SET completed_at = datetime('now','localtime'), total_files = ?,
                     total_size = ?, errors = ?, status = ?,
                     current_phase = ?, updated_at = datetime('now','localtime')
                 WHERE id = ?
-            """, (total_files, total_size, errors, status, final_phase, scan_id))
+            """,
+            (total_files, total_size, errors, status, final_phase, scan_id),
+        )
 
     def get_scan_runs(self, source_id: Optional[int] = None, limit: int = 20) -> list:
         with self.get_cursor() as cur:
@@ -1445,6 +1493,43 @@ class Database:
         logger.error(
             "bulk_insert_scanned_files exhausted retries (5x): %s", last_err,
         )
+        if last_err is not None:
+            raise last_err
+
+    def _execute_write_with_retry(
+        self, label: str, sql: str, params: tuple
+    ) -> None:
+        """Issue #194 Wave 6 — run a single write statement with the same
+        5x exponential backoff that bulk_insert_scanned_files uses. Used
+        by compute_scan_summary's UPDATE and complete_scan_run's UPDATE
+        so a transient writer-lock contention doesn't lose the summary
+        row or leave scan_runs in a dangling state.
+        """
+        backoff = 1.0
+        last_err: Optional[Exception] = None
+        for attempt in range(1, 6):
+            try:
+                with self.get_cursor() as cur:
+                    cur.execute(sql, params)
+                if attempt > 1:
+                    logger.info(
+                        "%s succeeded on attempt %d (after %d retries)",
+                        label, attempt, attempt - 1,
+                    )
+                return
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "database is locked" not in msg and "busy" not in msg:
+                    raise
+                last_err = e
+                if attempt < 5:
+                    logger.warning(
+                        "%s locked (attempt %d/5), retry in %.1fs: %s",
+                        label, attempt, backoff, e,
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
+        logger.error("%s exhausted retries (5x): %s", label, last_err)
         if last_err is not None:
             raise last_err
 
@@ -3133,7 +3218,17 @@ class Database:
         # En ustu "huge" acik ust sinir
         size_bucket_defs.append(("huge", prev_max, None))
 
-        with self.get_cursor() as cur:
+        # Issue #194 Wave 6 — read all 10 aggregates against a single
+        # consistent snapshot via the read-only pool with an explicit
+        # BEGIN. Two wins: (1) the writer pool slot is not held for the
+        # full read sequence, so a concurrent scanner's bulk inserts
+        # proceed in parallel; (2) the SELECTs all see the same point-
+        # in-time row set — without BEGIN, sqlite3's default deferred
+        # isolation means each statement opens its own implicit
+        # transaction and the 10 reads can see different snapshots
+        # (audit C1-2 root cause for "total_files=0 with risky_count>0").
+        with self.get_read_cursor() as cur:
+            cur.execute("BEGIN")
             # Temel sayim
             row = cur.execute(
                 "SELECT COUNT(*) c, COALESCE(SUM(file_size),0) s, "
@@ -3367,12 +3462,17 @@ class Database:
             # Versiyon isareti — backfill bu anahtara bakar
             summary["summary_json_version"] = 2
 
-            # Kaydet (kompakt JSON, ensure_ascii=False)
-            now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
-            cur.execute(
-                "UPDATE scan_runs SET summary_json=?, summary_computed_at=? WHERE id=?",
-                (json.dumps(summary, ensure_ascii=False, separators=(",", ":")), now, scan_id),
-            )
+        # Persist via the writer pool with the same 5x backoff retry as
+        # bulk_insert_scanned_files. The previous in-block UPDATE had no
+        # retry — a transient "database is locked" during a heavy scan
+        # would silently lose summary_json for that scan (audit C1-3).
+        now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        payload = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+        self._execute_write_with_retry(
+            "compute_scan_summary.UPDATE",
+            "UPDATE scan_runs SET summary_json=?, summary_computed_at=? WHERE id=?",
+            (payload, now, scan_id),
+        )
 
         summary["scan_id"] = scan_id
         summary["computed_at"] = now

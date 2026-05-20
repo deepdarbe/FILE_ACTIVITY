@@ -182,9 +182,9 @@ git log --oneline "$localHash..$remoteHash" 2>&1 | ForEach-Object {
 
 # 7. Servisi/dashboard'u durdur
 Write-Log "Dashboard durduruluyor..." "INFO"
-$service = Get-Service -Name "FileActivityService" -ErrorAction SilentlyContinue
+$service = Get-Service -Name "FileActivity" -ErrorAction SilentlyContinue
 if ($service -and $service.Status -eq "Running") {
-    Stop-Service "FileActivityService" -Force -ErrorAction SilentlyContinue
+    Stop-Service "FileActivity" -Force -ErrorAction SilentlyContinue
     Write-Log "Servis durduruldu" "OK"
     $wasService = $true
 } else {
@@ -233,7 +233,7 @@ if ($Mode -eq "exe") {
 # 11. Servisi/dashboard'u yeniden baslat
 Write-Log "Dashboard baslatiliyor..." "INFO"
 if ($wasService) {
-    Start-Service "FileActivityService" -ErrorAction SilentlyContinue
+    Start-Service "FileActivity" -ErrorAction SilentlyContinue
     Write-Log "Servis yeniden baslatildi" "OK"
 } else {
     if ($Mode -eq "source") {

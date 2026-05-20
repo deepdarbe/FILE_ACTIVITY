@@ -376,6 +376,31 @@ try {
 Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
 
+# --- Config migration (issue #194 Wave 8 / D7) ---
+# setup-source.ps1 preserves the customer's config.yaml across updates so
+# operator customisations survive. But that means any new safe-default we
+# ship (e.g. parquet_staging.enabled: false from PR #174) never reaches
+# the customer's machine — they keep running the old unsafe value.
+# scripts/migrate_config.py flips ONLY keys whose current value matches
+# the documented pre-flip default; any operator-chosen value is left
+# alone. Backup is mandatory before any write.
+$migratorPy   = Join-Path $InstallDir 'scripts\migrate_config.py'
+$customerCfg  = Join-Path $InstallDir 'config\config.yaml'
+if ((Test-Path $migratorPy) -and (Test-Path $customerCfg) -and (Test-Path $venvPy)) {
+    Write-Host ""
+    Write-Host "Config flag-rot migrator (PR #194 / D7)..." -ForegroundColor Yellow
+    try {
+        & $venvPy $migratorPy $customerCfg
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [OK] config migrator basarili" -ForegroundColor Green
+        } else {
+            Write-Host "  [UYARI] config migrator hata kodu $LASTEXITCODE — kontrol edin: $InstallDir\logs\" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  [UYARI] config migrator calistirilamadi: $_" -ForegroundColor Yellow
+    }
+}
+
 # --- Ozet ---
 Write-Host ""
 Write-Host "  +==========================================+" -ForegroundColor Green

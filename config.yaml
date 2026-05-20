@@ -379,27 +379,6 @@ compliance:
     patterns: {}               # extend DEFAULT_PATTERNS
   retention:
     enabled: false
-
-audit:
-  # Tamper-evident hash-chained audit log (issue #38).
-  # When chain_enabled=true, every audit event written via the
-  # chained variant also appends a row to audit_log_chain whose
-  # row_hash = SHA-256(seq | event_id | prev_hash | canonical(event)).
-  # Verification (GET /api/audit/verify) re-hashes the chain and
-  # detects any retroactive tampering of file_audit_events rows.
-  # Default: false (opt-in, no behaviour change).
-  chain_enabled: false
-  # WORM-storable JSONL exports — point this at a path you can later
-  # promote to write-once storage (S3 Object Lock / Azure Immutable /
-  # ZFS snapshot). Each export = one .jsonl file + optional .sig.
-  worm_export_dir: "data/audit_export"
-  # 7 years for HIPAA-style §164.312(b) audit-control retention.
-  worm_retention_days: 2555
-  # Optional Ed25519 PEM (or raw 32-byte) private key for detached
-  # signatures over the export's SHA-256. Empty = no signing.
-  signing_key_path: ""
-
-compliance:
   # Legal hold registry (issue #59). Glob-tabanli yol donduruculer
   # arsiv / retention / cleanup adimlarinda eslesen yollari atlatir.
   # Hold'lar silinemez — sadece release edilebilir; tum add/release
@@ -423,6 +402,25 @@ compliance:
     # DCAT catalog. Override with an SPDX URL when distributing the
     # catalog externally.
     license_uri: "internal-use"
+
+audit:
+  # Tamper-evident hash-chained audit log (issue #38).
+  # When chain_enabled=true, every audit event written via the
+  # chained variant also appends a row to audit_log_chain whose
+  # row_hash = SHA-256(seq | event_id | prev_hash | canonical(event)).
+  # Verification (GET /api/audit/verify) re-hashes the chain and
+  # detects any retroactive tampering of file_audit_events rows.
+  # Default: false (opt-in, no behaviour change).
+  chain_enabled: false
+  # WORM-storable JSONL exports — point this at a path you can later
+  # promote to write-once storage (S3 Object Lock / Azure Immutable /
+  # ZFS snapshot). Each export = one .jsonl file + optional .sig.
+  worm_export_dir: "data/audit_export"
+  # 7 years for HIPAA-style §164.312(b) audit-control retention.
+  worm_retention_days: 2555
+  # Optional Ed25519 PEM (or raw 32-byte) private key for detached
+  # signatures over the export's SHA-256. Empty = no signing.
+  signing_key_path: ""
 
 approvals:
   # Two-person approval framework (issue #112). Phase 1 wires the

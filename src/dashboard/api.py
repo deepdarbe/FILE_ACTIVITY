@@ -790,6 +790,28 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "reason": reason,
         }
 
+    def _is_summary_stale(scan_id: int, kpi: Optional[dict]) -> bool:
+        """Issue #194 — cached summary_json went stale when computed
+        before _run_size_enrich landed (scanner ordering bug, fixed in
+        the same wave). A scan_runs row with total_files>0 but a kpi
+        with total_files==0 is the signature. PR #199 added this check
+        inline at /api/risk-score only; this helper extends it to every
+        cached-read site (overview, dashboard_init).
+        """
+        if not kpi:
+            return False
+        if (kpi.get("total_files") or 0) > 0:
+            return False
+        try:
+            with db.get_read_cursor() as _cur:
+                _row = _cur.execute(
+                    "SELECT total_files FROM scan_runs WHERE id=?",
+                    (scan_id,),
+                ).fetchone()
+        except Exception:
+            return False
+        return bool(_row and (_row["total_files"] or 0) > 0)
+
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -842,7 +864,10 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     file_count = scan["total_files"] or 0
                     total_size = scan["total_size"] or 0
 
-                    # 2) FALLBACK: total_files=0 ama dosyalar var olabilir
+                    # 2) FALLBACK: total_files=0 ama dosyalar var olabilir.
+                    # Skip the UPDATE when a scan is running for this source
+                    # so the dashboard load doesn't contend with the scanner's
+                    # bulk inserts on the writer pool (backend audit Class 8).
                     if file_count == 0:
                         cur.execute("""
                             SELECT COUNT(*) as cnt, COALESCE(SUM(file_size),0) as sz
@@ -852,16 +877,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                         if real["cnt"] > 0:
                             file_count = real["cnt"]
                             total_size = real["sz"]
-                            # scan_runs'i da guncelle (bir dahaki sefere hizli gelsin)
-                            cur.execute("""
-                                UPDATE scan_runs SET total_files=?, total_size=?
-                                WHERE id=? AND total_files=0
-                            """, (file_count, total_size, scan["id"]))
+                            if db.is_scan_running(s.id) is None:
+                                cur.execute("""
+                                    UPDATE scan_runs SET total_files=?, total_size=?
+                                    WHERE id=? AND total_files=0
+                                """, (file_count, total_size, scan["id"]))
 
-                    # Pre-computed KPI summary (scan tamamlanirken
-                    # yazilmisti). Varsa Overview bu satirdan render eder,
-                    # scanned_files tablosuna hic dokunmaz.
+                    # Pre-computed KPI summary. If the cache is stale
+                    # (total_files==0 while scan_runs has real totals),
+                    # surface None so the frontend falls through to the
+                    # live path — same self-heal pattern as risk-score.
                     kpi = db.get_scan_summary(scan["id"])
+                    if _is_summary_stale(scan["id"], kpi):
+                        kpi = None
 
                     summaries[s.id] = {
                         "has_data": file_count > 0,
@@ -876,7 +904,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                         },
                         "kpi": kpi,  # None ise frontend eski yola duser
                     }
-            except Exception:
+            except Exception as e:
+                logger.warning("dashboard_init source %d failed: %s", s.id, e)
                 summaries[s.id] = {"has_data": False, "scan_id": None}
 
         return {
@@ -891,6 +920,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         s = Source(name=data.name, unc_path=data.unc_path, archive_dest=data.archive_dest)
         try:
             sid = db.add_source(s)
+            try:
+                db.insert_audit_event_simple(
+                    source_id=sid, event_type="source_created", username="admin",
+                    file_path=None,
+                    details=f"name={data.name};unc_path={data.unc_path}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for source_created: %s", e)
             return {"id": sid, "message": f"Kaynak eklendi: {data.name}"}
         except Exception as e:
             raise HTTPException(400, str(e))
@@ -899,6 +936,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     async def remove_source(source_id: int):
         src = _get_source(db, source_id)
         if db.remove_source(src.name):
+            try:
+                db.insert_audit_event_simple(
+                    source_id=source_id, event_type="source_deleted", username="admin",
+                    file_path=None,
+                    details=f"name={src.name};unc_path={src.unc_path}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for source_deleted: %s", e)
             return {"message": f"Kaynak silindi: {src.name}"}
         raise HTTPException(500, "Silme basarisiz")
 
@@ -1509,6 +1554,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
         pol = ArchivePolicy(name=data.name, source_id=data.source_id, rules_json=rules)
         pid = db.add_policy(pol)
+        try:
+            db.insert_audit_event_simple(
+                source_id=data.source_id, event_type="policy_created", username="admin",
+                file_path=None,
+                details=f"policy_id={pid};name={data.name}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for policy_created: %s", e)
         return {"id": pid, "message": f"Politika olusturuldu: {data.name}"}
 
     @app.delete("/api/policies/{policy_id}")
@@ -1517,6 +1570,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not pol:
             raise HTTPException(404, "Politika bulunamadi")
         if db.remove_policy(pol["name"]):
+            try:
+                db.insert_audit_event_simple(
+                    source_id=pol.get("source_id"), event_type="policy_deleted",
+                    username="admin", file_path=None,
+                    details=f"policy_id={policy_id};name={pol['name']}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for policy_deleted: %s", e)
             return {"message": f"Politika silindi: {pol['name']}"}
         raise HTTPException(500, "Silme basarisiz")
 
@@ -1549,11 +1610,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             policy_id=policy_id, cron_expression=data.cron_expression
         )
         tid = db.add_scheduled_task(task)
+        try:
+            db.insert_audit_event_simple(
+                source_id=source_id_val, event_type="schedule_created", username="admin",
+                file_path=None,
+                details=f"task_id={tid};type={data.task_type};cron={data.cron_expression}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for schedule_created: %s", e)
         return {"id": tid, "message": "Zamanlanmis gorev olusturuldu"}
 
     @app.delete("/api/schedules/{task_id}")
     async def remove_schedule(task_id: int):
         if db.remove_scheduled_task(task_id):
+            try:
+                db.insert_audit_event_simple(
+                    source_id=None, event_type="schedule_deleted", username="admin",
+                    file_path=None, details=f"task_id={task_id}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for schedule_deleted: %s", e)
             return {"message": "Gorev silindi"}
         raise HTTPException(404, "Gorev bulunamadi")
 
@@ -1931,6 +2007,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.post("/api/anomalies/{anomaly_id}/acknowledge")
     async def acknowledge_anomaly(anomaly_id: int, by_user: str = "admin"):
         db.acknowledge_anomaly(anomaly_id, by_user)
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="anomaly_acknowledged", username=by_user,
+                file_path=None, details=f"anomaly_id={anomaly_id}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for anomaly_acknowledged: %s", e)
         return {"message": "Anomali onaylandi"}
 
     # --- FILE WATCHER API ---
@@ -1952,6 +2035,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         watcher = FileWatcher(db, src.id, src.unc_path, interval,
                                 ransomware_detector=ransomware)
         watcher.start()
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="watcher_started", username="admin",
+                file_path=None, details=f"interval={watcher.interval}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for watcher_started: %s", e)
         return {"status": "started", "interval": watcher.interval}
 
     @app.post("/api/watcher/{source_id}/stop")
@@ -1959,6 +2049,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         from src.scanner.file_watcher import _watchers
         if source_id in _watchers:
             _watchers[source_id].stop()
+            try:
+                db.insert_audit_event_simple(
+                    source_id=source_id, event_type="watcher_stopped", username="admin",
+                    file_path=None, details=None,
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for watcher_stopped: %s", e)
             return {"status": "stopped"}
         return {"status": "not_running"}
 
@@ -2407,6 +2504,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if scan_id:
             kpi = db.get_scan_summary(scan_id)
+            if _is_summary_stale(scan_id, kpi):
+                kpi = None
             if kpi:
                 # Boyutlari formatla
                 kpi["total_size_formatted"] = format_size(kpi.get("total_size", 0))
@@ -2608,43 +2707,39 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/risk-score/{source_id}")
     async def risk_score(source_id: int):
-        """Supervisor risk score - TEK optimized sorgu (6 yerine 2)."""
-        scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        """Supervisor risk score - TEK optimized sorgu (6 yerine 2).
+
+        Issue #194 — fast-path response shape MUST match the live path
+        below: top-level risk_level/total_files/total_size, kpis with
+        stale_count/dup_groups names (not stale_files/duplicate_groups).
+        Genel Bakis frontend reads the live names; a drifted fast path
+        silently renders zero for stale_count, owner_count, dup_groups.
+
+        include_running=False matches /api/overview/{source_id} so both
+        endpoints on Genel Bakis reference the same scan_id (backend
+        audit Class 4).
+        """
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if not scan_id:
             return {"risk_score": 0, "kpis": {}}
 
-        # Hizli yol: pre-computed summary varsa oradan hesapla
         kpi = db.get_scan_summary(scan_id)
-        # Issue #194 update #5 — self-heal stale summary_json. Customer
-        # observed Genel Bakis showing TOPLAM DOSYA: 0 while scan_runs
-        # had real totals AND scanned_files clearly populated (Treemap +
-        # Dosya Turleri rendered correctly off the same scan_id). The
-        # cached summary_json was written at a partial moment and never
-        # refreshed. If summary's total_files==0 but the scan_runs row
-        # has non-zero total_files, the cache is stale — bypass it and
-        # fall through to the live SQL path below, which always tells
-        # the truth.
-        if kpi and (kpi.get("total_files") or 0) == 0:
-            with db.get_read_cursor() as _cur:
-                _row = _cur.execute(
-                    "SELECT total_files FROM scan_runs WHERE id=?",
-                    (scan_id,),
-                ).fetchone()
-            if _row and (_row["total_files"] or 0) > 0:
-                logger.info(
-                    "risk_score: summary_json shows total_files=0 but "
-                    "scan_runs.total_files=%d for scan_id=%d — "
-                    "treating cache as stale, falling through",
-                    _row["total_files"], scan_id,
-                )
-                kpi = None
+        if _is_summary_stale(scan_id, kpi):
+            kpi = None
         if kpi:
-            total = kpi.get("total_files", 0) or 1
-            risky = kpi.get("risky_count", 0)
-            stale = kpi.get("stale_count", 0)
-            dup_waste = kpi.get("duplicate_waste_size", 0)
-            total_size = kpi.get("total_size", 0) or 1
-            # Basit formul: risky % + stale % + (dup_waste / total_size) %
+            # NULL coercion: ``kpi.get(k, 0)`` only kicks in when the KEY
+            # is missing; SQLite NULL → Python None still flows through.
+            # Use ``or 0`` so arithmetic never crashes.
+            total = (kpi.get("total_files") or 0) or 1
+            total_size = (kpi.get("total_size") or 0) or 1
+            risky = kpi.get("risky_count") or 0
+            stale = kpi.get("stale_count") or 0
+            dup_waste = kpi.get("duplicate_waste_size") or 0
+            owner_count = kpi.get("owner_count") or 0
+            large_count = kpi.get("large_count") or 0
+            large_size = kpi.get("large_size") or 0
+            dup_groups = kpi.get("duplicate_groups") or 0
+            stale_size = kpi.get("stale_size") or 0
             score = int(min(100,
                 (risky / total) * 40 +
                 (stale / total) * 30 +
@@ -2652,15 +2747,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             ))
             return {
                 "risk_score": score,
+                "risk_level": "critical" if score >= 70 else "warning" if score >= 40 else "good",
+                "total_files": kpi.get("total_files") or 0,
+                "total_size": kpi.get("total_size") or 0,
                 "kpis": {
-                    "total_files": kpi.get("total_files"),
-                    "risky_files": risky,
-                    "stale_files": stale,
-                    "duplicate_groups": kpi.get("duplicate_groups"),
-                    "total_size": kpi.get("total_size"),
-                    "stale_size": kpi.get("stale_size"),
-                    "risky_pct": round(risky * 100 / total, 1),
                     "stale_pct": round(stale * 100 / total, 1),
+                    "stale_count": stale,
+                    "stale_size": stale_size,
+                    "risky_files": risky,
+                    "owner_count": owner_count,
+                    "large_files": large_count,
+                    "large_size": large_size,
+                    "dup_groups": dup_groups,
+                    "changes_24h": 0,
                 },
                 "source": "precomputed",
             }
@@ -3888,8 +3987,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.post("/api/system/open-folder")
     async def open_folder(request: Request):
         """Dizini Windows Explorer'da ac (yalnizca yerel istemci icin)."""
+        from src.security.dashboard_auth import resolve_effective_client_host
         body = await request.json()
-        client_host = (request.client.host if request.client else "")
+        client_host = resolve_effective_client_host(request)
         return open_folder_impl(body, client_host)
 
     @app.get("/api/system/list-dir")
@@ -3903,8 +4003,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         Bos ``path`` -> mantiksal kokleri dondurur (Windows surucu harfleri
         veya POSIX "/"). 5000 girisle sinirlanmis, 'dir'>'file' siralanmis.
         Uzaktan istemci icin 403; var olmayan yol icin 404.
+
+        Uses ``resolve_effective_client_host`` (honours X-Forwarded-For
+        when peer is loopback) so a reverse proxy on the same host
+        cannot turn every LAN request into a fake "localhost" call.
         """
-        client_host = (request.client.host if request.client else "")
+        from src.security.dashboard_auth import resolve_effective_client_host
+        client_host = resolve_effective_client_host(request)
         return list_dir_impl(path, client_host, show_hidden=show_hidden)
 
     @app.get("/api/system/health")
@@ -4254,6 +4359,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             cwd=os.path.dirname(update_cmd),
         )
         logger.info("Guncelleme tetiklendi: %s", update_cmd)
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="system_update_triggered", username="admin",
+                file_path=update_cmd, details="dashboard-initiated update.cmd",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for system_update_triggered: %s", e)
         return {
             "status": "started",
             "message": "Guncelleme baslatildi. 30-60 saniye sonra dashboard'u yenileyin.",
@@ -4684,6 +4796,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             )
             if cur.rowcount == 0:
                 raise HTTPException(404, f"Uyari bulunamadi (ID: {alert_id})")
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="ransomware_alert_acknowledged",
+                username=by_user, file_path=None, details=f"alert_id={alert_id}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for ransomware_alert_acknowledged: %s", e)
         return {"acknowledged": True, "id": alert_id, "by": by_user}
 
     @app.post("/api/security/ransomware/canaries/{source_id}/deploy")
@@ -4692,6 +4811,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         src = _get_source(db, source_id)
         det = _get_detector()
         placed = det.deploy_canaries(src.id, src.unc_path)
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="ransomware_canaries_deployed",
+                username="admin", file_path=src.unc_path,
+                details=f"placed={placed};names={sorted(det.canary_names)}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for ransomware_canaries_deployed: %s", e)
         return {
             "source_id": src.id,
             "share_root": src.unc_path,
@@ -5237,6 +5364,15 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 (by_user, f"-{int(since_minutes)}"),
             )
             rowcount = cur.rowcount or 0
+        try:
+            db.insert_audit_event_simple(
+                source_id=None,
+                event_type="ransomware_alerts_acknowledged_bulk",
+                username=by_user, file_path=None,
+                details=f"rows_updated={int(rowcount)};since_minutes={int(since_minutes)}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for ransomware bulk-ack: %s", e)
         return {
             "acknowledged": True,
             "rows_updated": int(rowcount),

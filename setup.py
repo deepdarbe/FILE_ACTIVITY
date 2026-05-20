@@ -1,10 +1,27 @@
 """FILE ACTIVITY - Setup script."""
 
+from pathlib import Path
+
 from setuptools import setup, find_packages
+
+
+def _read_version() -> str:
+    """Resolve the VERSION file content (single source of truth, also
+    read by main.py:_read_version_string at runtime). Falls back to
+    "0.0.0+unknown" if the file is missing so a malformed checkout
+    doesn't break `pip install -e .` — but in a normal source tree
+    the value is always the tagged release (e.g. "1.9.0-rc1").
+    """
+    vp = Path(__file__).parent / "VERSION"
+    try:
+        return vp.read_text(encoding="utf-8").strip() or "0.0.0+unknown"
+    except OSError:
+        return "0.0.0+unknown"
+
 
 setup(
     name="file-activity",
-    version="1.0.0",
+    version=_read_version(),
     description="Windows Dosya Paylaşım Analiz ve Arşivleme Sistemi",
     packages=find_packages(),
     include_package_data=True,

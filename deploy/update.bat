@@ -17,9 +17,9 @@ if errorlevel 1 (
 
 REM 1. Stop service if running
 echo [1/7] Stopping service...
-sc query FileActivityService >nul 2>&1
+sc query FileActivity >nul 2>&1
 if not errorlevel 1 (
-    net stop FileActivityService >nul 2>&1
+    net stop FileActivity >nul 2>&1
     echo   Service stopped.
     set SERVICE_EXISTS=1
 ) else (
@@ -77,7 +77,7 @@ copy /y "update.bat" "%INSTALL_DIR%\update.bat" >nul 2>&1
 REM 7. Restart service or dashboard
 echo [7/7] Starting...
 if "%SERVICE_EXISTS%"=="1" (
-    net start FileActivityService
+    net start FileActivity
     echo   Service restarted.
 ) else (
     echo   No service found. Start manually:
