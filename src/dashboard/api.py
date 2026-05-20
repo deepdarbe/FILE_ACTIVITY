@@ -641,7 +641,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         app.state.error_reporter = None
 
     @app.exception_handler(Exception)
-    async def _telemetry_exception_handler(request, exc):
+    def _telemetry_exception_handler(request, exc):
         reporter = getattr(app.state, "error_reporter", None)
         if reporter is not None:
             try:
@@ -819,7 +819,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- HTML Endpoint ---
 
     @app.get("/", response_class=HTMLResponse)
-    async def index():
+    def index():
         # Issue (post-#212) — "_setTextSafe: element not found: ov-*" warnings
         # in a customer's console with no source-side regression. The HTML and
         # the inline JS travel together, so a browser cache mismatch shouldn't
@@ -859,12 +859,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- SOURCE API (ID-based) ---
 
     @app.get("/api/sources")
-    async def get_sources():
+    def get_sources():
         sources = db.get_sources()
         return [s.__dict__ for s in sources]
 
     @app.get("/api/dashboard/init")
-    async def dashboard_init():
+    def dashboard_init():
         """Hizli baslangic - scan_runs + fallback scanned_files."""
         from src.utils.size_formatter import format_size
         sources = db.get_sources()
@@ -945,7 +945,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.post("/api/sources")
-    async def add_source(data: SourceCreate):
+    def add_source(data: SourceCreate):
         from src.storage.models import Source
         s = Source(name=data.name, unc_path=data.unc_path, archive_dest=data.archive_dest)
         try:
@@ -963,7 +963,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(400, str(e))
 
     @app.delete("/api/sources/{source_id}")
-    async def remove_source(source_id: int):
+    def remove_source(source_id: int):
         src = _get_source(db, source_id)
         if db.remove_source(src.name):
             try:
@@ -978,7 +978,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         raise HTTPException(500, "Silme basarisiz")
 
     @app.post("/api/sources/{source_id}/test")
-    async def test_source(source_id: int):
+    def test_source(source_id: int):
         from src.scanner.share_resolver import test_connectivity
         src = _get_source(db, source_id)
         ok, msg = test_connectivity(src.unc_path)
@@ -996,7 +996,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     _active_scanners: dict[int, "object"] = {}
 
     @app.post("/api/scan/{source_id}")
-    async def run_scan(source_id: int):
+    def run_scan(source_id: int):
         from src.scanner.file_scanner import (
             FileScanner,
             get_or_create_cancel_event,
@@ -1070,7 +1070,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"status": "started", "message": f"Tarama baslatildi: {src.name}"}
 
     @app.post("/api/scan/{source_id}/stop")
-    async def stop_scan(source_id: int):
+    def stop_scan(source_id: int):
         """Issue #131 — kullanici tetikli iptal.
 
         Resolves the active scan_run for ``source_id``, sets the shared
@@ -1197,7 +1197,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/scan/progress/{source_id}")
-    async def scan_progress(source_id: int):
+    def scan_progress(source_id: int):
         # Issue #135 — endpoint now exposes ``phase``,
         # ``phase_pct`` (best-effort), ``scan_id`` and ``total_size_bytes``
         # so the frontend can render a granular label
@@ -1285,7 +1285,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- COMPATIBILITY REPORT API ---
 
     @app.get("/api/scan/compatibility/{source_id}")
-    async def scan_compatibility(source_id: int):
+    def scan_compatibility(source_id: int):
         """Son taramanin dosya adi uyumluluk raporu."""
         result = _scan_results.get(source_id)
         if result and "compatibility" in result:
@@ -1300,7 +1300,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- REPORT API (ID-based) ---
 
     @app.get("/api/reports/status/{source_id}")
-    async def report_status(source_id: int):
+    def report_status(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
@@ -1328,7 +1328,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 logger.debug("ops.finish(%s) failed: %s", op_type, e)
 
     @app.get("/api/reports/frequency/{source_id}")
-    async def report_frequency(source_id: int, days: Optional[str] = None):
+    def report_frequency(source_id: int, days: Optional[str] = None):
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
@@ -1398,7 +1398,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/types/{source_id}")
-    async def report_types(source_id: int):
+    def report_types(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
@@ -1418,7 +1418,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/sizes/{source_id}")
-    async def report_sizes(source_id: int):
+    def report_sizes(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
@@ -1438,7 +1438,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/full/{source_id}")
-    async def report_full(source_id: int):
+    def report_full(source_id: int):
         """Issue #132: when no completed scan AND a scan is running,
         return the scan-in-progress banner shape rather than forcing
         ReportGenerator to compute over an empty/partial table.
@@ -1470,7 +1470,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- ARCHIVE API ---
 
     @app.post("/api/archive/run")
-    async def run_archive(data: ArchiveRequest):
+    def run_archive(data: ArchiveRequest):
         from src.archiver.archive_policy import ArchivePolicyEngine
         from src.archiver.archive_engine import ArchiveEngine
 
@@ -1525,7 +1525,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.post("/api/archive/dry-run")
-    async def archive_dry_run(data: ArchiveRequest):
+    def archive_dry_run(data: ArchiveRequest):
         from src.archiver.archive_policy import ArchivePolicyEngine
         from src.utils.size_formatter import format_size
 
@@ -1547,16 +1547,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/archive/search")
-    async def archive_search(q: str, extension: Optional[str] = None,
+    def archive_search(q: str, extension: Optional[str] = None,
                               page: int = Query(1, ge=1, le=10000)):
         return db.search_archived_files(q, extension=extension, page=page)
 
     @app.get("/api/archive/stats")
-    async def archive_stats():
+    def archive_stats():
         return db.get_archive_stats()
 
     @app.post("/api/archive/restore")
-    async def restore_file(data: RestoreRequest):
+    def restore_file(data: RestoreRequest):
         from src.archiver.restore_engine import RestoreEngine
         engine = RestoreEngine(db)
         if data.archive_id:
@@ -1568,11 +1568,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- POLICY API ---
 
     @app.get("/api/policies")
-    async def get_policies():
+    def get_policies():
         return db.get_policies()
 
     @app.post("/api/policies")
-    async def add_policy(data: PolicyCreate):
+    def add_policy(data: PolicyCreate):
         from src.archiver.archive_policy import ArchivePolicyEngine
         from src.storage.models import ArchivePolicy
 
@@ -1595,7 +1595,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"id": pid, "message": f"Politika olusturuldu: {data.name}"}
 
     @app.delete("/api/policies/{policy_id}")
-    async def remove_policy(policy_id: int):
+    def remove_policy(policy_id: int):
         pol = db.get_policy_by_id(policy_id)
         if not pol:
             raise HTTPException(404, "Politika bulunamadi")
@@ -1614,11 +1614,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- SCHEDULE API ---
 
     @app.get("/api/schedules")
-    async def get_schedules():
+    def get_schedules():
         return db.get_scheduled_tasks()
 
     @app.post("/api/schedules")
-    async def add_schedule(data: ScheduleCreate):
+    def add_schedule(data: ScheduleCreate):
         from src.storage.models import ScheduledTask
         # audit_export tasks are global — no source. Accept source_id=0
         # as the "ignored" sentinel; require a real source for everything else.
@@ -1651,7 +1651,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"id": tid, "message": "Zamanlanmis gorev olusturuldu"}
 
     @app.delete("/api/schedules/{task_id}")
-    async def remove_schedule(task_id: int):
+    def remove_schedule(task_id: int):
         if db.remove_scheduled_task(task_id):
             try:
                 db.insert_audit_event_simple(
@@ -1664,7 +1664,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         raise HTTPException(404, "Gorev bulunamadi")
 
     @app.post("/api/schedules/notify-users/run-now/{source_id}")
-    async def notify_users_run_now(source_id: int):
+    def notify_users_run_now(source_id: int):
         """notify_users gorevi zamanlayiciyi beklemeden hemen calistir.
 
         EmailNotifier ve ADLookup app.state'ten alinir; ikisi de yoksa
@@ -1682,7 +1682,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- REPORT EXPORT API ---
 
     @app.get("/api/reports/export/{source_id}")
-    async def report_export(source_id: int):
+    def report_export(source_id: int):
         """HTML rapor dosyasi olustur ve indir."""
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer.report_exporter import ReportExporter
@@ -1720,7 +1720,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return call
 
     @app.get("/api/drilldown/frequency/{source_id}")
-    async def drilldown_frequency(source_id: int, min_days: int = 0,
+    def drilldown_frequency(source_id: int, min_days: int = 0,
                                    max_days: Optional[int] = None,
                                    page: int = Query(1, ge=1, le=10000),
                                    limit: int = Query(100, ge=1, le=500)):
@@ -1736,7 +1736,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/drilldown/type/{source_id}")
-    async def drilldown_type(source_id: int, extension: str = "",
+    def drilldown_type(source_id: int, extension: str = "",
                               page: int = Query(1, ge=1, le=10000),
                               limit: int = Query(100, ge=1, le=500)):
         src = _get_source(db, source_id)
@@ -1751,7 +1751,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/drilldown/size/{source_id}")
-    async def drilldown_size(source_id: int, min_bytes: int = 0,
+    def drilldown_size(source_id: int, min_bytes: int = 0,
                               max_bytes: Optional[int] = None,
                               page: int = Query(1, ge=1, le=10000),
                               limit: int = Query(100, ge=1, le=500)):
@@ -1767,7 +1767,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/drilldown/owner/{source_id}")
-    async def drilldown_owner(source_id: int, owner: str = "",
+    def drilldown_owner(source_id: int, owner: str = "",
                                page: int = Query(1, ge=1, le=10000),
                                limit: int = Query(100, ge=1, le=500)):
         src = _get_source(db, source_id)
@@ -1792,7 +1792,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         owner: Optional[str] = None
 
     @app.post("/api/drilldown/archive")
-    async def drilldown_archive(data: DrilldownArchiveRequest):
+    def drilldown_archive(data: DrilldownArchiveRequest):
         from src.archiver.archive_engine import ArchiveEngine
         src = _get_source(db, data.source_id)
         if not src.archive_dest:
@@ -1824,7 +1824,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- EXPORT API (XLS / PDF) ---
 
     @app.get("/api/export/xls/{source_id}")
-    async def export_xls(source_id: int):
+    def export_xls(source_id: int):
         from fastapi.responses import StreamingResponse
         from io import BytesIO
         src = _get_source(db, source_id)
@@ -1844,7 +1844,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(500, str(e))
 
     @app.get("/api/export/pdf/{source_id}")
-    async def export_pdf(source_id: int):
+    def export_pdf(source_id: int):
         from fastapi.responses import StreamingResponse
         from io import BytesIO
         src = _get_source(db, source_id)
@@ -1866,7 +1866,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- WATCHER CHANGES API ---
 
     @app.get("/api/watcher/{source_id}/changes")
-    async def watcher_changes(source_id: int):
+    def watcher_changes(source_id: int):
         from src.scanner.file_watcher import _watchers
         if source_id in _watchers:
             w = _watchers[source_id]
@@ -1880,7 +1880,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- USER ACTIVITY API ---
 
     @app.get("/api/users/overview")
-    async def users_overview(source_id: Optional[int] = None, days: int = 30):
+    def users_overview(source_id: Optional[int] = None, days: int = 30):
         # Check if we have event log data; if not, fallback to file ownership
         has_logs = db.has_access_log_data()
         if has_logs:
@@ -1914,7 +1914,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             }
 
     @app.get("/api/users/heatmap")
-    async def users_heatmap(source_id: Optional[int] = None, days: int = 7):
+    def users_heatmap(source_id: Optional[int] = None, days: int = 7):
         """Haftalik saatlik erisim heatmap'i - ayri endpoint."""
         raw = db.get_hourly_heatmap(source_id=source_id, days=days)
         # HTML expects: {matrix: [[24 vals]*7], max_value: N, days: [str*7]}
@@ -1936,11 +1936,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"matrix": matrix, "max_value": max_val or 1, "days": day_names}
 
     @app.get("/api/users/{username}/activity")
-    async def user_activity(username: str, days: int = 30):
+    def user_activity(username: str, days: int = 30):
         return db.get_user_activity(username, days=days)
 
     @app.get("/api/users/{username}/efficiency")
-    async def user_efficiency(username: str,
+    def user_efficiency(username: str,
                                source_id: Optional[int] = None,
                                scan_id: Optional[int] = None):
         """Kullanici verimlilik skoru + uyumsuzluk raporu.
@@ -1952,7 +1952,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return compute_user_score(db, username, source_id=source_id, scan_id=scan_id)
 
     @app.get("/api/users/{username}/detail")
-    async def user_detail(username: str, days: int = 30):
+    def user_detail(username: str, days: int = 30):
         """Kullanici detay raporu - HTML dashboard icin genisletilmis format."""
         from src.utils.size_formatter import format_size
         activity = db.get_user_activity(username, days=days)
@@ -2026,7 +2026,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- ANOMALY API ---
 
     @app.get("/api/anomalies")
-    async def get_anomalies(severity: Optional[str] = None, days: int = 7):
+    def get_anomalies(severity: Optional[str] = None, days: int = 7):
         """Anomali listesi - HTML duz array bekliyor."""
         alerts = db.get_anomalies(severity=severity, days=days)
         # HTML expects flat array, not {alerts:[], summary:{}}
@@ -2035,7 +2035,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return []
 
     @app.post("/api/anomalies/{anomaly_id}/acknowledge")
-    async def acknowledge_anomaly(anomaly_id: int, by_user: str = "admin"):
+    def acknowledge_anomaly(anomaly_id: int, by_user: str = "admin"):
         db.acknowledge_anomaly(anomaly_id, by_user)
         try:
             db.insert_audit_event_simple(
@@ -2049,7 +2049,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- FILE WATCHER API ---
 
     @app.post("/api/watcher/{source_id}/start")
-    async def start_watcher(source_id: int,
+    def start_watcher(source_id: int,
                              interval: Optional[int] = Query(
                                  default=None, ge=10, le=3600,
                                  description="Polling araligi (saniye). "
@@ -2075,7 +2075,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"status": "started", "interval": watcher.interval}
 
     @app.post("/api/watcher/{source_id}/stop")
-    async def stop_watcher(source_id: int):
+    def stop_watcher(source_id: int):
         from src.scanner.file_watcher import _watchers
         if source_id in _watchers:
             _watchers[source_id].stop()
@@ -2090,27 +2090,27 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"status": "not_running"}
 
     @app.get("/api/watcher/status")
-    async def watcher_status(source_id: int = None):
+    def watcher_status(source_id: int = None):
         from src.scanner.file_watcher import get_watcher_status
         return get_watcher_status(source_id)
 
     # --- AUDIT API ---
 
     @app.get("/api/audit/events")
-    async def audit_events(source_id: int = None, event_type: str = None,
+    def audit_events(source_id: int = None, event_type: str = None,
                            username: str = None,
                            days: int = Query(7, ge=1, le=365),
                            page: int = Query(1, ge=1, le=10000)):
         return db.get_audit_events(source_id, event_type, username, days, page)
 
     @app.get("/api/audit/summary")
-    async def audit_summary(source_id: int = None, days: int = 7):
+    def audit_summary(source_id: int = None, days: int = 7):
         return db.get_audit_summary(source_id, days)
 
     # --- AUDIT CHAIN API (issue #38) ---
 
     @app.get("/api/audit/verify")
-    async def audit_verify(since_seq: int = Query(1, ge=1),
+    def audit_verify(since_seq: int = Query(1, ge=1),
                            end_seq: Optional[int] = None):
         """Verify the tamper-evident audit chain from since_seq onward.
 
@@ -2119,13 +2119,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return db.verify_audit_chain(start_seq=since_seq, end_seq=end_seq)
 
     @app.get("/api/audit/chain")
-    async def audit_chain(page: int = Query(1, ge=1),
+    def audit_chain(page: int = Query(1, ge=1),
                           page_size: int = Query(100, ge=1, le=1000)):
         """Paginated chain rows joined with file_audit_events (newest first)."""
         return db.get_audit_chain_page(page=page, page_size=page_size)
 
     @app.post("/api/audit/export")
-    async def audit_export(start_date: Optional[str] = None,
+    def audit_export(start_date: Optional[str] = None,
                            end_date: Optional[str] = None):
         """Trigger a WORM JSONL export of the chain in [start_date, end_date]."""
         from src.storage.audit_export import AuditExporter
@@ -2135,7 +2135,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- INSIGHTS API ---
 
     @app.get("/api/insights/{source_id}")
-    async def get_insights(source_id: int, refresh: bool = False):
+    def get_insights(source_id: int, refresh: bool = False):
         """AI Insights: son scan icin cached sonucu doner, yoksa hesaplar.
 
         refresh=true ile yeniden hesaplamayi force ederek cache'i tazeler.
@@ -2179,7 +2179,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.post("/api/insights/{source_id}/recompute")
-    async def insights_recompute(source_id: int):
+    def insights_recompute(source_id: int):
         """Insights'i yeniden hesapla ve cache'i tazele."""
         from src.analyzer.ai_insights import InsightsEngine
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
@@ -2193,7 +2193,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- RISK SCORE API ---
 
     @app.get("/api/reports/mit-naming/{source_id}")
-    async def mit_naming_report(source_id: int):
+    def mit_naming_report(source_id: int):
         """MIT Libraries dosya adlandirma standartlarina uyum analizi."""
         from src.scanner.file_scanner import MITNamingAnalyzer
 
@@ -2213,7 +2213,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return analyzer.get_report()
 
     @app.get("/api/reports/mit-naming/{source_id}/files")
-    async def mit_naming_files(source_id: int, code: str = "R1",
+    def mit_naming_files(source_id: int, code: str = "R1",
                                 page: int = Query(1, ge=1, le=10000),
                                 page_size: int = Query(100, ge=1, le=500)):
         """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6)."""
@@ -2270,7 +2270,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/reports/mit-naming/{source_id}/export")
-    async def mit_naming_export(source_id: int):
+    def mit_naming_export(source_id: int):
         """MIT ihlal raporunu Excel olarak export et."""
         import re as re_mod
         from fastapi.responses import StreamingResponse
@@ -2324,7 +2324,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/reports/mit-naming/{source_id}/export.xlsx")
-    async def export_mit_naming_xlsx(
+    def export_mit_naming_xlsx(
         source_id: int,
         ids: Optional[str] = Query(
             None,
@@ -2481,7 +2481,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/insights/{source_id}/files")
-    async def insight_files(source_id: int, insight_type: str = "stale_1year",
+    def insight_files(source_id: int, insight_type: str = "stale_1year",
                             page: int = Query(1, ge=1, le=10000),
                             page_size: int = Query(100, ge=1, le=500)):
         """AI insight tipine gore dosya listesi."""
@@ -2517,7 +2517,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/overview/{source_id}")
-    async def overview(source_id: int):
+    def overview(source_id: int):
         """Instant Overview: pre-computed summary'den okur, scanned_files
         tablosuna dokunmaz. Scan tamamlaniyorken kaydedilen JSON'dan gelir.
 
@@ -2570,7 +2570,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"has_data": False, "reason": "no_completed_scan"}
 
     @app.post("/api/overview/{source_id}/recompute")
-    async def overview_recompute(source_id: int):
+    def overview_recompute(source_id: int):
         """Manuel: son scan icin summary'yi yeniden hesapla.
 
         Kullanim: scan bittigi sirada summary yazilmadi (crash vs.) ise
@@ -2680,7 +2680,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return d, updated_at
 
     @app.get("/api/sources/{source_id}/partial-summary")
-    async def partial_summary_v2_for_source(source_id: int):
+    def partial_summary_v2_for_source(source_id: int):
         """Issue #181 Track B1 — return the v2 partial summary for a source.
 
         Most dashboard pages don't carry a scan_id (Sources, Extensions,
@@ -2696,7 +2696,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return payload
 
     @app.get("/api/scans/{scan_id}/partial-summary")
-    async def partial_summary_v2_for_scan(scan_id: int):
+    def partial_summary_v2_for_scan(scan_id: int):
         """Issue #181 Track B1 — return the v2 partial summary for a specific scan.
 
         Used by tooling that already has a scan_id. Migrates legacy
@@ -2736,7 +2736,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return d
 
     @app.get("/api/risk-score/{source_id}")
-    async def risk_score(source_id: int):
+    def risk_score(source_id: int):
         """Supervisor risk score - TEK optimized sorgu (6 yerine 2).
 
         Issue #194 — fast-path response shape MUST match the live path
@@ -2873,7 +2873,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- SCAN TREND API ---
 
     @app.get("/api/trend/{source_id}")
-    async def scan_trend(source_id: int):
+    def scan_trend(source_id: int):
         """Storage growth trend from scan history."""
         with db.get_read_cursor() as cur:
             cur.execute("""
@@ -2897,7 +2897,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- DUPLIKE RAPOR ve SECICI ARSIV ---
 
     @app.get("/api/reports/duplicates/{source_id}")
-    async def duplicate_report(source_id: int,
+    def duplicate_report(source_id: int,
                                 page: int = Query(1, ge=1, le=10000),
                                 page_size: int = Query(50, ge=1, le=500),
                                 min_size: int = 0):
@@ -2930,7 +2930,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/export/duplicates/{source_id}")
-    async def export_duplicates(source_id: int):
+    def export_duplicates(source_id: int):
         """Kopya dosyalari CSV olarak export et."""
         from src.utils.size_formatter import format_size
         from fastapi.responses import StreamingResponse
@@ -2969,7 +2969,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # GET endpoint'i cached sonuclari (duplicate_hash_groups) okur.
 
     @app.post("/api/duplicates/content/{source_id}/compute")
-    async def content_duplicates_compute(source_id: int):
+    def content_duplicates_compute(source_id: int):
         """Icerik-tabanli kopya tespitini calistir ve sonuclari persist et.
 
         Son tamamlanmis scan_id bulunur, `ContentDuplicateEngine.compute`
@@ -2990,7 +2990,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return stats
 
     @app.get("/api/duplicates/content/{source_id}")
-    async def content_duplicates_report(
+    def content_duplicates_report(
         source_id: int,
         page: int = Query(1, ge=1, le=10000),
         page_size: int = Query(50, ge=1, le=500),
@@ -3149,7 +3149,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # let operators inspect / act on individual rows from the UI.
 
     @app.get("/api/quarantine")
-    async def quarantine_list(
+    def quarantine_list(
         status: Optional[str] = Query(None),
         limit: int = Query(500, ge=1, le=5000),
     ):
@@ -3297,7 +3297,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # "Islem Gecmisi" page to render before/after/delta panels.
 
     @app.get("/api/operations/history")
-    async def operations_history(limit: int = Query(50, ge=1, le=500),
+    def operations_history(limit: int = Query(50, ge=1, le=500),
                                   page: int = Query(1, ge=1, le=10000),
                                   operation: Optional[str] = None,
                                   source_id: Optional[int] = None):
@@ -3324,7 +3324,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/operations/{op_id}")
-    async def operation_detail(op_id: int):
+    def operation_detail(op_id: int):
         from src.storage.gain_reporter import GainReporter
         reporter = GainReporter(db, config)
         report = reporter.get_report(op_id)
@@ -3333,7 +3333,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return report
 
     @app.get("/api/operations/{op_id}/export.xlsx")
-    async def operation_detail_xlsx(op_id: int):
+    def operation_detail_xlsx(op_id: int):
         """Export a gain_report as a single-sheet XLSX. Three columns —
         Metric / Before / After / Delta — one row per snapshot key.
         """
@@ -3722,7 +3722,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- BUYUME ANALIZI ---
 
     @app.get("/api/growth/{source_id}")
-    async def growth_stats(source_id: int):
+    def growth_stats(source_id: int):
         """Yillik/aylik/gunluk buyume istatistikleri."""
         stats = None
         if analytics.available:
@@ -3737,7 +3737,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return stats
 
     @app.get("/api/reports/top-creators/{source_id}")
-    async def top_creators(source_id: int, limit: int = 20):
+    def top_creators(source_id: int, limit: int = 20):
         """En cok dosya olusturan kullanicilar."""
         return db.get_top_file_creators(source_id, limit=limit)
 
@@ -3863,18 +3863,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- ARCHIVE OPERATIONS API ---
 
     @app.get("/api/archive/operations")
-    async def get_operations(source_id: int = None, limit: int = 50):
+    def get_operations(source_id: int = None, limit: int = 50):
         return db.get_archive_operations(source_id, limit)
 
     @app.get("/api/archive/operations/{op_id}")
-    async def get_operation_detail(op_id: int):
+    def get_operation_detail(op_id: int):
         result = db.get_archive_operation_detail(op_id)
         if not result:
             raise HTTPException(404, "Islem bulunamadi")
         return result
 
     @app.post("/api/restore/by-operation/{op_id}")
-    async def restore_by_operation(op_id: int):
+    def restore_by_operation(op_id: int):
         """Bir arsiv operasyonundaki TUM dosyalari geri yukle."""
         from src.archiver.restore_engine import RestoreEngine
 
@@ -3975,7 +3975,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return result
 
     @app.get("/api/archive/browse")
-    async def browse_archived(source_id: int = None,
+    def browse_archived(source_id: int = None,
                                page: int = Query(1, ge=1, le=10000),
                                page_size: int = Query(50, ge=1, le=500)):
         """Arsivlenmis dosyalara goz at (geri yukleme UI icin)."""
@@ -3988,7 +3988,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- ARSIV GECMISI ---
 
     @app.get("/api/archive/history")
-    async def archive_history(source_id: int = None,
+    def archive_history(source_id: int = None,
                               page: int = Query(1, ge=1, le=10000),
                               page_size: int = Query(20, ge=1, le=500),
                               date_from: str = None,
@@ -4002,7 +4002,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/archive/operations/{op_id}/files")
-    async def operation_files(op_id: int,
+    def operation_files(op_id: int,
                                page: int = Query(1, ge=1, le=10000),
                                page_size: int = Query(100, ge=1, le=500)):
         """Arsiv islemindeki dosyalari sayfalanmis getir."""
@@ -4023,7 +4023,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return open_folder_impl(body, client_host)
 
     @app.get("/api/system/list-dir")
-    async def list_dir(
+    def list_dir(
         request: Request,
         path: str = "",
         show_hidden: bool = False,
@@ -4043,7 +4043,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return list_dir_impl(path, client_host, show_hidden=show_hidden)
 
     @app.get("/api/system/health")
-    async def health():
+    def health():
         # WAL ve toplam disk durumu
         wal_warning = None
         try:
@@ -4121,7 +4121,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/system/analytics")
-    async def analytics_status():
+    def analytics_status():
         """DuckDB analitik motor durumunu dondur."""
         return analytics.health()
 
@@ -4133,7 +4133,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         display_name: Optional[str] = None
 
     @app.get("/api/notifications/status")
-    async def notifications_status():
+    def notifications_status():
         """SMTP konfigurasyon ozeti + canli bind testi."""
         info = email_notifier.health()
         if email_notifier.available:
@@ -4141,7 +4141,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return info
 
     @app.post("/api/notifications/test")
-    async def notifications_test(payload: TestEmailRequest):
+    def notifications_test(payload: TestEmailRequest):
         """Belirtilen adrese kucuk bir dogrulama e-postasi gonder.
 
         Kullanim: SMTP ayarlarini dogrulamak icin. Gercek skor degil,
@@ -4177,7 +4177,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.post("/api/notifications/send-to/{username}")
-    async def notifications_send_to(username: str):
+    def notifications_send_to(username: str):
         """Tek kullaniciya gercek verimlilik raporu gonder.
 
         Kullanici e-postasi AD'den cozulur; yoksa 400 doner.
@@ -4210,7 +4210,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"sent_to": ad_info["email"], "cc": result.get("cc"), "score": score["score"]}
 
     @app.get("/api/notifications/log")
-    async def notifications_log(username: Optional[str] = None,
+    def notifications_log(username: Optional[str] = None,
                                  status: Optional[str] = None,
                                  page: int = Query(1, ge=1, le=10000),
                                  page_size: int = Query(50, ge=1, le=500)):
@@ -4238,12 +4238,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"total": total, "rows": rows, "page": page, "page_size": page_size}
 
     @app.get("/api/system/version")
-    async def version():
+    def version():
         """Calisan sürüm (repo kokundeki VERSION dosyasindan)."""
         return {"version": APP_VERSION}
 
     @app.get("/api/system/status")
-    async def system_status():
+    def system_status():
         """Issue #125 — list currently running background operations.
 
         Always 200; returns ``{"operations": []}`` when nothing is
@@ -4263,12 +4263,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"operations": ops}
 
     @app.get("/api/system/ad/status")
-    async def ad_status():
+    def ad_status():
         """AD/LDAP baglanti durumu + bind testi."""
         return ad_lookup.health()
 
     @app.get("/api/users/{username}/ad-info")
-    async def user_ad_info(username: str, refresh: bool = False):
+    def user_ad_info(username: str, refresh: bool = False):
         """Kullanici adindan e-posta + display name cozumle.
 
         AD devre disi veya erisilmez ise cache'ten doner; cache yoksa
@@ -4301,7 +4301,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return nums + (bool(suffix),)
 
     @app.get("/api/system/version-check")
-    async def version_check():
+    def version_check():
         """GitHub latest release ile yerel sürümü karsilastir.
 
         Kurumsal aglarda GitHub API'sine erisim yoksa hata yerine
@@ -4349,7 +4349,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     "error": "beklenmeyen hata"}
 
     @app.post("/api/system/update")
-    async def update():
+    def update():
         """Yerel update.cmd'yi detached olarak baslat.
 
         update.cmd setup-source.ps1'i calistirir, bu da calisan python
@@ -4403,7 +4403,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/db/stats")
-    async def db_stats():
+    def db_stats():
         """Veritabani istatistikleri."""
         if analytics.available:
             try:
@@ -4505,7 +4505,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.post("/api/db/optimize")
-    async def db_optimize():
+    def db_optimize():
         """VACUUM + ANALYZE ile veritabanini optimize et."""
         result = db.optimize_database()
         return result
@@ -4520,7 +4520,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         max_rows: int = Field(default=1000, ge=1, le=10000)
 
     @app.post("/api/analytics/query")
-    async def analytics_query(req: QueryRequest, request: Request):
+    def analytics_query(req: QueryRequest, request: Request):
         from src.dashboard.sql_query import SqlQueryGuard
         panel_cfg = (config.get("analytics", {}) or {}).get("query_panel", {}) or {}
         if not panel_cfg.get("enabled", True):
@@ -4723,7 +4723,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 _export_jobs[job_id]["error"] = str(e)
 
     @app.post("/api/export/start")
-    async def start_export(report_type: str = Query(...), source_id: int = Query(...)):
+    def start_export(report_type: str = Query(...), source_id: int = Query(...)):
         """Arka planda XLS export baslat. Tarama devam ederken bile calisir."""
         # Son tamamlanmis taramayi kullan (aktif tarama kilitlemesin)
         with db.get_read_cursor() as cur:
@@ -4763,7 +4763,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"job_id": job_id, "status": "queued"}
 
     @app.get("/api/export/status/{job_id}")
-    async def export_status(job_id: str):
+    def export_status(job_id: str):
         """Export is durumu sorgula."""
         with _export_lock:
             job = _export_jobs.get(job_id)
@@ -4779,7 +4779,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/export/download/{job_id}")
-    async def export_download(job_id: str):
+    def export_download(job_id: str):
         """Tamamlanmis export dosyasini indir."""
         with _export_lock:
             job = _export_jobs.get(job_id)
@@ -4794,7 +4794,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/export/jobs")
-    async def export_jobs():
+    def export_jobs():
         """Tum export islerini listele."""
         with _export_lock:
             return [{"job_id": k, **{kk: vv for kk, vv in v.items() if kk != "file_path"}} for k, v in _export_jobs.items()]
@@ -4808,13 +4808,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return det
 
     @app.get("/api/security/ransomware/alerts")
-    async def list_ransomware_alerts(since_minutes: int = Query(60, ge=1, le=10080)):
+    def list_ransomware_alerts(since_minutes: int = Query(60, ge=1, le=10080)):
         """Son N dakikadaki ransomware uyarilarini listele (yeni once)."""
         det = _get_detector()
         return det.get_active_alerts(since_minutes=since_minutes)
 
     @app.post("/api/security/ransomware/alerts/{alert_id}/acknowledge")
-    async def acknowledge_ransomware_alert(alert_id: int, by_user: str = "admin"):
+    def acknowledge_ransomware_alert(alert_id: int, by_user: str = "admin"):
         """Bir uyariyi onayla — acknowledged_at + acknowledged_by yazilir."""
         with db.get_cursor() as cur:
             cur.execute(
@@ -4836,7 +4836,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"acknowledged": True, "id": alert_id, "by": by_user}
 
     @app.post("/api/security/ransomware/canaries/{source_id}/deploy")
-    async def deploy_ransomware_canaries(source_id: int):
+    def deploy_ransomware_canaries(source_id: int):
         """Kaynagin paylasim koküne canary dosyalarini birak."""
         src = _get_source(db, source_id)
         det = _get_detector()
@@ -4857,7 +4857,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.post("/api/security/ransomware/test")
-    async def ransomware_test(source_id: Optional[int] = None,
+    def ransomware_test(source_id: Optional[int] = None,
                                 username: str = "test_user",
                                 rule: str = "rename_velocity"):
         """Sentetik olay enjeksiyonu — kural + e-posta + SMB kill (dry-run)
@@ -4936,7 +4936,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return analyzer
 
     @app.get("/api/security/acl")
-    async def get_effective_acl(path: str = Query(..., min_length=1)):
+    def get_effective_acl(path: str = Query(..., min_length=1)):
         """Live effective DACL read for one path. Windows-only."""
         analyzer = _get_acl_analyzer()
         if not analyzer.is_supported():
@@ -4951,7 +4951,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(500, f"ACL read failed: {e}") from e
 
     @app.get("/api/security/acl/trustee/{sid}/paths")
-    async def acl_paths_for_trustee(sid: str,
+    def acl_paths_for_trustee(sid: str,
                                     limit: int = Query(100, ge=1, le=10000)):
         analyzer = _get_acl_analyzer()
         return {
@@ -4961,7 +4961,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/security/acl/sprawl")
-    async def acl_sprawl(scan_id: Optional[int] = None,
+    def acl_sprawl(scan_id: Optional[int] = None,
                          severity_threshold: Optional[int] = None):
         analyzer = _get_acl_analyzer()
         thr = severity_threshold if severity_threshold is not None else analyzer.sprawl_threshold_mask
@@ -5014,7 +5014,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return analyzer
 
     @app.get("/api/security/orphan-sids/{source_id}")
-    async def orphan_sids_report(source_id: int,
+    def orphan_sids_report(source_id: int,
                                  max_unique_sids: Optional[int] = None):
         """Detect orphan owner SIDs in the latest scan for ``source_id``."""
         analyzer = _get_orphan_analyzer()
@@ -5027,7 +5027,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/security/orphan-sids/{source_id}/files")
-    async def orphan_sid_files(source_id: int,
+    def orphan_sid_files(source_id: int,
                                sid: str = Query(..., min_length=1),
                                page: int = Query(1, ge=1),
                                page_size: int = Query(100, ge=1, le=1000)):
@@ -5042,7 +5042,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         max_files: Optional[int] = None
 
     @app.post("/api/security/orphan-sids/reassign")
-    async def orphan_sid_reassign(req: OrphanReassignRequest):
+    def orphan_sid_reassign(req: OrphanReassignRequest):
         analyzer = _get_orphan_analyzer()
         # Honour the opt-in dual-approval rule: refuse non-dry-run runs
         # unless the caller explicitly asked for it. (Dual-approval UX
@@ -5067,7 +5067,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(400, str(e)) from e
 
     @app.get("/api/security/orphan-sids/{source_id}/export.csv")
-    async def orphan_sid_export_csv(source_id: int):
+    def orphan_sid_export_csv(source_id: int):
         """Streaming CSV download of orphan files for offline review."""
         from fastapi.responses import StreamingResponse
         import io
@@ -5174,7 +5174,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/security/feature-flags")
-    async def security_feature_flags():
+    def security_feature_flags():
         """Read-only view of the security feature flags so the dashboard
         can render a "kapali" banner when a page is disabled in
         config.yaml. Cheap; no DB access.
@@ -5215,7 +5215,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # ─────────────────────────────────────────────────────────────────
 
     @app.get("/api/security/image-duplicates")
-    async def image_duplicates(
+    def image_duplicates(
         scan_id: Optional[int] = None,
         hash_type: str = Query("phash", pattern="^(phash|dhash|ahash)$"),
         max_distance: int = Query(5, ge=0, le=64),
@@ -5276,7 +5276,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/security/image-duplicates/export.xlsx")
-    async def image_duplicates_export_xlsx(
+    def image_duplicates_export_xlsx(
         scan_id: Optional[int] = None,
         hash_type: str = Query("phash", pattern="^(phash|dhash|ahash)$"),
         max_distance: int = Query(5, ge=0, le=64),
@@ -5317,7 +5317,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/security/orphan-sids/{source_id}/export.xlsx")
-    async def orphan_sid_export_xlsx(source_id: int):
+    def orphan_sid_export_xlsx(source_id: int):
         """XLSX of orphan-SID summary rows (one row per orphan SID)."""
         analyzer = _get_orphan_analyzer()
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
@@ -5342,7 +5342,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/security/ransomware/alerts/export.xlsx")
-    async def ransomware_alerts_export_xlsx(
+    def ransomware_alerts_export_xlsx(
         since_minutes: int = Query(1440, ge=1, le=10080),
     ):
         """XLSX of ransomware alerts in the last N minutes."""
@@ -5374,7 +5374,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.post("/api/security/ransomware/alerts/acknowledge-all")
-    async def acknowledge_all_ransomware_alerts(
+    def acknowledge_all_ransomware_alerts(
         by_user: str = "admin",
         since_minutes: int = Query(1440, ge=1, le=10080),
     ):
@@ -5411,7 +5411,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/security/acl/sprawl/export.xlsx")
-    async def acl_sprawl_export_xlsx(
+    def acl_sprawl_export_xlsx(
         scan_id: Optional[int] = None,
         severity_threshold: Optional[int] = None,
     ):
@@ -5443,7 +5443,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/security/acl/trustee/{sid}/paths/export.xlsx")
-    async def acl_trustee_paths_export_xlsx(
+    def acl_trustee_paths_export_xlsx(
         sid: str, limit: int = Query(1000, ge=1, le=10000),
     ):
         """XLSX of every path a given trustee has access to."""
@@ -5474,7 +5474,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # ─────────────────────────────────────────────────────────────────
 
     @app.get("/api/security/extension-anomalies")
-    async def list_extension_anomalies(
+    def list_extension_anomalies(
         scan_id: Optional[int] = None,
         source_id: Optional[int] = None,
         severity: Optional[str] = None,
@@ -5543,7 +5543,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.get(
         "/api/security/extension-anomalies/{source_id}/export.xlsx"
     )
-    async def extension_anomalies_export_xlsx(
+    def extension_anomalies_export_xlsx(
         source_id: int,
         severity: Optional[str] = None,
     ):
@@ -5584,7 +5584,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # ─────────────────────────────────────────────────────────────────
 
     @app.get("/api/integrations/syslog/status")
-    async def syslog_status():
+    def syslog_status():
         forwarder = getattr(app.state, "syslog", None)
         if forwarder is None:
             return {"available": False, "configured": False,
@@ -5592,7 +5592,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return forwarder.health()
 
     @app.post("/api/integrations/syslog/test")
-    async def syslog_test():
+    def syslog_test():
         forwarder = getattr(app.state, "syslog", None)
         if forwarder is None:
             return {"sent": False, "error": "forwarder_not_initialized"}
@@ -5613,7 +5613,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # ─────────────────────────────────────────────────────────────────
 
     @app.get("/api/system/mcp/info")
-    async def mcp_info():
+    def mcp_info():
         """Read-only MCP server discovery info for the dashboard.
 
         The MCP server is a separate process (``python -m src.mcp_server``);
@@ -5672,7 +5672,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # Issue #77 Phase 2 — last-auto-restore banner state
     # ─────────────────────────────────────────────────────────────────
     @app.get("/api/system/last-restore")
-    async def last_restore():
+    def last_restore():
         """Returns the most recent auto-restore event for the current
         process, or ``{"restored": false}`` if no restore happened at
         startup. Frontend uses this to decide whether to draw the
@@ -5705,7 +5705,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return mgr
 
     @app.get("/api/system/backups")
-    async def list_backups():
+    def list_backups():
         """List snapshot metadata rows from the manifest.
 
         Always returns a 200 with ``rows: []`` even when the backup feature
@@ -5728,7 +5728,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.post("/api/system/backups/snapshot")
-    async def create_snapshot(body: dict):
+    def create_snapshot(body: dict):
         """Take a manual snapshot. Body: ``{"reason": "manual", "confirm": true}``."""
         body = body or {}
         if not bool(body.get("confirm", False)):
@@ -5793,7 +5793,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     }
 
     @app.post("/api/system/backups/restore/{snapshot_id}")
-    async def restore_snapshot(snapshot_id: str, body: dict, request: Request):
+    def restore_snapshot(snapshot_id: str, body: dict, request: Request):
         """Restore the live DB from ``snapshot_id``. Refuses if a live
         connection holds the DB lock — the caller must stop the dashboard
         first. Body must include ``confirm: true`` and
@@ -5841,7 +5841,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return _do_snapshot_restore({"snapshot_id": snapshot_id})
 
     @app.get("/api/system/backups/export")
-    async def export_backups_xlsx():
+    def export_backups_xlsx():
         """Export the snapshot manifest as XLSX (uses openpyxl if
         available, else CSV fallback). Mirrors the pattern other dashboard
         pages use — the frontend just hits this URL and saves the blob."""
@@ -5942,7 +5942,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/compliance/pii/findings")
-    async def pii_findings(pattern: Optional[str] = None,
+    def pii_findings(pattern: Optional[str] = None,
                            source_id: Optional[int] = None,
                            page: int = Query(1, ge=1),
                            page_size: int = Query(50, ge=1, le=1000)):
@@ -5993,7 +5993,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/compliance/pii/patterns")
-    async def pii_patterns():
+    def pii_patterns():
         """Return the active pattern dictionary (built-ins + operator
         overrides), so the dashboard can populate a filter dropdown
         without hardcoding pattern names. Issue #81.
@@ -6015,7 +6015,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/compliance/pii/findings/export.xlsx")
-    async def pii_findings_export_xlsx(
+    def pii_findings_export_xlsx(
         pattern: Optional[str] = None,
         source_id: Optional[int] = None,
         ids: Optional[str] = Query(
@@ -6135,7 +6135,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/compliance/pii/subject")
-    async def pii_subject(term: str = Query(..., min_length=1),
+    def pii_subject(term: str = Query(..., min_length=1),
                           format: str = Query("json", pattern="^(json|csv)$")):
         """Article 17/30 export — every file mentioning ``term``."""
         engine = _get_pii_engine()
@@ -6175,7 +6175,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"term": term, "matches": len(results), "files": results}
 
     @app.get("/api/compliance/pii/backend")
-    async def pii_backend_status():
+    def pii_backend_status():
         """Capability probe (issue #64) — which regex backend the
         PII engine is actually using and the optional package version.
 
@@ -6201,7 +6201,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/compliance/retention/policies")
-    async def retention_policies_list():
+    def retention_policies_list():
         engine = _get_retention_engine()
         return {"policies": engine.list_policies()}
 
@@ -6219,7 +6219,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return v
 
     @app.post("/api/compliance/retention/policies")
-    async def retention_policy_create(data: _RetentionPolicyCreate):
+    def retention_policy_create(data: _RetentionPolicyCreate):
         engine = _get_retention_engine()
         try:
             pid = engine.add_policy(
@@ -6236,7 +6236,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"id": pid, "name": data.name}
 
     @app.delete("/api/compliance/retention/policies/{name}")
-    async def retention_policy_remove(name: str):
+    def retention_policy_remove(name: str):
         engine = _get_retention_engine()
         if not engine.remove_policy(name):
             raise HTTPException(404, f"Policy not found: {name}")
@@ -6260,12 +6260,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/compliance/retention/attestation")
-    async def retention_attestation(since_days: int = Query(30, ge=1, le=3650)):
+    def retention_attestation(since_days: int = Query(30, ge=1, le=3650)):
         engine = _get_retention_engine()
         return engine.attestation_report(since_days=since_days)
 
     @app.get("/api/compliance/retention/attestation/export.xlsx")
-    async def retention_attestation_xlsx(
+    def retention_attestation_xlsx(
         since_days: int = Query(30, ge=1, le=3650),
     ):
         """Attestation report as XLSX (issue #81).
@@ -6331,7 +6331,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/compliance/config")
-    async def compliance_config():
+    def compliance_config():
         """Expose the three compliance feature flags so the dashboard
         can render a "feature disabled" banner without hardcoding the
         config path. Issue #81.
@@ -6355,16 +6355,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     app.state.legal_hold = LegalHoldRegistry(db, config)
 
     @app.get("/api/compliance/legal-holds/active")
-    async def legal_holds_active():
+    def legal_holds_active():
         return {"holds": app.state.legal_hold.list_active()}
 
     @app.get("/api/compliance/legal-holds/history")
-    async def legal_holds_history(page: int = Query(1, ge=1),
+    def legal_holds_history(page: int = Query(1, ge=1),
                                   page_size: int = Query(50, ge=1, le=500)):
         return app.state.legal_hold.list_history(page=page, page_size=page_size)
 
     @app.post("/api/compliance/legal-holds")
-    async def legal_holds_add(body: dict):
+    def legal_holds_add(body: dict):
         pattern = (body or {}).get("pattern")
         reason = (body or {}).get("reason")
         case_ref = (body or {}).get("case_ref")
@@ -6381,7 +6381,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"id": hold_id, "ok": True}
 
     @app.post("/api/compliance/legal-holds/{hold_id}/release")
-    async def legal_holds_release(hold_id: int, body: dict):
+    def legal_holds_release(hold_id: int, body: dict):
         released_by = (body or {}).get("released_by") or "dashboard"
         try:
             ok = app.state.legal_hold.release_hold(hold_id, released_by)
@@ -6394,12 +6394,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"ok": True}
 
     @app.get("/api/compliance/legal-holds/check")
-    async def legal_holds_check(path: str = Query(..., min_length=1)):
+    def legal_holds_check(path: str = Query(..., min_length=1)):
         held = app.state.legal_hold.is_held(path)
         return {"path": path, "is_held": held is not None, "hold": held}
 
     @app.get("/api/compliance/legal-holds/badge")
-    async def legal_holds_badge():
+    def legal_holds_badge():
         """Sidebar badge data — cheap polling endpoint."""
         registry = app.state.legal_hold
         actives = registry.list_active()
@@ -6436,7 +6436,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/compliance/lineage/file.jsonld")
-    async def lineage_file(path: str = Query(..., min_length=1)):
+    def lineage_file(path: str = Query(..., min_length=1)):
         """Return PROV-O JSON-LD for the given file path."""
         if not _standards_enabled():
             raise HTTPException(
@@ -6453,7 +6453,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return JSONResponse(content=doc, media_type="application/ld+json")
 
     @app.get("/api/compliance/lineage/scan.jsonld")
-    async def lineage_scan(scan_id: int = Query(..., ge=1)):
+    def lineage_scan(scan_id: int = Query(..., ge=1)):
         """Return PROV-O JSON-LD for the given scan as a Collection."""
         if not _standards_enabled():
             raise HTTPException(
@@ -6470,7 +6470,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return JSONResponse(content=doc, media_type="application/ld+json")
 
     @app.get("/api/compliance/dcat/catalog.jsonld")
-    async def dcat_catalog():
+    def dcat_catalog():
         """Return a DCAT v3 catalog of every configured scan source."""
         if not _standards_enabled():
             raise HTTPException(
@@ -6522,7 +6522,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return req.to_dict()
 
     @app.get("/api/approvals/config")
-    async def approvals_config():
+    def approvals_config():
         """Expose the runtime config of the approval framework so the
         frontend can render the right banners + disable/enable buttons.
         Safe to read while disabled — returns ``enabled=false``."""
@@ -6551,19 +6551,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return registry
 
     @app.get("/api/approvals/pending")
-    async def approvals_list_pending():
+    def approvals_list_pending():
         registry = _require_approval_registry()
         rows = registry.list_pending()
         return {"rows": [_approval_to_json(r) for r in rows]}
 
     @app.get("/api/approvals/history")
-    async def approvals_history(limit: int = Query(50, ge=1, le=1000)):
+    def approvals_history(limit: int = Query(50, ge=1, le=1000)):
         registry = _require_approval_registry()
         rows = registry.list_history(limit=limit)
         return {"rows": [_approval_to_json(r) for r in rows]}
 
     @app.post("/api/approvals/{approval_id}/approve")
-    async def approvals_approve(approval_id: int, body: dict, request: Request):
+    def approvals_approve(approval_id: int, body: dict, request: Request):
         body = body or {}
         registry = _require_approval_registry()
         approved_by = (body.get("approved_by")
@@ -6583,7 +6583,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"ok": True, "approval": _approval_to_json(req)}
 
     @app.post("/api/approvals/{approval_id}/reject")
-    async def approvals_reject(approval_id: int, body: dict, request: Request):
+    def approvals_reject(approval_id: int, body: dict, request: Request):
         body = body or {}
         registry = _require_approval_registry()
         rejected_by = (body.get("rejected_by")
@@ -6600,7 +6600,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"ok": True, "approval": _approval_to_json(req)}
 
     @app.post("/api/approvals/{approval_id}/execute")
-    async def approvals_execute(approval_id: int, body: dict):
+    def approvals_execute(approval_id: int, body: dict):
         """Run the executor mapped to the approval's operation_type.
 
         Body may carry an ``executor_token`` reserved for future
@@ -6648,11 +6648,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return ChargebackReport(db, config)
 
     @app.get("/api/chargeback/centers")
-    async def chargeback_list_centers():
+    def chargeback_list_centers():
         return {"centers": _chargeback_report().list_centers()}
 
     @app.post("/api/chargeback/centers")
-    async def chargeback_add_center(body: dict):
+    def chargeback_add_center(body: dict):
         if not isinstance(body, dict):
             raise HTTPException(400, "JSON body bekleniyor")
         name = (body.get("name") or "").strip()
@@ -6672,7 +6672,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"id": cid, "ok": True}
 
     @app.put("/api/chargeback/centers/{center_id}")
-    async def chargeback_update_center(center_id: int, body: dict):
+    def chargeback_update_center(center_id: int, body: dict):
         if not isinstance(body, dict):
             raise HTTPException(400, "JSON body bekleniyor")
         # Strip unknown keys to make the endpoint idempotent and safe.
@@ -6691,14 +6691,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"ok": True}
 
     @app.delete("/api/chargeback/centers/{center_id}")
-    async def chargeback_remove_center(center_id: int):
+    def chargeback_remove_center(center_id: int):
         # Idempotent: deleting an already-deleted center returns ok=True
         # with deleted=False so callers can call this on stale UI state.
         deleted = _chargeback_report().remove_center(center_id)
         return {"ok": True, "deleted": deleted}
 
     @app.post("/api/chargeback/centers/{center_id}/owners")
-    async def chargeback_add_owner(center_id: int, body: dict):
+    def chargeback_add_owner(center_id: int, body: dict):
         if not isinstance(body, dict):
             raise HTTPException(400, "JSON body bekleniyor")
         pat = (body.get("owner_pattern") or "").strip()
@@ -6711,14 +6711,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {"ok": True, "added": added, "owner_pattern": pat}
 
     @app.delete("/api/chargeback/centers/{center_id}/owners/{owner_pattern:path}")
-    async def chargeback_remove_owner(center_id: int, owner_pattern: str):
+    def chargeback_remove_owner(center_id: int, owner_pattern: str):
         # ``:path`` lets the pattern contain backslashes / slashes from the
         # owner field (e.g. ``CONTOSO\jdoe``) without double-encoding.
         deleted = _chargeback_report().remove_owner(center_id, owner_pattern)
         return {"ok": True, "deleted": deleted}
 
     @app.get("/api/chargeback/{source_id}")
-    async def chargeback_compute(source_id: int):
+    def chargeback_compute(source_id: int):
         """Compute the chargeback report for the latest scan of a source."""
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if not scan_id:
@@ -6727,7 +6727,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result.to_dict()
 
     @app.get("/api/chargeback/{source_id}/export.xlsx")
-    async def chargeback_export_xlsx(
+    def chargeback_export_xlsx(
         source_id: int,
         format: Optional[str] = Query(
             None,
@@ -6882,7 +6882,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return 0
 
     @app.get("/api/forecast/{source_id}")
-    async def forecast_endpoint(
+    def forecast_endpoint(
         source_id: int,
         horizon_days: int = Query(180, ge=1, le=3650),
         model: str = Query("linear"),
@@ -6937,7 +6937,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return body
 
     @app.get("/api/forecast/{source_id}/export.xlsx")
-    async def forecast_export_xlsx(
+    def forecast_export_xlsx(
         source_id: int,
         horizon_days: int = Query(180, ge=1, le=3650),
         threshold_bytes: Optional[int] = Query(None, ge=0),
