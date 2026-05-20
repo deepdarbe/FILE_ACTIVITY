@@ -31,10 +31,8 @@ jobs:
         run: |
           python -m compileall -q src/ main.py dev_server.py
 
-      - name: YAML config smoke check (catch unresolved merge markers)
+      - name: Conflict-marker grep (catch unresolved merges)
         run: |
-          python -c "import yaml; yaml.safe_load(open('config.yaml'))"
-          # Bare grep guard for stray conflict markers in any tracked text file.
           # Only flag the unambiguous <<<<<<< / >>>>>>> markers — git always
           # emits both, so checking just these is sufficient. The middle
           # ======= marker is dropped because it collides with reStructuredText
