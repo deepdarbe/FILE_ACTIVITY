@@ -326,12 +326,16 @@ Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 # Issue #77: update'ten ONCE SQLite snapshot al — guncelleme bozulursa
 # operator hizlica geri donebilir. Snapshot basarisiz olsa bile update
 # devam eder (snapshot olmadan da olabilir, ama update durmamali).
+# --skip-if-recent-minutes 30: ayni 30 dakika icinde bir snapshot
+# zaten alinmissa yeniden alma — 3M dosyali bir DB'de VACUUM INTO yerine
+# online-backup'a gectik ama yine de 2-3 GB'lik yazma var, gereksiz
+# yere her update'te tekrarlamak operator'i bekletiyordu.
 $updateCmd = @"
 @echo off
 echo FILE ACTIVITY guncelleniyor (master branch)...
-echo  - Pre-update SQLite snapshot aliniyor...
+echo  - Pre-update SQLite snapshot kontrol ediliyor (son 30dk icindeyse atlanir)...
 cd /d "$InstallDir"
-"$InstallDir\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update"
+"$InstallDir\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update" --skip-if-recent-minutes 30
 if errorlevel 1 (
     echo  [!] Snapshot basarisiz - update yine de devam ediyor
 )

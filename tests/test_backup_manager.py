@@ -49,8 +49,10 @@ def _make_db(path: Path) -> None:
 
 
 def _make_mgr(tmp_path: Path, **overrides) -> BackupManager:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     db_path = tmp_path / "live.db"
-    _make_db(db_path)
+    if not db_path.exists():
+        _make_db(db_path)
     cfg = {
         "backup": {
             "enabled": True,
@@ -243,6 +245,106 @@ def test_restore_writes_db_atomically(tmp_path: Path):
         conn.close()
 
 
+# ── 5b. skip_if_recent_minutes — reuse a fresh snapshot ─────
+
+
+def test_snapshot_reuses_recent_when_window_positive(tmp_path: Path):
+    """A second snapshot() call within the freshness window must return
+    the same meta as the first — no new file written.
+
+    Regression guard for the operator slow path: a 3M-file DB takes
+    minutes to snapshot. Running update.cmd twice in a row must NOT
+    pay that cost twice.
+    """
+    mgr = _make_mgr(tmp_path, skip_if_recent_minutes=30)
+
+    first = mgr.snapshot(reason="update")
+    second = mgr.snapshot(reason="update-again")
+
+    assert second.id == first.id, (
+        "second snapshot within the window should reuse the first"
+    )
+    # Only one file on disk.
+    bak_files = list((tmp_path / "backups").glob("*.bak"))
+    assert len(bak_files) == 1
+    # Manifest has one entry, not two.
+    manifest = json.loads(Path(mgr.manifest_path).read_text("utf-8"))
+    assert len(manifest) == 1
+
+
+def test_snapshot_forces_fresh_when_window_zero(tmp_path: Path):
+    """``skip_if_recent_minutes=0`` (config or per-call) must always
+    take a fresh snapshot — emergency / forensic path."""
+    mgr = _make_mgr(tmp_path, skip_if_recent_minutes=0)
+    first = mgr.snapshot(reason="r1")
+    second = mgr.snapshot(reason="r2")
+    assert second.id != first.id
+    bak_files = list((tmp_path / "backups").glob("*.bak"))
+    assert len(bak_files) == 2
+
+
+def test_snapshot_per_call_override_beats_config(tmp_path: Path):
+    """Per-call ``skip_if_recent_minutes=0`` forces fresh even when
+    config opts into reuse. Symmetric: per-call=30 reuses even when
+    config disables (skip=0)."""
+    # Config wants reuse, caller forces fresh.
+    mgr = _make_mgr(tmp_path / "a", skip_if_recent_minutes=30)
+    first = mgr.snapshot(reason="r1")
+    second = mgr.snapshot(reason="r2", skip_if_recent_minutes=0)
+    assert second.id != first.id
+
+    # Config disables reuse, caller opts into it.
+    mgr2 = _make_mgr(tmp_path / "b", skip_if_recent_minutes=0)
+    a = mgr2.snapshot(reason="a")
+    b = mgr2.snapshot(reason="b", skip_if_recent_minutes=30)
+    assert a.id == b.id
+
+
+def test_snapshot_ignores_missing_recent_bak(tmp_path: Path):
+    """If the manifest says a recent snapshot exists but its .bak file
+    has been deleted out from under us (operator nuked it),
+    _find_recent_snapshot must NOT return that dead entry — otherwise
+    snapshot() would short-circuit to a meta pointing at a vanished
+    file."""
+    mgr = _make_mgr(tmp_path, skip_if_recent_minutes=30)
+    first = mgr.snapshot(reason="r1")
+    # Operator deletes the .bak between calls.
+    os.remove(first.path)
+    assert mgr._find_recent_snapshot(30) is None, (
+        "must not return a manifest entry whose .bak is gone"
+    )
+
+
+# ── 5c. snapshot file is a valid SQLite copy (online-backup) ─
+
+
+def test_snapshot_via_online_backup_is_restorable(tmp_path: Path):
+    """Sanity check the online-backup primitive: writing rows to the
+    live DB AFTER snapshot must not appear in the snapshot file. This
+    pins the consistency boundary — a snapshot captures the DB as of
+    the moment ``snapshot()`` started, not as of any later writes."""
+    mgr = _make_mgr(tmp_path, skip_if_recent_minutes=0)
+    meta = mgr.snapshot(reason="pre-write")
+
+    # Mutate the live DB after the snapshot was taken.
+    live = sqlite3.connect(mgr.db_path)
+    try:
+        live.execute("INSERT INTO t (payload) VALUES ('post-snapshot')")
+        live.commit()
+    finally:
+        live.close()
+
+    # Snapshot file must not have the new row.
+    snap = sqlite3.connect(meta.path)
+    try:
+        count = snap.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+        assert count == 50, (
+            f"snapshot should have the pre-write row count (50), got {count}"
+        )
+    finally:
+        snap.close()
+
+
 # ── 6. CLI snapshot writes JSONL to stdout ──────────────────
 
 
@@ -296,6 +398,55 @@ def test_cli_snapshot_writes_jsonl_to_stdout(tmp_path: Path):
     assert payload["size_bytes"] > 0
     # And the .bak file actually landed
     assert os.path.exists(payload["path"])
+
+
+def test_cli_snapshot_skip_if_recent_minutes_flag(tmp_path: Path):
+    """Run the CLI twice with ``--skip-if-recent-minutes 30``. The
+    second invocation must reuse the first snapshot — same id, no new
+    .bak on disk. Pins the operator's update.cmd contract."""
+    db_path = tmp_path / "fixture.db"
+    _make_db(db_path)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "database:\n"
+        f"  path: \"{db_path}\"\n"
+        "backup:\n"
+        "  enabled: true\n"
+        f"  dir: \"{tmp_path / 'backups'}\"\n"
+        "  keep_last_n: 5\n"
+        "  keep_weekly: 2\n"
+        # Config disables auto-reuse; the CLI flag forces it.
+        "  skip_if_recent_minutes: 0\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
+
+    def _run():
+        return subprocess.run(
+            [
+                sys.executable, "-m", "src.storage.backup_manager",
+                "--config", str(cfg_path),
+                "snapshot", "--reason", "update",
+                "--skip-if-recent-minutes", "30",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+
+    a = _run()
+    b = _run()
+    assert a.returncode == 0 and b.returncode == 0
+    pa = json.loads(a.stdout.strip().splitlines()[-1])
+    pb = json.loads(b.stdout.strip().splitlines()[-1])
+    assert pa["id"] == pb["id"], (
+        "second CLI invocation should reuse the recent snapshot"
+    )
+    bak_files = list((tmp_path / "backups").glob("*.bak"))
+    assert len(bak_files) == 1
 
 
 # ─────────────────────────────────────────────────────────────

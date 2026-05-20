@@ -1,16 +1,23 @@
 """SQLite auto-backup manager (issue #77 Phase 1).
 
-Provides safe, lock-free SQLite snapshots using ``VACUUM INTO`` (works under
-WAL without exclusive locks), SHA-256 verification, an atomic JSON manifest,
-and a retention policy combining last-N + weekly survivors.
+Provides safe, lock-free SQLite snapshots, SHA-256 verification, an atomic
+JSON manifest, and a retention policy combining last-N + weekly survivors.
 
 Design notes
 ------------
-* ``VACUUM INTO 'path'`` is the single supported snapshot primitive — it
-  produces a defragmented, internally-consistent copy without holding an
-  exclusive lock on the live DB. We deliberately do NOT use ``shutil.copy``
-  (would race with WAL writes) or ``sqlite3.Connection.backup`` (extra
-  complexity, no upside here).
+* Snapshot primitive is :py:meth:`sqlite3.Connection.backup` (the SQLite
+  online-backup API). It streams pages from the live DB to the snapshot
+  file under proper WAL locking, without holding an exclusive lock. For
+  a multi-GB DB this is **substantially faster than VACUUM INTO** because
+  it copies pages as-is instead of defragmenting + rewriting the entire
+  file. The original Phase-1 design used VACUUM INTO; on a customer's
+  3M-file (~2-3 GB) DB, the snapshot blocked ``update.cmd`` for 2-5
+  minutes per run, prompting the switch. ``VACUUM INTO`` is still kept
+  as a fallback at the bottom of ``snapshot()`` for resilience.
+* ``skip_if_recent_minutes`` (config ``backup.skip_if_recent_minutes``,
+  default 30) lets callers short-circuit when a fresh snapshot already
+  exists. ``update.cmd`` runs multiple times during a day of operator
+  iteration; re-snapshotting every time is wasted I/O.
 * ``manifest.json`` is rewritten atomically (tempfile + ``os.replace``).
 * ``restore()`` is provided as a Phase-1 utility but never auto-called this
   round. Phase 2 (``auto_restore_on_corruption``) will wire it from the
@@ -137,6 +144,17 @@ class BackupManager:
         self.auto_restore_on_corruption: bool = bool(
             backup_cfg.get("auto_restore_on_corruption", False)
         )
+        # If the most recent snapshot is younger than this many minutes
+        # the next snapshot() call returns it instead of doing the I/O
+        # again. 0 disables the short-circuit. Default 30 — matches the
+        # operator's typical update.cmd cadence during a debugging
+        # session. A negative value is clamped to 0.
+        try:
+            self.skip_if_recent_minutes: int = max(
+                0, int(backup_cfg.get("skip_if_recent_minutes", 30) or 0)
+            )
+        except (TypeError, ValueError):
+            self.skip_if_recent_minutes = 30
 
     # ──────────────────────────────────────────────
     # Paths
@@ -220,8 +238,59 @@ class BackupManager:
         # Indirection so tests can monkeypatch ``BackupManager._now``.
         return datetime.now()
 
-    def snapshot(self, reason: str) -> SnapshotMeta:
-        """Take a snapshot via ``VACUUM INTO``.
+    def _find_recent_snapshot(
+        self,
+        max_age_minutes: int,
+        now: Optional[datetime] = None,
+    ) -> Optional[SnapshotMeta]:
+        """Return the newest manifest entry younger than ``max_age_minutes``,
+        or ``None`` if there isn't one (or its file is missing from disk).
+
+        ``now`` defaults to :meth:`_now` but callers in the snapshot()
+        path pass it in to avoid double-counting against test fixtures
+        that monkeypatch ``_now`` to return a finite sequence.
+
+        Used by :meth:`snapshot` to short-circuit when a recent snapshot
+        already exists — re-snapshotting a 2-3 GB DB during a debugging
+        loop is the operator's most painful slow path.
+        """
+        if max_age_minutes <= 0:
+            return None
+        try:
+            metas = self.list_snapshots()
+        except Exception:
+            return None
+        if not metas:
+            return None
+        if now is None:
+            now = self._now()
+        cutoff_seconds = max_age_minutes * 60
+        # Iterate newest -> oldest, return the first usable hit.
+        for meta in reversed(metas):
+            try:
+                created = datetime.fromisoformat(meta.created_at)
+            except (TypeError, ValueError):
+                continue
+            age = (now - created).total_seconds()
+            if age < 0:
+                # Clock skew or fixture monkeypatch — treat as fresh.
+                age = 0
+            if age <= cutoff_seconds and meta.path and os.path.exists(meta.path):
+                return meta
+        return None
+
+    def snapshot(
+        self,
+        reason: str,
+        skip_if_recent_minutes: Optional[int] = None,
+    ) -> SnapshotMeta:
+        """Take a snapshot via the SQLite online-backup API.
+
+        When ``skip_if_recent_minutes`` is positive (or, if not passed,
+        ``backup.skip_if_recent_minutes`` from config is positive) and a
+        snapshot younger than that window exists on disk, this method
+        returns that meta WITHOUT taking a new snapshot. Pass ``0``
+        explicitly to force a fresh snapshot.
 
         Returns the SnapshotMeta on success. Raises on failure — callers
         that want best-effort behaviour must wrap this in try/except (the
@@ -232,15 +301,34 @@ class BackupManager:
                 f"source DB not found: {self.db_path}"
             )
 
-        self._ensure_dir()
+        # Resolve the freshness window: explicit param wins, else config.
+        window = (
+            self.skip_if_recent_minutes
+            if skip_if_recent_minutes is None
+            else max(0, int(skip_if_recent_minutes))
+        )
+        # Pull the timestamp once and reuse for both the freshness check
+        # and the new snapshot's id/created_at. Avoids double-counting
+        # against test fixtures that monkeypatch ``_now`` with a finite
+        # counter.
         now = self._now()
+        if window > 0:
+            existing = self._find_recent_snapshot(window, now=now)
+            if existing is not None:
+                logger.info(
+                    "snapshot reused: id=%s age<%dmin (reason=%s)",
+                    existing.id, window, reason,
+                )
+                return existing
+
+        self._ensure_dir()
         snap_id = now.strftime("%Y%m%d_%H%M%S")
         out_path = os.path.join(
             self.backup_dir, self._snapshot_filename(snap_id)
         )
 
         # If a snapshot in the same second exists (rare in tests), suffix
-        # a counter so VACUUM INTO doesn't fail with "file exists".
+        # a counter so the destination file is unique.
         if os.path.exists(out_path):
             i = 1
             while True:
@@ -259,18 +347,9 @@ class BackupManager:
             self.db_path, out_path, reason,
         )
 
-        # VACUUM INTO requires a fresh connection (no open transaction)
-        # and refuses to overwrite an existing path — both already
-        # guaranteed above.
-        conn = sqlite3.connect(self.db_path, timeout=30)
-        try:
-            # Quote the path safely — VACUUM INTO uses string literal
-            # syntax; double single-quotes inside the literal.
-            quoted = out_path.replace("'", "''")
-            # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
-            conn.execute(f"VACUUM INTO '{quoted}'")
-        finally:
-            conn.close()
+        t0 = time.monotonic()
+        self._copy_db(out_path)
+        elapsed = time.monotonic() - t0
 
         size = os.path.getsize(out_path)
         sha = self._sha256_file(out_path)
@@ -289,10 +368,50 @@ class BackupManager:
         self._write_manifest_atomic(entries)
 
         logger.info(
-            "snapshot ok: id=%s size=%d sha256=%s reason=%s",
-            meta.id, meta.size_bytes, meta.sha256[:12], meta.reason,
+            "snapshot ok: id=%s size=%d sha256=%s took=%.2fs reason=%s",
+            meta.id, meta.size_bytes, meta.sha256[:12], elapsed, meta.reason,
         )
         return meta
+
+    def _copy_db(self, out_path: str) -> None:
+        """Copy the live DB to ``out_path`` using the SQLite online-backup
+        API. Falls back to VACUUM INTO if the streaming backup raises,
+        so the caller never loses the snapshot path on a CPython quirk.
+
+        The online-backup API copies pages as-is and re-acquires the
+        read lock between page batches, which is what makes it WAL-safe
+        AND faster than VACUUM INTO (no defragment / rewrite work).
+        Page batch size 1024 keeps the read lock held for ~4 MB at a
+        time on a default 4096-byte page DB — short enough that writers
+        don't starve, long enough that the per-batch syscall overhead
+        stays low.
+        """
+        src = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            dst = sqlite3.connect(out_path, timeout=30)
+            try:
+                src.backup(dst, pages=1024)
+            finally:
+                dst.close()
+        except sqlite3.Error as e:
+            # Best-effort cleanup of the partial output, then fall back.
+            try:
+                if os.path.exists(out_path):
+                    os.remove(out_path)
+            except OSError:
+                pass
+            logger.warning(
+                "online-backup failed (%s) — falling back to VACUUM INTO",
+                e,
+            )
+            try:
+                quoted = out_path.replace("'", "''")
+                # CODEQL-SAFE: value is config-derived, never from request handlers. See audit I-3.
+                src.execute(f"VACUUM INTO '{quoted}'")
+            except sqlite3.Error:
+                raise
+        finally:
+            src.close()
 
     # ──────────────────────────────────────────────
     # List / Prune / Restore
@@ -847,9 +966,16 @@ def _resolve_db_path_and_manager(config_path: str) -> BackupManager:
     return BackupManager(db_path, cfg)
 
 
-def _cmd_snapshot(mgr: BackupManager, reason: str) -> int:
+def _cmd_snapshot(
+    mgr: BackupManager,
+    reason: str,
+    skip_if_recent_minutes: Optional[int] = None,
+) -> int:
     try:
-        meta = mgr.snapshot(reason=reason)
+        meta = mgr.snapshot(
+            reason=reason,
+            skip_if_recent_minutes=skip_if_recent_minutes,
+        )
     except Exception as e:
         logger.error("snapshot failed: %s\n%s", e, traceback.format_exc())
         print(json.dumps({"ok": False, "error": str(e)}))
@@ -910,6 +1036,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_snap = sub.add_parser("snapshot", help="Take a snapshot now.")
     p_snap.add_argument("--reason", default="manual",
                         help="Free-text reason for the manifest entry.")
+    p_snap.add_argument(
+        "--skip-if-recent-minutes", type=int, default=None,
+        help=(
+            "If a snapshot younger than N minutes exists, reuse it "
+            "instead of taking a new one. Pass 0 to force a fresh "
+            "snapshot. Defaults to the config value "
+            "(backup.skip_if_recent_minutes, default 30)."
+        ),
+    )
 
     sub.add_parser("list", help="List known snapshots from the manifest.")
 
@@ -922,7 +1057,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     mgr = _resolve_db_path_and_manager(args.config)
 
     if args.cmd == "snapshot":
-        return _cmd_snapshot(mgr, args.reason)
+        return _cmd_snapshot(
+            mgr, args.reason,
+            skip_if_recent_minutes=args.skip_if_recent_minutes,
+        )
     if args.cmd == "list":
         return _cmd_list(mgr)
     if args.cmd == "restore":
