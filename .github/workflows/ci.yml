@@ -27,6 +27,13 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      # ci_guards.py imports PyYAML for the D-YAML + S-YAML checks
+      # (duplicate-key detection + compliance schema assertion). The
+      # ubuntu-latest runner Python doesn't ship pyyaml so install
+      # explicitly. Single dep, pip-cache hit on every subsequent run.
+      - name: Install ci_guards deps
+        run: python -m pip install --quiet pyyaml
+
       - name: py_compile across src/ and entry points
         run: |
           python -m compileall -q src/ main.py dev_server.py
