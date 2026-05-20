@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="app-version" content="__APP_VERSION__">
 <title>FILE ACTIVITY - Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
@@ -2653,12 +2654,43 @@ function _setHtmlSafe(id, html) {
     }
 }
 
+// Post-#212 customer report: "_setTextSafe: element not found: ov-*" with
+// no source-side regression. Cache-bust on the / endpoint (api.py) keeps
+// browsers from pinning a stale index.html, but if warnings still fire we
+// want the very first one to dump enough state to triangulate: HTML version
+// the browser actually has, whether the overview wrapper exists, how many
+// `.page` containers got parsed. After that one dump, warnings stay quiet
+// per-id to avoid spamming the console.
+let _missingElDiagShown = false;
+const _missingElSeen = new Set();
+function _logMissingElDiag(id) {
+    if (_missingElSeen.has(id)) return;
+    _missingElSeen.add(id);
+    if (!window.console) return;
+    if (!_missingElDiagShown) {
+        _missingElDiagShown = true;
+        try {
+            const meta = document.querySelector('meta[name="app-version"]');
+            const overview = document.getElementById('page-overview');
+            console.warn('[FA-diag] missing-element first warning — context:', {
+                appVersion: meta ? meta.getAttribute('content') : '(no meta)',
+                pageOverviewExists: !!overview,
+                pageOverviewChildren: overview ? overview.children.length : 0,
+                pageContainerCount: document.querySelectorAll('.page').length,
+                activePage: (document.querySelector('.page.active') || {}).id || '(none)',
+                readyState: document.readyState,
+            });
+        } catch (_) { /* diag is best-effort */ }
+    }
+    console.warn('_setTextSafe: element not found:', id);
+}
+
 function _setTextSafe(id, text) {
     const el = document.getElementById(id);
     if (el) {
         el.textContent = text == null ? '' : String(text);
-    } else if (window && window.console) {
-        console.warn('_setTextSafe: element not found:', id);
+    } else {
+        _logMissingElDiag(id);
     }
 }
 

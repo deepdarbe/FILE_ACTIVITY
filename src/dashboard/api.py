@@ -820,11 +820,41 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
+        # Issue (post-#212) — "_setTextSafe: element not found: ov-*" warnings
+        # in a customer's console with no source-side regression. The HTML and
+        # the inline JS travel together, so a browser cache mismatch shouldn't
+        # be possible in theory, yet aggressive heuristic caching by Chrome
+        # could pin an old HTML body while a later visit revalidates and gets
+        # a different inline script (e.g. through a stale intermediary or a
+        # background sync). Force-revalidate the document on every load and
+        # cache-bust /static/* with the build version so a new app version
+        # always sweeps the browser cache clean.
         html_path = os.path.join(static_dir, "index.html")
+        no_cache_headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-App-Version": APP_VERSION,
+        }
         if os.path.exists(html_path):
             with open(html_path, "r", encoding="utf-8") as f:
-                return f.read()
-        return "<h1>FILE ACTIVITY Dashboard</h1><p>static/index.html bulunamadi.</p>"
+                html = f.read()
+            # Substitute the build-version meta placeholder + add ?v=<ver>
+            # to internal static script srcs so a deploy invalidates them.
+            html = html.replace("__APP_VERSION__", APP_VERSION)
+            html = html.replace(
+                'src="/static/components/entity-list.js"',
+                f'src="/static/components/entity-list.js?v={APP_VERSION}"',
+            )
+            html = html.replace(
+                'src="/static/components/view-toggle.js"',
+                f'src="/static/components/view-toggle.js?v={APP_VERSION}"',
+            )
+            return HTMLResponse(content=html, headers=no_cache_headers)
+        return HTMLResponse(
+            content="<h1>FILE ACTIVITY Dashboard</h1><p>static/index.html bulunamadi.</p>",
+            headers=no_cache_headers,
+        )
 
     # --- SOURCE API (ID-based) ---
 
