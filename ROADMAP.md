@@ -4,8 +4,93 @@
 > is, where it's going, and how the work is organised. Mirrored by a pinned
 > GitHub issue that tracks the live backlog.
 
-**Last updated**: 2026-04-28 — post customer prod-test wave, v1.9.0 (post-rc1).
-See "Recent wave (2026-04-28)" below for what shipped this round.
+**Last updated**: 2026-05-22 — post-stabilization audit + 3 PRs merged.
+See "Recent wave (2026-05-22)" for what shipped this round; older waves below it.
+
+---
+
+## Recent wave (2026-05-22) — post-stabilization hardening
+
+Stabilization week (issue #194) closed 2026-05-20. This wave is the
+honest-state audit that followed it: lessons-from-issues retrospective,
+architecture contract audit, external-research pass, and three PRs that
+landed concrete improvements. No new features — the line from stabilization
+holds.
+
+### Shipped
+- **PR #215** (`master 4cbef2c`) — **event-loop starvation fix**. The
+  customer's "every page is waiting" symptom traced to **165 of 182**
+  dashboard endpoints declared `async def` while only doing sync DB
+  calls. FastAPI runs `async def` on the event loop; a sync DB call
+  inside blocks the whole loop. Mechanical AST-driven conversion of
+  166 endpoints to plain `def` so Starlette dispatches them to anyio
+  worker threads. 17 endpoints kept async (middlewares + handlers that
+  `await request.json()`).
+- **PR #216** (`master bcac79b`) — **`D-CHAIN` ci-guard + 18-site
+  migration**. The `document.getElementById('id').innerHTML = ...`
+  pattern null-derefs whenever the element isn't in the DOM (the
+  #200/#201/#202 class). Migrated all 18 existing instances to the
+  `_setHtmlSafe(id, html)` helper, then added a CI guard that bans the
+  chained shape going forward. Self-tests at `tests/test_ci_guards.py`.
+  `INNERHTML_BUDGET` tightened 180 → 140.
+- **PR #217** (`master 277471f`) — **`scripts/bench_storage.py`**.
+  Single-file harness that times the 8 hot dashboard queries through
+  direct SQLite vs DuckDB `:memory:` + ATTACH (matching
+  `AnalyticsEngine._cursor`). Self-test on 10k synthetic rows shows
+  DuckDB **9–37× slower** because ATTACH overhead (~50 ms/call)
+  dominates query time on small tables. Customer runs this on the real
+  3.1M-row DB to settle "should we drop DuckDB?" empirically before
+  Phase 3 of #114 is scheduled.
+
+### Audit findings (full punch-list in [#29 comment 2026-05-22](https://github.com/deepdarbe/file_activity/issues/29))
+1. **Frontend monolith** — `index.html` is 9,475 lines of inline JS with
+   ~131 `innerHTML =` writes (down from 149 after #216). Root cause of
+   the #193/#197/#200/#202 regression cluster. Candidate fix: incremental
+   HTMX + Alpine + esbuild migration.
+2. **`parquet_staging.enabled` default-true** — the implementation is
+   sound (per-flush ATTACH, fallback), but the foot-gun from #174 is
+   still loaded. Worth flipping to false by default in a future PR.
+3. **No customer-shape integration test** — local pytest passes, prod
+   breaks. Most of the recent regressions lived in this gap (#165 FRN,
+   #175 size-zero, #193 JS).
+4. **Open question — DuckDB worth keeping?** — answered by running #217
+   on real DB.
+
+### Dependabot queue (open, not merged this wave)
+- **Safe (patch/minor)**: #209 pyyaml 6.0.1→6.0.3, #208 duckdb 1.0→1.5,
+  #211 apscheduler 3.10→3.11
+- **CI actions**: #205 actions/checkout v6, #206 codeql-action v4,
+  #204 docker/build-push-action v7
+- **Majors (need code audit)**: #210 pillow 10→12 (perceptual hash),
+  #207 elasticsearch 8→9 (backend module)
+
+### Status diagram
+
+```mermaid
+graph TD
+    A[master @ 277471f<br/>post #215 #216 #217] --> B[customer test client-side]
+    B --> C{Event-loop fix landed?}
+    C -->|p95 dashboard load < 2s| D[Close 'every page waiting' chapter ✅]
+    C -->|still slow| E[Profile individual slow queries<br/>indexes / precompute]
+
+    A --> F[Run #217 bench on real 3.1M-row DB]
+    F -->|DuckDB > SQLite| G[Keep, pin in docs]
+    F -->|SQLite competitive| H[Schedule #114 Phase 3<br/>drop DuckDB]
+
+    A --> I[Dependabot triage]
+    I --> J[Batch merge safe minors:<br/>#208 #209 #211]
+    I --> K[CI action bumps:<br/>#204 #205 #206]
+    I --> L[Major audit:<br/>#207 #210]
+
+    A --> M[#29 audit punch-list]
+    M --> N[Punch-list 1: HTMX pilot on 1 page]
+    M --> O[Punch-list 2: parquet_staging default-off]
+    M --> P[Punch-list 3: integration-test corpus]
+
+    style D fill:#90EE90
+    style H fill:#90EE90
+    style J fill:#90EE90
+```
 
 ---
 

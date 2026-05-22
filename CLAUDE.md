@@ -6,26 +6,44 @@
 
 ---
 
-## 🛑 ACTIVE: Stabilization week (2026-04-28 → 2026-05-05)
+## ✅ Stabilization week (2026-04-28 → 2026-05-05) — CLOSED
 
-**Read [issue #194](https://github.com/deepdarbe/file_activity/issues/194) FIRST**.
-It's the running log: every customer test, every fix, every regression posts there
-as a comment. Mermaid status diagram, 7-day plan, open architectural debts list.
+[Issue #194](https://github.com/deepdarbe/file_activity/issues/194) closed
+2026-05-20. The 7-day plan executed; the four-times-recurring WAL leak
+chapter (#132/#174/#181/#185) is sealed by the per-query DuckDB conn
+contract and the read-only pool. The followup audit lives in
+[#29 comment 2026-05-22](https://github.com/deepdarbe/file_activity/issues/29) — read that first when resuming.
 
-### Hard rules during this week
-- **NO new features.** Bug fixes for prod-blockers only.
+### Discipline retained from stabilization (now permanent)
 - **`node --check` is mandatory** for any `index.html` edit (PR #193 regression
-  was a JS parse error — would have been caught in 1 second).
+  was a JS parse error — would have been caught in 1 second). Wired via
+  `.github/workflows/ci.yml` and `scripts/ci_guards.py`.
 - **No parallel agents on the same file.** Wave-of-agents on `index.html` produced
   the JS regression. One agent per file per PR.
-- **Every customer interaction → post a comment to #194** with format:
-  `Customer msg / What tested / Outcome ✅⏳❌ / Action / Next`.
-- **Every PR this week MUST cite a prod-blocker** in #194 comments, otherwise close it.
+- **`scripts/ci_guards.py` (D-YAML / S-YAML / LOADERS / HTML-BUDGET / D-CHAIN /
+  SVC-PARITY)** runs on every PR. Adds belong here, not in ad-hoc PR diffs.
+- **Customer interactions still benefit from the #194 log format** even though
+  the week is over: `Customer msg / What tested / Outcome ✅⏳❌ / Action / Next`.
 
 The stabilization decision came after an honest assessment: 35 PRs in one session
 included **4 separate fixes for the same WAL leak root cause** (#132, #174, #181,
-#185) and a JS regression that broke every menu (#193). The working pattern was
-producing whack-a-mole, not stability. Plan A is "stop, audit, harden, then resume".
+#185) and a JS regression that broke every menu (#193). The pattern of
+"customer reports → emergency hotfix → next regression" was structural, not
+incidental. Plan A worked — the codebase is in a more honest state now than
+when the week began.
+
+### Post-stabilization wave (2026-05-22)
+- **PR #215** — event-loop starvation root-cause fix. 166 dashboard endpoints
+  were `async def` calling sync DB code, blocking the FastAPI loop. Converted
+  to plain `def` so Starlette dispatches to anyio worker threads. Customer's
+  "every page is waiting" symptom maps to this.
+- **PR #216** — `D-CHAIN` ci-guard plus 18 `document.getElementById(...).innerHTML =`
+  call-sites migrated to `_setHtmlSafe`. Prevents the #200/#201/#202 null-deref
+  class permanently. `INNERHTML_BUDGET` tightened 180 → 140.
+- **PR #217** — `scripts/bench_storage.py` harness. Customer can run on their
+  real 3.1M-row DB to settle "is DuckDB actually faster than SQLite?" — 10k
+  synthetic rows already shows DuckDB 9–37× slower because ATTACH overhead
+  (~50 ms/call) dominates.
 
 ---
 
@@ -64,12 +82,14 @@ to a real architectural issue (long-lived DuckDB ATTACH blocking WAL truncation)
 
 | Symptom | Likely file | Why |
 |---------|-------------|-----|
+| Every dashboard page "waiting" / loading | `src/dashboard/api.py` (sync def, ~160 endpoints) | FastAPI event-loop starvation if a new endpoint is added as `async def` while making sync DB calls — see #215. Default to plain `def`. |
 | Scan emits 0 files on real NTFS | `src/scanner/backends/_ntfs_records.py` | FRN sequence-number masking (lower 48 bits) — see #164/#165 |
 | Scan aborts mid-run with `database is locked` | `src/storage/database.py::bulk_insert_scanned_files` | 5× retry with 1/2/4/8/16s backoff (#176) |
 | WAL stuck at 13+ GB, won't truncate | `src/storage/analytics.py::AnalyticsEngine` | Per-query DuckDB conn (#185/#186) — long-lived ATTACH was the leak |
 | Dashboard menus empty during scan | `src/storage/database.py::get_read_cursor` + `partial_summary_v2` | Read-only pool (#184) + v2 schema (#183) + frontend partial-data (#182) |
 | `BOYUT: 0 B` on every file | `src/scanner/size_enricher.py` | MFT enum is path-only by design; size enrich pass runs after walk (#179) |
 | `update.cmd` fails on locked `bin\nssm.exe` | `deploy/setup-source.ps1` | Service-aware Stop/Start wrapper (#172/#173) |
+| Dashboard menu disappears / `TypeError: null.innerHTML` | `src/dashboard/static/index.html` | Use `_setHtmlSafe(id, html)` helper, never `document.getElementById(...).innerHTML =`. Enforced by `D-CHAIN` (#216). |
 
 ---
 
@@ -95,11 +115,12 @@ DuckDB analytics (AnalyticsEngine._cursor):
   - Pinned by tests/test_analytics_per_query.py
 ```
 
-**The trap that bit this codebase three times** (#132 / #174 / #185):
+**The trap that bit this codebase four times** (#132 / #174 / #181 / #185):
 A long-lived reader (any kind — dashboard handle, DuckDB ATTACH, scheduler probe)
 prevents `wal_checkpoint(TRUNCATE)` from shrinking the WAL. Symptom is always
 "WAL grows to N GB and never shrinks". Fix is always "make the reader short-lived".
 If you see that symptom in a future session, look for the new long-lived reader.
+Background read on the failure mode: https://loke.dev/blog/sqlite-checkpoint-starvation-wal-growth
 
 ---
 
@@ -152,25 +173,41 @@ subagent today opens against an older base because they take 5-30 min and master
 
 ## CI flake reality (don't chase ghosts)
 
-`Python syntax check` and `Pytest (Linux, Docker)` flake on PRs even when master is green.
-Diagnosis is in #91's body: pip-install timeouts on the GHA runner before pytest collects.
-Docker test infra (#188) addresses the chronic part. Until 3 master runs are green back-to-back,
-**`continue-on-error: true` stays on**. **Don't keep diagnosing the same flake every PR**;
-verify locally and merge if local + master are green.
+Two checks flake on PRs even when master is green:
+
+- **`Pytest (Linux, Docker)`** — pip-install timeouts on the GHA runner before pytest
+  collects. Diagnosis in #91. Docker test infra (#188) addresses the chronic part.
+  Job has `continue-on-error: true` until 3 master runs are green back-to-back.
+- **`CodeQL` (umbrella)** — distinct from `Analyze (python)` / `Analyze (javascript)`
+  which actually scan. The umbrella check inherits master-side Dependabot advisories;
+  it can fail on a PR while the analysis jobs pass. Same advisory has been on master
+  through #214/#215/#216/#217. Don't re-diagnose per PR.
+
+**Don't keep diagnosing the same flake every PR**; verify locally and merge if
+local + master are green.
 
 ---
 
-## What's open (as of 2026-04-28 end of wave)
+## What's open (as of 2026-05-22 post-stabilization audit)
 
-Only **2 open issues**:
+Code-tracking issues:
+- **#29** — EPIC roadmap tracker (pinned, never closed). 2026-05-22 audit comment
+  is the latest punch list — read it before starting any architectural work.
+- **#114** — Pluggable storage Phase 3-5. Deliberately deferred. Phase 1+2 shipped
+  (#121, #167); Phase 3 = dashboard query layer rewrite (~30 endpoints).
+  Architecturally significant — wait for the #217 bench result before committing.
 
-- **#29** — EPIC roadmap tracker (pinned, never closed)
-- **#114** — Pluggable storage Phase 3-5. Deliberately deferred. Phase 1+2 shipped (#121, #167);
-  Phase 3 = dashboard query layer rewrite (~30 endpoints). Architecturally significant —
-  needs a fresh head, NOT a tired evening session.
+Dependabot queue (10 PRs open, none merged yet — handle in this order):
+- **Patch / minor (safe, batch-merge)**: #209 pyyaml 6.0.1→6.0.3, #208 duckdb 1.0→1.5,
+  #211 apscheduler 3.10→3.11
+- **CI actions (review, then merge)**: #205 actions/checkout v4→v6, #206 codeql-action v3→v4,
+  #204 docker/build-push-action v5→v7
+- **Majors (need code audit before merging)**: #210 pillow 10→12 (touches `src/scanner/image_hash.py`),
+  #207 elasticsearch 8→9 (touches `src/storage/backends/elasticsearch_backend.py`)
 
 Closed-this-wave issues whose context might still be referenced: #14, #20, #80, #81, #83,
-#91, #112, #132, #165, #166, #172, #174, #175, #177, #181, #185.
+#91, #112, #132, #165, #166, #172, #174, #175, #177, #181, #185, #193–#202, #212, #213,
+#194 (stabilization tracker).
 
 ---
 
@@ -197,6 +234,13 @@ grep -rn "_FRN_SEGMENT_MASK" src/ tests/
 # Inspect WAL pressure live during a customer scan:
 ls -la C:\FileActivity\data\file_activity.db-wal
 # (>500 MB during scan = normal; >5 GB sustained after scan = leak; investigate readers)
+
+# Run the SQLite-vs-DuckDB benchmark on the customer's real DB (#217):
+python scripts/bench_storage.py --db C:\FileActivity\data\file_activity.db
+# Settles "is DuckDB worth it?" empirically. Tested 10k synthetic rows → DuckDB 9-37x slower.
+
+# Run every CI guard locally before pushing (D-YAML / S-YAML / LOADERS / HTML-BUDGET / D-CHAIN / SVC-PARITY):
+python scripts/ci_guards.py
 
 # After a customer reports a problem, ALWAYS get:
 #   1. The version from the dashboard footer (e.g. v1.9.0-rc1+30fd8a9)
