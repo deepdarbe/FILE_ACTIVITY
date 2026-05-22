@@ -238,9 +238,18 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 .drilldown-header h3 { font-size: 16px; font-weight: 700; }
 .drilldown-header .dd-actions { display: flex; gap: 8px; align-items: center; }
 .drilldown-body { flex: 1; overflow-y: auto; padding: 0; }
-.drilldown-body table { font-size: 12px; }
-.drilldown-body td { padding: 8px 12px; max-width: 350px; word-break: break-all; }
-.drilldown-body th { padding: 10px 12px; }
+.drilldown-body table { font-size: 12px; border-collapse: collapse; }
+.drilldown-body td { padding: 4px 8px; max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+.drilldown-body th { padding: 5px 8px; position: sticky; top: 0; background: var(--bg-secondary); z-index: 2; cursor: pointer; user-select: none; white-space: nowrap; border-bottom: 2px solid var(--border); }
+.drilldown-body th:hover { background: var(--bg-hover); }
+.drilldown-body th .sort-arrow { font-size: 10px; margin-left: 3px; opacity: 0.5; }
+.drilldown-body th .sort-arrow.active { opacity: 1; }
+.drilldown-body td.col-size, .drilldown-body th.col-size { text-align: right; font-family: 'SF Mono', 'Consolas', monospace; }
+.drilldown-body td.col-date { font-family: 'SF Mono', 'Consolas', monospace; font-size: 11px; }
+.drilldown-body td.col-check, .drilldown-body th.col-check { width: 28px; text-align: center; padding: 4px; }
+.dd-view-toggle { display: flex; gap: 2px; background: var(--bg-secondary); border-radius: 6px; padding: 2px; }
+.dd-view-toggle button { padding: 3px 10px; border: none; background: transparent; color: var(--text-muted); border-radius: 4px; cursor: pointer; font-size: 11px; }
+.dd-view-toggle button.active { background: var(--accent); color: white; }
 .drilldown-footer { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
 .drilldown-footer .dd-pagination { display: flex; gap: 6px; align-items: center; }
 .dd-page-btn { padding: 4px 12px; background: var(--bg-secondary); border: 1px solid var(--border-light); color: var(--text-secondary); border-radius: 6px; cursor: pointer; font-size: 12px; }
@@ -4993,20 +5002,124 @@ let ddCurrentUrl = '';
 let ddCurrentPage = 1;
 let ddCurrentArchiveParams = null;
 let ddCurrentTitle = '';
+let ddSortCol = 'file_size';
+let ddSortDir = 'desc';
+let ddViewMode = 'table';
+let ddCurrentFiles = [];
+let ddSelectedFiles = new Set();
 
 function showDrilldown(title, url, archiveParams) {
     ddCurrentUrl = url;
     ddCurrentPage = 1;
     ddCurrentArchiveParams = archiveParams || null;
     ddCurrentTitle = title;
+    ddSortCol = 'file_size';
+    ddSortDir = 'desc';
+    ddSelectedFiles = new Set();
     document.getElementById('dd-title').textContent = title;
     document.getElementById('dd-archive-btn').style.display = archiveParams ? 'inline-flex' : 'none';
     document.getElementById('drilldown-overlay').classList.add('active');
+    // Reset view toggle buttons
+    const toggleBtns = document.querySelectorAll('#dd-view-toggle button');
+    toggleBtns.forEach(b => b.classList.toggle('active', b.textContent === 'Tablo'));
+    ddViewMode = 'table';
     loadDrilldownPage(url, 1);
 }
 
 function closeDrilldown() {
     document.getElementById('drilldown-overlay').classList.remove('active');
+}
+
+function setDrilldownView(mode) {
+    ddViewMode = mode;
+    const toggleBtns = document.querySelectorAll('#dd-view-toggle button');
+    toggleBtns.forEach(b => b.classList.toggle('active',
+        (mode === 'table' && b.textContent === 'Tablo') ||
+        (mode === 'card' && b.textContent === 'Kart')
+    ));
+    renderDrilldownData();
+}
+
+function ddSortBy(col) {
+    if (ddSortCol === col) {
+        ddSortDir = ddSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+        ddSortCol = col;
+        ddSortDir = (col === 'file_size' || col === 'last_access_time' || col === 'last_modify_time') ? 'desc' : 'asc';
+    }
+    renderDrilldownData();
+}
+
+function ddToggleAll(checked) {
+    ddSelectedFiles = checked ? new Set(ddCurrentFiles.map((_, i) => i)) : new Set();
+    renderDrilldownData();
+}
+
+function ddToggleRow(idx) {
+    if (ddSelectedFiles.has(idx)) ddSelectedFiles.delete(idx);
+    else ddSelectedFiles.add(idx);
+    renderDrilldownData();
+}
+
+function _extractFolder(filePath) {
+    if (!filePath) return '-';
+    const sep = filePath.includes('\\') ? '\\' : '/';
+    const parts = filePath.split(sep);
+    return parts.length > 1 ? parts.slice(0, -1).join(sep) : '-';
+}
+
+function _sortFiles(files) {
+    const sorted = [...files];
+    sorted.sort((a, b) => {
+        let va = a[ddSortCol], vb = b[ddSortCol];
+        if (ddSortCol === 'file_size') { va = va || 0; vb = vb || 0; }
+        else if (ddSortCol === 'folder') { va = _extractFolder(a.file_path); vb = _extractFolder(b.file_path); }
+        else { va = (va || '').toString().toLowerCase(); vb = (vb || '').toString().toLowerCase(); }
+        if (va < vb) return ddSortDir === 'asc' ? -1 : 1;
+        if (va > vb) return ddSortDir === 'asc' ? 1 : -1;
+        return 0;
+    });
+    return sorted;
+}
+
+function _sortArrow(col) {
+    if (ddSortCol !== col) return '<span class="sort-arrow">⇅</span>';
+    return `<span class="sort-arrow active">${ddSortDir === 'asc' ? '↑' : '↓'}</span>`;
+}
+
+function renderDrilldownData() {
+    const files = _sortFiles(ddCurrentFiles);
+    const allChecked = files.length > 0 && ddSelectedFiles.size === files.length;
+
+    if (ddViewMode === 'table') {
+        _setHtmlSafe('dd-table', `
+            <thead><tr>
+                <th class="col-check"><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="ddToggleAll(this.checked)"></th>
+                <th onclick="ddSortBy('file_name')">Dosya Adi ${_sortArrow('file_name')}</th>
+                <th onclick="ddSortBy('folder')">Klasor ${_sortArrow('folder')}</th>
+                <th class="col-size" onclick="ddSortBy('file_size')">Boyut ${_sortArrow('file_size')}</th>
+                <th onclick="ddSortBy('last_access_time')">Son Erisim ${_sortArrow('last_access_time')}</th>
+                <th onclick="ddSortBy('last_modify_time')">Son Degisiklik ${_sortArrow('last_modify_time')}</th>
+                <th onclick="ddSortBy('owner')">Sahip ${_sortArrow('owner')}</th>
+            </tr></thead>
+            <tbody>${files.length ? files.map((f, i) => `<tr>
+                <td class="col-check"><input type="checkbox" ${ddSelectedFiles.has(i)?'checked':''} onchange="ddToggleRow(${i})"></td>
+                <td title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
+                <td title="${escapeHtml(_extractFolder(f.file_path))}">${escapeHtml(_extractFolder(f.file_path))}</td>
+                <td class="col-size">${formatSize(f.file_size||0)}</td>
+                <td class="col-date">${escapeHtml((f.last_access_time||'').substring(0,16))}</td>
+                <td class="col-date">${escapeHtml((f.last_modify_time||'').substring(0,16))}</td>
+                <td>${escapeHtml(f.owner||'-')}</td>
+            </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
+        `);
+    } else {
+        _setHtmlSafe('dd-table', `
+            <tbody>${files.length ? files.map(f => `<tr style="display:block;margin-bottom:8px;padding:12px;border:1px solid var(--border);border-radius:8px;">
+                <td style="display:block;font-weight:600;margin-bottom:4px;" title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
+                <td style="display:block;font-size:11px;color:var(--text-muted)">${escapeHtml(_extractFolder(f.file_path))} | ${formatSize(f.file_size||0)} | ${escapeHtml((f.last_access_time||'').substring(0,10))} | ${escapeHtml(f.owner||'-')}</td>
+            </tr>`).join('') : '<tr><td style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
+        `);
+    }
 }
 
 async function loadDrilldownPage(url, page) {
@@ -5018,18 +5131,9 @@ async function loadDrilldownPage(url, page) {
         const files = data.files || [];
         const total = data.total || 0;
         const totalPages = Math.ceil(total / 100);
-
-        _setHtmlSafe('dd-table', `
-            <thead><tr><th>Dosya Adi</th><th>Uzanti</th><th>Boyut</th><th>Son Erisim</th><th>Son Degisiklik</th><th>Sahip</th></tr></thead>
-            <tbody>${files.length ? files.map(f => `<tr>
-                <td title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
-                <td>${escapeHtml(f.extension||'-')}</td>
-                <td>${formatSize(f.file_size||0)}</td>
-                <td>${escapeHtml((f.last_access_time||'').substring(0,16))}</td>
-                <td>${escapeHtml((f.last_modify_time||'').substring(0,16))}</td>
-                <td>${escapeHtml(f.owner||'-')}</td>
-            </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
-        `);
+        ddCurrentFiles = files;
+        ddSelectedFiles = new Set();
+        renderDrilldownData();
 
         // Pagination
         let pagHtml = `<span>Toplam: ${formatNum(total)} dosya</span>`;
@@ -9431,6 +9535,10 @@ function _fmtSize(bytes) {
         <div class="drilldown-header">
             <h3 id="dd-title">Dosya Listesi</h3>
             <div class="dd-actions">
+                <div id="dd-view-toggle" class="dd-view-toggle">
+                    <button class="active" onclick="setDrilldownView('table')">Tablo</button>
+                    <button onclick="setDrilldownView('card')">Kart</button>
+                </div>
                 <button class="btn-export" onclick="downloadDrilldownXLS(event)">XLS Indir</button>
                 <button id="dd-archive-btn" class="btn btn-sm btn-danger" onclick="archiveDrilldown()" style="display:none">Grubu Arsivle</button>
                 <button class="btn btn-sm btn-outline" onclick="closeDrilldown()">Kapat</button>
