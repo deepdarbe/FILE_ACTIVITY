@@ -1301,25 +1301,24 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/status/{source_id}")
     def report_status(source_id: int):
-        """Same pattern as report_frequency/types/sizes — cached per scan_id.
-
-        Previously this endpoint re-ran generate_status_report (a GROUP BY
-        over all of scanned_files) on every call. On a 2.89M-file scan that
-        is 10–30 sec per click. Now cached via ``analyzer_cache`` and
-        invalidated automatically on a new scan.
-        """
+        """Cached per scan_id — Rule 1 of endpoint-conventions.md."""
         from src.analyzer.report_generator import ReportGenerator
-        from src.analyzer import cache as analyzer_cache
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if scan_id is None:
             return gen.generate_status_report(src.id)
-        envelope = analyzer_cache.get_or_compute(
-            db, "status", scan_id,
-            lambda: gen.generate_status_report(src.id),
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="status",
+            compute_fn=lambda: gen.generate_status_report(src.id),
+            track_op=_track_op,
+            track_op_label=f"Durum raporu: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
         )
-        return _attach_cache_envelope(envelope)
 
     # Issue #125 — context manager that wraps a block in start/finish on
     # the operations registry. Tracker outage MUST NOT break the work,
@@ -1458,42 +1457,42 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.get("/api/reports/types/{source_id}")
     def report_types(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
-        from src.analyzer import cache as analyzer_cache
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
         src = _get_source(db, source_id)
-        with _track_op(
-            "analysis",
-            f"Tur analizi: {src.name}",
-            metadata={"source_id": src.id},
-        ):
-            gen = ReportGenerator(db, config)
-            scan_id = db.get_latest_scan_id(src.id, include_running=True)
-            if scan_id is None:
-                return gen.generate_type_report(src.id)
-            envelope = analyzer_cache.get_or_compute(
-                db, "types", scan_id,
-                lambda: gen.generate_type_report(src.id),
-            )
-            return _attach_cache_envelope(envelope)
+        gen = ReportGenerator(db, config)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_type_report(src.id)
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="types",
+            compute_fn=lambda: gen.generate_type_report(src.id),
+            track_op=_track_op,
+            track_op_label=f"Tur analizi: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+        )
 
     @app.get("/api/reports/sizes/{source_id}")
     def report_sizes(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
-        from src.analyzer import cache as analyzer_cache
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
         src = _get_source(db, source_id)
-        with _track_op(
-            "analysis",
-            f"Boyut analizi: {src.name}",
-            metadata={"source_id": src.id},
-        ):
-            gen = ReportGenerator(db, config)
-            scan_id = db.get_latest_scan_id(src.id, include_running=True)
-            if scan_id is None:
-                return gen.generate_size_report(src.id)
-            envelope = analyzer_cache.get_or_compute(
-                db, "sizes", scan_id,
-                lambda: gen.generate_size_report(src.id),
-            )
-            return _attach_cache_envelope(envelope)
+        gen = ReportGenerator(db, config)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_size_report(src.id)
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="sizes",
+            compute_fn=lambda: gen.generate_size_report(src.id),
+            track_op=_track_op,
+            track_op_label=f"Boyut analizi: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+        )
 
     @app.get("/api/reports/full/{source_id}")
     def report_full(source_id: int):
@@ -2361,14 +2360,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     def mit_naming_report(source_id: int):
         """MIT Libraries dosya adlandirma standartlarina uyum analizi.
 
-        Cached via ``analyzer_cache`` keyed on ``scan_id`` — the analyser
-        iterates **every** ``scanned_files`` row, so on a 2.9M-file scan
-        a re-compute costs 1-3 minutes (customer report 2026-05-22:
-        "Adlandirma Uyumu sayfasi yuklenmiyor"). Cache hits return in
-        milliseconds.
+        Cached per scan_id — Rule 1 of endpoint-conventions.md. The
+        analyser iterates every scanned_files row, so on a 2.9M-file
+        scan a re-compute is 1-3 min. Cache hits return in ms.
         """
         from src.scanner.file_scanner import MITNamingAnalyzer
-        from src.analyzer import cache as analyzer_cache
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
 
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
@@ -2387,15 +2384,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     analyzer.analyze(row["file_path"], row["file_name"])
             return analyzer.get_report()
 
-        with _track_op(
-            "analysis",
-            f"Adlandirma uyumu analizi: {src.name}",
-            metadata={"source_id": src.id},
-        ):
-            envelope = analyzer_cache.get_or_compute(
-                db, "mit_naming", scan_id, _compute,
-            )
-            return _attach_cache_envelope(envelope)
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="mit_naming",
+            compute_fn=_compute,
+            track_op=_track_op,
+            track_op_label=f"Adlandirma uyumu analizi: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+        )
 
     @app.get("/api/reports/mit-naming/{source_id}/files")
     def mit_naming_files(source_id: int, code: str = "R1",
