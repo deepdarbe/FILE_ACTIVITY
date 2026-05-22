@@ -68,28 +68,27 @@ holds.
 
 ```mermaid
 graph TD
-    A[master @ 277471f<br/>post #215 #216 #217] --> B[customer test client-side]
+    A[master 3f9d666<br/>post #215 #216 #217 #218] --> B[customer test client-side]
     B --> C{Event-loop fix landed?}
-    C -->|p95 dashboard load < 2s| D[Close 'every page waiting' chapter ✅]
+    C -->|p95 dashboard under 2s| D[Close every-page-waiting chapter]
     C -->|still slow| E[Profile individual slow queries<br/>indexes / precompute]
 
     A --> F[Run #217 bench on real 3.1M-row DB]
-    F -->|DuckDB > SQLite| G[Keep, pin in docs]
+    F -->|DuckDB faster| G[Keep, pin in docs]
     F -->|SQLite competitive| H[Schedule #114 Phase 3<br/>drop DuckDB]
 
     A --> I[Dependabot triage]
-    I --> J[Batch merge safe minors:<br/>#208 #209 #211]
-    I --> K[CI action bumps:<br/>#204 #205 #206]
-    I --> L[Major audit:<br/>#207 #210]
+    I --> J[Batch merge safe minors<br/>#208 #209 #211]
+    I --> K[CI action bumps<br/>#204 #205 #206]
+    I --> L[Major audit<br/>#207 #210]
 
     A --> M[#29 audit punch-list]
-    M --> N[Punch-list 1: HTMX pilot on 1 page]
+    M --> N[Punch-list 1: HTMX pilot]
     M --> O[Punch-list 2: parquet_staging default-off]
     M --> P[Punch-list 3: integration-test corpus]
 
-    style D fill:#90EE90
-    style H fill:#90EE90
-    style J fill:#90EE90
+    classDef done fill:#90EE90,stroke:#2d6a2d,color:#000
+    class D,H,J done
 ```
 
 ---
