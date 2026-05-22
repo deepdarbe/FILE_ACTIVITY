@@ -1723,12 +1723,28 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/export/{source_id}")
     def report_export(source_id: int):
-        """HTML rapor dosyasi olustur ve indir."""
+        """HTML rapor dosyasi olustur ve indir.
+
+        Shares the "full" analyzer_cache entry with /api/reports/full so
+        the heavy generate_full_report compute runs at most once per
+        scan_id across both endpoints. Cache miss path runs the compute;
+        cache hit returns the cached dict and skips straight to HTML
+        rendering.
+        """
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer.report_exporter import ReportExporter
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
-        data = gen.generate_full_report(src.id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=False)
+        if scan_id is None:
+            data = gen.generate_full_report(src.id)
+        else:
+            envelope = analyzer_cache.get_or_compute(
+                db, "full", scan_id,
+                lambda: gen.generate_full_report(src.id),
+            )
+            data = envelope.get("results", {}) or {}
         if "error" in data:
             raise HTTPException(400, data["error"])
         exporter = ReportExporter(config)
@@ -2443,9 +2459,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/mit-naming/{source_id}/export")
     def mit_naming_export(source_id: int):
-        """MIT ihlal raporunu Excel olarak export et."""
+        """MIT ihlal raporunu CSV olarak export et.
+
+        Cached per scan_id — the full-scan iteration over 2.89M rows
+        otherwise re-pays the cost on every download. Cache stores the
+        per-code violation lists; CSV serialisation is cheap once the
+        dict is in memory.
+        """
         import re as re_mod
         from fastapi.responses import StreamingResponse
+        from src.analyzer import cache as analyzer_cache
         import io
 
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
@@ -2463,17 +2486,23 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "B5": ("Ayirici Yok", lambda p, n: len(n) > 10 and '_' not in n and '-' not in n),
         }
 
-        # Tum dosyalari tara
-        violations = {code: [] for code in checks}
-        with db.get_read_cursor() as cur:
-            cur.execute("""
-                SELECT file_path, file_name, file_size, owner, last_modify_time
-                FROM scanned_files WHERE source_id=? AND scan_id=?
-            """, (source_id, scan_id))
-            for row in cur:
-                for code, (label, fn) in checks.items():
-                    if fn(row["file_path"], row["file_name"]):
-                        violations[code].append(dict(row))
+        def _compute_violations() -> dict:
+            v: dict = {code: [] for code in checks}
+            with db.get_read_cursor() as cur:
+                cur.execute("""
+                    SELECT file_path, file_name, file_size, owner, last_modify_time
+                    FROM scanned_files WHERE source_id=? AND scan_id=?
+                """, (source_id, scan_id))
+                for row in cur:
+                    for code, (label, fn) in checks.items():
+                        if fn(row["file_path"], row["file_name"]):
+                            v[code].append(dict(row))
+            return v
+
+        envelope = analyzer_cache.get_or_compute(
+            db, "mit_naming_export", scan_id, _compute_violations,
+        )
+        violations = envelope.get("results", {}) or {code: [] for code in checks}
 
         # CSV olustur (Excel uyumlu)
         output = io.StringIO()

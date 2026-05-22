@@ -369,6 +369,17 @@ R_CACHE_ALLOWLIST = {
     # that must run BEFORE cache lookup. Migrating would require a more
     # invasive refactor — tracked in #225 R-2 follow-up.
     "report_full",
+    # report_export returns a FileResponse (HTML file on disk), not a
+    # JSON envelope. The cached_report_endpoint helper is JSON-shaped;
+    # this endpoint just needs the cached dict to feed the HTML
+    # exporter. Shares the "full" cache key with report_full so the
+    # underlying compute runs at most once per scan_id.
+    "report_export",
+    # mit_naming_export returns a StreamingResponse (CSV body), not
+    # JSON. The cached compute is the per-code violation dict; CSV
+    # serialisation runs on the cached dict (cheap). Same pattern as
+    # report_export — file response, not envelope.
+    "mit_naming_export",
     # report_frequency has a fast-path that reads summary_json directly
     # (no cache call). Its slow path DOES go through
     # cached_report_endpoint after R-4. False-positive guard match —
