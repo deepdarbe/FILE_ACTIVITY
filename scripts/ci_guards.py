@@ -17,6 +17,13 @@ have caught today's hotfix regressions before they shipped:
     index.html must not rise above the checked-in baseline. Forces a
     reviewer-visible decision before adding to the XSS / null-crash
     surface (PR #200 / #202 class).
+  * D-CHAIN  — zero tolerance for the specific ``document.getElementById
+    (...).innerHTML =`` / ``document.querySelector(...).innerHTML =``
+    pattern. This is the *exact* shape that produced the #200 / #201 /
+    #202 null-deref regressions (chained, no element-existence check).
+    Every instance must use ``_setHtmlSafe(id, html)`` which logs and
+    no-ops when the element is missing. Baseline 0 after the 2026-05-22
+    migration; any new occurrence fails CI.
   * SVC-PARITY — every deploy script that touches the Windows service
     by name must use the same service name. ``update.bat`` and
     ``auto-update.ps1`` drifted to ``FileActivityService`` while
@@ -40,11 +47,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_YAML = REPO_ROOT / "config.yaml"
 INDEX_HTML = REPO_ROOT / "src" / "dashboard" / "static" / "index.html"
 
-# innerHTML write count threshold. Baseline captured after Wave 3
-# (2026-05-16) once the highest-impact null-guard sweep landed. New
-# additions are not forbidden but every increase must be approved by a
-# reviewer who has read the audit doc.
-INNERHTML_BUDGET = 180
+# innerHTML write count threshold. Tightened 2026-05-22 after the
+# direct-chain migration (18 ``document.getElementById(...).innerHTML =``
+# call-sites moved to ``_setHtmlSafe``). The previous 180 was the Wave 3
+# baseline; current count is 131. Threshold set above current with a
+# small headroom so a single PR adding a handful of writes is reviewed,
+# not silently merged. Raise this with reviewer sign-off if a legitimate
+# new write site is needed.
+INNERHTML_BUDGET = 140
 
 # Windows service name used by the FileActivity service. Set in
 # install_service.ps1 / setup-source.ps1; the older update.bat and
@@ -246,6 +256,43 @@ def check_innerhtml_budget() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# D-CHAIN — direct getElementById/querySelector innerHTML chain pattern
+# ---------------------------------------------------------------------------
+
+
+# Matches `document.getElementById('foo').innerHTML =` and
+# `document.querySelector('.bar').innerHTML =` — the chained shape
+# that null-derefs when the element is missing. PR #200 / #201 / #202
+# class. Baseline 0 after 2026-05-22 migration.
+_DIRECT_CHAIN_PATTERN = re.compile(
+    r"document\.(?:getElementById|querySelector)\([^)]+\)\.innerHTML\s*=",
+)
+
+
+def check_innerhtml_direct_chain() -> bool:
+    if not INDEX_HTML.exists():
+        _err("D-CHAIN", f"{INDEX_HTML} not found")
+        return False
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    offenders: list[tuple[int, str]] = []
+    for m in _DIRECT_CHAIN_PATTERN.finditer(html):
+        line_no = html.count("\n", 0, m.start()) + 1
+        offenders.append((line_no, m.group(0)))
+    if offenders:
+        for line_no, snippet in offenders:
+            _err(
+                "D-CHAIN",
+                f"index.html:{line_no} uses chained innerHTML "
+                f"({snippet[:80]!r}). Replace with "
+                f"_setHtmlSafe('id', html) — it null-checks the element "
+                "and matches the established codebase pattern (#200/#202).",
+            )
+        return False
+    _ok("D-CHAIN", "no chained document.getElementById(...).innerHTML = writes")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # SVC-PARITY — service-name agreement across deploy/*
 # ---------------------------------------------------------------------------
 
@@ -296,6 +343,7 @@ CHECKS = {
     "yaml-schema": check_yaml_schema,
     "loaders": check_loaders_consistency,
     "html-budget": check_innerhtml_budget,
+    "html-chain": check_innerhtml_direct_chain,
     "svc-parity": check_service_name_parity,
 }
 

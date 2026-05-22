@@ -3215,8 +3215,7 @@ function folderBrowserShowError(msg) {
     const err = document.getElementById('fb-error');
     err.textContent = msg;
     err.style.display = 'block';
-    document.getElementById('fb-list').innerHTML =
-        '<div style="padding:20px;text-align:center;color:var(--text-muted)">—</div>';
+    _setHtmlSafe('fb-list', '<div style="padding:20px;text-align:center;color:var(--text-muted)">—</div>');
 }
 
 async function folderBrowserLoad(path) {
@@ -4818,7 +4817,7 @@ async function searchArchive() {
     if (!q) return;
     const data = await api(`/archive/search?q=${encodeURIComponent(q)}${ext ? '&extension='+encodeURIComponent(ext) : ''}`);
     restoreSelectedIds.clear();
-    document.getElementById('archive-table').innerHTML = `
+    _setHtmlSafe('archive-table', `
         <thead><tr><th style="width:30px"><input type="checkbox" onchange="toggleAllRestore(this.checked)"></th><th>ID</th><th>Dosya</th><th>Boyut</th><th>Tarih</th><th>Orijinal Yol</th><th>Durum</th><th>Islem</th></tr></thead>
         <tbody>${(data.results||[]).map(r => `<tr>
             <td>${!r.restored_at ? `<input type="checkbox" class="restore-check" data-id="${r.id}" onchange="updateRestoreSelection()">` : ''}</td>
@@ -4828,7 +4827,7 @@ async function searchArchive() {
             <td>${r.restored_at ? '<span class="badge badge-success">Geri Yuklendi</span>' : '<span class="badge badge-info">Arsivde</span>'}</td>
             <td>${!r.restored_at ? `<button class="btn btn-sm btn-success" onclick="restoreFile(${r.id})">Geri Yukle</button>` : ''}</td>
         </tr>`).join('')}</tbody>
-    `;
+    `);
     updateRestoreSelection();
 }
 
@@ -4933,10 +4932,10 @@ async function executeBulkRestore() {
 // ═══════════════════════════════════════════════════
 async function loadPolicies() {
     const data = await api('/policies', { silent: true }).catch(()=>[]);
-    document.getElementById('policy-table').innerHTML = `
+    _setHtmlSafe('policy-table', `
         <thead><tr><th>ID</th><th>Ad</th><th>Kurallar</th><th>Durum</th><th>Islem</th></tr></thead>
         <tbody>${data.length ? data.map(p => `<tr><td>${p.id}</td><td><strong>${escapeHtml(p.name)}</strong></td><td style="max-width:300px;word-break:break-all;font-size:11px">${escapeHtml(JSON.stringify(p.rules_json||{}))}</td><td><span class="badge ${p.enabled?'badge-success':'badge-warning'}">${p.enabled?'Aktif':'Pasif'}</span></td><td><button class="btn btn-sm btn-danger" onclick="deletePolicy(${p.id})">Sil</button></td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Politika bulunamadi</td></tr>'}</tbody>
-    `;
+    `);
 }
 
 async function addPolicy() {
@@ -4963,10 +4962,10 @@ async function deletePolicy(id) {
 // ═══════════════════════════════════════════════════
 async function loadSchedules() {
     const data = await api('/schedules', { silent: true }).catch(()=>[]);
-    document.getElementById('schedule-table').innerHTML = `
+    _setHtmlSafe('schedule-table', `
         <thead><tr><th>ID</th><th>Tur</th><th>Kaynak</th><th>Cron</th><th>Durum</th><th>Son Calisma</th><th>Islem</th></tr></thead>
         <tbody>${data.length ? data.map(t => `<tr><td>${t.id}</td><td><span class="badge badge-info">${t.task_type}</span></td><td>${t.source_name||'-'}</td><td><code>${t.cron_expression}</code></td><td><span class="badge ${t.enabled?'badge-success':'badge-warning'}">${t.enabled?'Aktif':'Pasif'}</span></td><td>${t.last_run_at ? t.last_run_at.substring(0,19) : 'Hic'}</td><td><button class="btn btn-sm btn-danger" onclick="deleteSchedule(${t.id})">Sil</button></td></tr>`).join('') : '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">Zamanlanmis gorev bulunamadi</td></tr>'}</tbody>
-    `;
+    `);
 }
 
 async function addSchedule() {
@@ -5020,7 +5019,7 @@ async function loadDrilldownPage(url, page) {
         const total = data.total || 0;
         const totalPages = Math.ceil(total / 100);
 
-        document.getElementById('dd-table').innerHTML = `
+        _setHtmlSafe('dd-table', `
             <thead><tr><th>Dosya Adi</th><th>Uzanti</th><th>Boyut</th><th>Son Erisim</th><th>Son Degisiklik</th><th>Sahip</th></tr></thead>
             <tbody>${files.length ? files.map(f => `<tr>
                 <td title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
@@ -5030,17 +5029,17 @@ async function loadDrilldownPage(url, page) {
                 <td>${escapeHtml((f.last_modify_time||'').substring(0,16))}</td>
                 <td>${escapeHtml(f.owner||'-')}</td>
             </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
-        `;
+        `);
 
         // Pagination
         let pagHtml = `<span>Toplam: ${formatNum(total)} dosya</span>`;
-        document.getElementById('dd-info').innerHTML = pagHtml;
+        _setHtmlSafe('dd-info', pagHtml);
 
         let navHtml = '';
         if (page > 1) navHtml += `<button class="dd-page-btn" onclick="loadDrilldownPage('${ddCurrentUrl}',${page-1})">Onceki</button>`;
         navHtml += `<span>Sayfa ${page} / ${totalPages || 1}</span>`;
         if (page < totalPages) navHtml += `<button class="dd-page-btn" onclick="loadDrilldownPage('${ddCurrentUrl}',${page+1})">Sonraki</button>`;
-        document.getElementById('dd-pagination').innerHTML = navHtml;
+        _setHtmlSafe('dd-pagination', navHtml);
     } catch(e) { notify(e.message, 'error'); }
 }
 
@@ -8238,7 +8237,7 @@ async function searchAclTrustee() {
 async function loadAclTrusteePaths(sid) {
     _aclMode = 'trustee';
     _aclTrustee = sid;
-    document.getElementById('acl-mode-indicator').innerHTML = `<span style="color:var(--accent)">Trustee modu:</span> ${escapeHtml(sid)} <a href="#" onclick="event.preventDefault(); loadAclAnalyzer()" style="color:var(--accent-light);margin-left:8px">[sprawl gorunume don]</a>`;
+    _setHtmlSafe('acl-mode-indicator', `<span style="color:var(--accent)">Trustee modu:</span> ${escapeHtml(sid)} <a href="#" onclick="event.preventDefault(); loadAclAnalyzer()" style="color:var(--accent-light);margin-left:8px">[sprawl gorunume don]</a>`);
     document.getElementById('acl-panel-title').textContent = 'Trustee Erisim Yollari';
     try {
         const data = await api(`/security/acl/trustee/${encodeURIComponent(sid)}/paths?limit=100`);
@@ -8473,9 +8472,8 @@ async function loadChargeback() {
 
     const sid = document.getElementById('cb-source').value;
     if (!sid) {
-        document.getElementById('cb-summary-cards').innerHTML = '';
-        document.getElementById('cb-unmapped-list').innerHTML =
-            '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>';
+        _setHtmlSafe('cb-summary-cards', '');
+        _setHtmlSafe('cb-unmapped-list', '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>');
         const xb = document.getElementById('cb-xlsx-btn');
         if (xb) xb.style.display = 'none';
         return;
@@ -8486,8 +8484,7 @@ async function loadChargeback() {
         data = await api(`/chargeback/${sid}`);
     } catch (e) {
         // 404 = no completed scan yet for this source
-        document.getElementById('cb-summary-cards').innerHTML =
-            '<div style="padding:20px;color:var(--text-muted)">Bu kaynak icin tamamlanmis bir tarama yok.</div>';
+        _setHtmlSafe('cb-summary-cards', '<div style="padding:20px;color:var(--text-muted)">Bu kaynak icin tamamlanmis bir tarama yok.</div>');
         return;
     }
     _cbReport = data;
@@ -8495,7 +8492,7 @@ async function loadChargeback() {
 
     // Summary cards
     const fmtUSD = n => '$' + Number(n || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    document.getElementById('cb-summary-cards').innerHTML = `
+    _setHtmlSafe('cb-summary-cards', `
         <div class="card" style="border-top:3px solid var(--accent)">
             <div class="card-label">Toplam Cost Center</div>
             <div class="card-value">${(data.centers || []).length}</div>
@@ -8511,15 +8508,14 @@ async function loadChargeback() {
             <div class="card-value">${fmtUSD(data.total_monthly_cost)}</div>
             <div class="card-sub">cost_per_gb_month × GB</div>
         </div>
-    `;
+    `);
 
     // Unmapped owners
     const u = data.unmapped_owners || [];
     if (u.length === 0) {
-        document.getElementById('cb-unmapped-list').innerHTML =
-            '<div style="padding:20px;color:var(--success)">Tum owner\'lar bir cost-center\'a atanmis.</div>';
+        _setHtmlSafe('cb-unmapped-list', '<div style="padding:20px;color:var(--success)">Tum owner\'lar bir cost-center\'a atanmis.</div>');
     } else {
-        document.getElementById('cb-unmapped-list').innerHTML = `
+        _setHtmlSafe('cb-unmapped-list', `
             <div class="table-wrap"><table>
                 <thead><tr><th>Owner</th><th>Dosya</th><th>Toplam GB</th><th>Aksiyon</th></tr></thead>
                 <tbody>${u.slice(0, 50).map(r => `
@@ -8539,7 +8535,7 @@ async function loadChargeback() {
                 `).join('')}</tbody>
             </table></div>
             ${u.length > 50 ? `<div style="font-size:11px;color:var(--text-muted);margin-top:8px">${u.length - 50} owner daha gosterilmedi.</div>` : ''}
-        `;
+        `);
     }
 
     // Charts + tables
@@ -8819,9 +8815,8 @@ async function loadForecast() {
     const horizon = parseInt(document.getElementById('fc-horizon').value || '180', 10);
     const xb = document.getElementById('fc-xlsx-btn');
     if (!sid) {
-        document.getElementById('fc-kpi-cards').innerHTML = '';
-        document.getElementById('fc-meta').innerHTML =
-            '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>';
+        _setHtmlSafe('fc-kpi-cards', '');
+        _setHtmlSafe('fc-meta', '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>');
         if (xb) xb.style.display = 'none';
         return;
     }
@@ -8830,8 +8825,7 @@ async function loadForecast() {
     try {
         data = await api(`/forecast/${sid}?horizon_days=${horizon}&model=linear`);
     } catch (e) {
-        document.getElementById('fc-kpi-cards').innerHTML =
-            '<div style="padding:20px;color:var(--text-muted)">Tahmin alinamadi.</div>';
+        _setHtmlSafe('fc-kpi-cards', '<div style="padding:20px;color:var(--text-muted)">Tahmin alinamadi.</div>');
         return;
     }
     _fcLastResult = data;
@@ -8881,7 +8875,7 @@ function _renderForecastKPIs(data) {
             + '<div class="card-sub">Ufka kadar esige ulasilmiyor</div>';
     }
 
-    document.getElementById('fc-kpi-cards').innerHTML = `
+    _setHtmlSafe('fc-kpi-cards', `
         <div class="card" style="border-top:3px solid var(--accent)">
             <div class="card-label">Ornek Sayisi</div>
             <div class="card-value">${samples}</div>
@@ -8901,7 +8895,7 @@ function _renderForecastKPIs(data) {
             <div class="card-label">Kapasite Alarmi</div>
             ${alarmHtml}
         </div>
-    `;
+    `);
 
     const meta = document.getElementById('fc-meta');
     if (meta) {
