@@ -225,6 +225,43 @@ Closed-this-wave issues whose context might still be referenced: #14, #20, #80, 
 
 ---
 
+## Endpoint conventions (the eight rules)
+
+Long-form: [`docs/standards/endpoint-conventions.md`](docs/standards/endpoint-conventions.md).
+Read that first if you're adding ANY new endpoint or refactoring an existing one.
+The standard exists because between 2026-04-23 and 2026-05-22 about a third of
+all PRs were re-fixing the same bug class in a different endpoint — shape
+mismatch, missing cache, async/sync drift, null-deref. The eight rules below
+make those bug classes impossible to ship.
+
+1. **Cached reports** — every report endpoint that iterates >100k rows uses
+   `cached_report_endpoint(...)` from `src/dashboard/_endpoint_helpers.py`.
+   Prevents PR #224 (mit_naming uncached).
+2. **Pagination** — `PaginationParams = Depends()` everywhere. No more
+   `(page, limit)` / `(page, page_size)` / `(offset, limit)` drift.
+3. **Summary shape** — read `summary_json` only through `db.get_scan_summary()`,
+   which calls `normalize_summary()` to merge the dict and list shapes that
+   `partial_summary_v2` and `compute_scan_summary` write. Prevents PR #198 / #223.
+4. **Audit events** — every POST/DELETE/PUT/PATCH calls `insert_audit_event_simple`
+   on success. Exceptions go to the allowlist with reviewer sign-off.
+5. **async def only with await** — if the body never awaits, it's plain `def`
+   so FastAPI dispatches it to the thread pool. Prevents PR #215.
+6. **Connection pools** — read endpoints `get_read_cursor()`, write endpoints
+   `get_cursor()`. Never mixed in one `with` block. Prevents the four-times-
+   recurring WAL leak (#132 / #174 / #181 / #185).
+7. **No chained innerHTML** — `_setHtmlSafe('id', html)` or stored-ref with
+   explicit null-check. Enforced by `D-CHAIN` in `scripts/ci_guards.py`.
+   Prevents PR #200 / #201 / #202.
+8. **Config-gated features surface their gate** — show the exact
+   `config.yaml` key/value in the UI when a feature is off. Prevents the
+   2026-05-22 "(Bilinmiyor)" confusion. Manual review item.
+
+CI guards `R-CACHE` / `P-PAGE` / `S-SHAPE` / `A-AUDIT` / `A-AWAIT` /
+`C-CURSOR` enforce rules 1–6 mechanically (planned in the standard doc's
+adoption table). `D-CHAIN` already enforces rule 7. Rule 8 stays manual.
+
+---
+
 ## Useful incantations
 
 ```bash
