@@ -2237,23 +2237,43 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/mit-naming/{source_id}")
     def mit_naming_report(source_id: int):
-        """MIT Libraries dosya adlandirma standartlarina uyum analizi."""
-        from src.scanner.file_scanner import MITNamingAnalyzer
+        """MIT Libraries dosya adlandirma standartlarina uyum analizi.
 
+        Cached via ``analyzer_cache`` keyed on ``scan_id`` — the analyser
+        iterates **every** ``scanned_files`` row, so on a 2.9M-file scan
+        a re-compute costs 1-3 minutes (customer report 2026-05-22:
+        "Adlandirma Uyumu sayfasi yuklenmiyor"). Cache hits return in
+        milliseconds.
+        """
+        from src.scanner.file_scanner import MITNamingAnalyzer
+        from src.analyzer import cache as analyzer_cache
+
+        src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
             raise HTTPException(404, "Tarama bulunamadi")
 
-        analyzer = MITNamingAnalyzer()
-        with db.get_read_cursor() as cur:
-            cur.execute("""
-                SELECT file_path, file_name FROM scanned_files
-                WHERE scan_id=?
-            """, (scan_id,))
-            for row in cur:
-                analyzer.analyze(row["file_path"], row["file_name"])
+        def _compute() -> dict:
+            analyzer = MITNamingAnalyzer()
+            with db.get_read_cursor() as cur:
+                cur.execute(
+                    "SELECT file_path, file_name FROM scanned_files "
+                    "WHERE scan_id=?",
+                    (scan_id,),
+                )
+                for row in cur:
+                    analyzer.analyze(row["file_path"], row["file_name"])
+            return analyzer.get_report()
 
-        return analyzer.get_report()
+        with _track_op(
+            "analysis",
+            f"Adlandirma uyumu analizi: {src.name}",
+            metadata={"source_id": src.id},
+        ):
+            envelope = analyzer_cache.get_or_compute(
+                db, "mit_naming", scan_id, _compute,
+            )
+            return _attach_cache_envelope(envelope)
 
     @app.get("/api/reports/mit-naming/{source_id}/files")
     def mit_naming_files(source_id: int, code: str = "R1",
