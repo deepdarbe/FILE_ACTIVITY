@@ -3632,7 +3632,16 @@ class Database:
         return d
 
     def get_scan_summary(self, scan_id: int) -> Optional[dict]:
-        """Kayitli scan summary'yi oku. Hic hesaplanmamissa None doner."""
+        """Kayitli scan summary'yi oku. Hic hesaplanmamissa None doner.
+
+        EPIC #225 R-3: passes the loaded dict through
+        ``_summary_compat.normalize_summary`` so callers always see the
+        canonical list-shape for age_buckets/size_buckets regardless of
+        which writer (partial_summary_v2 dict-shape vs
+        compute_scan_summary list-shape) populated the JSON column.
+        Eliminates the dual-shape branching that caused PR #198 / #223.
+        """
+        from src.storage._summary_compat import normalize_summary
         with self.get_cursor() as cur:
             row = cur.execute(
                 "SELECT summary_json, summary_computed_at FROM scan_runs WHERE id=?",
@@ -3644,6 +3653,7 @@ class Database:
             d = json.loads(row["summary_json"])
         except Exception:
             return None
+        d = normalize_summary(d) or {}
         d["scan_id"] = scan_id
         d["computed_at"] = row["summary_computed_at"]
         return d
