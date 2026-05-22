@@ -1339,45 +1339,88 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # list of bucket records (loadFrequency does freq.forEach()).
         # Convert the v2 dict to the canonical list shape so existing
         # callers keep working.
+        #
+        # Customer report 2026-05-22: page renders empty after a clean
+        # scan. Root cause is a shape mismatch between two writers:
+        #   - ``partial_summary_v2`` (live, during scan) writes
+        #     ``age_buckets`` as a DICT keyed by ``"<30d"``/``"30-60d"``
+        #     /``"60-90d"``/``"90-180d"``/``"180-365d"``/``">365d"``.
+        #   - ``compute_scan_summary`` (final, after scan) writes it as
+        #     a LIST of ``{"label": "0-30"|"31-90"|..., "file_count":,
+        #     "total_size":}`` dicts.
+        # Both live under the same JSON key. The endpoint must accept
+        # either. We pick a label_map based on shape and build the
+        # canonical ``freq_list`` from whichever form arrived. The list
+        # form has real ``total_size`` values too — preserve them.
         if not days:
             scan_id = db.get_latest_scan_id(src.id, include_running=True)
             if scan_id:
                 summary = db.get_scan_summary(scan_id)
                 if summary and isinstance(summary, dict) and "age_buckets" in summary:
                     from datetime import datetime
-                    age_buckets_v2 = summary.get("age_buckets") or {}
-                    # Map v2 bin labels (non-cumulative) to the cumulative
-                    # "X+ gun erisilmemis" shape the frontend renders. We
-                    # don't have per-bucket size from v2 yet, so total_size
-                    # is left at 0 for the fast-path; falls through to the
-                    # full analyzer below if accurate sizes are needed.
-                    v2_to_classic = [
-                        ("<30d", 30, "30+ gun erisilmemis"),
-                        ("30-60d", 60, "60+ gun erisilmemis"),
-                        ("60-90d", 90, "90+ gun erisilmemis"),
-                        ("90-180d", 180, "180+ gun erisilmemis"),
-                        ("180-365d", 365, "365+ gun erisilmemis"),
-                        (">365d", 9999, "9999+ gun erisilmemis"),
-                    ]
-                    freq_list = [
-                        {
-                            "days": days_val,
-                            "label": label,
-                            "file_count": int(age_buckets_v2.get(k, 0) or 0),
-                            "total_size": 0,
-                            "total_size_formatted": "0 B",
+                    age_buckets_raw = summary.get("age_buckets")
+
+                    freq_list: list[dict] = []
+                    if isinstance(age_buckets_raw, dict):
+                        # partial_summary_v2 shape — counts only.
+                        v2_to_classic = [
+                            ("<30d", 30, "30+ gun erisilmemis"),
+                            ("30-60d", 60, "60+ gun erisilmemis"),
+                            ("60-90d", 90, "90+ gun erisilmemis"),
+                            ("90-180d", 180, "180+ gun erisilmemis"),
+                            ("180-365d", 365, "365+ gun erisilmemis"),
+                            (">365d", 9999, "9999+ gun erisilmemis"),
+                        ]
+                        freq_list = [
+                            {
+                                "days": days_val,
+                                "label": label,
+                                "file_count": int(age_buckets_raw.get(k, 0) or 0),
+                                "total_size": 0,
+                                "total_size_formatted": "0 B",
+                            }
+                            for k, days_val, label in v2_to_classic
+                            if k in age_buckets_raw
+                        ]
+                    elif isinstance(age_buckets_raw, list):
+                        # compute_scan_summary shape — list of dicts with
+                        # real file_count + total_size per bucket.
+                        from src.utils.size_formatter import format_size
+                        list_label_map = [
+                            ("0-30", 30, "30+ gun erisilmemis"),
+                            ("31-90", 90, "60+ gun erisilmemis"),
+                            ("91-180", 180, "90+ gun erisilmemis"),
+                            ("181-365", 365, "180+ gun erisilmemis"),
+                            ("366+", 9999, "365+ gun erisilmemis"),
+                        ]
+                        by_label = {
+                            item.get("label"): item
+                            for item in age_buckets_raw
+                            if isinstance(item, dict) and item.get("label")
                         }
-                        for k, days_val, label in v2_to_classic
-                        if k in age_buckets_v2
-                    ]
-                    return {
-                        "source": {"id": source_id, "name": src.name},
-                        "scan_id": scan_id,
-                        "frequency": freq_list,
-                        "age_buckets": age_buckets_v2,
-                        "from_summary": True,
-                        "generated_at": datetime.now().isoformat(),
-                    }
+                        for k, days_val, label in list_label_map:
+                            row = by_label.get(k)
+                            if not row:
+                                continue
+                            total_size = int(row.get("total_size", 0) or 0)
+                            freq_list.append({
+                                "days": days_val,
+                                "label": label,
+                                "file_count": int(row.get("file_count", 0) or 0),
+                                "total_size": total_size,
+                                "total_size_formatted": format_size(total_size),
+                            })
+
+                    if freq_list:
+                        return {
+                            "source": {"id": source_id, "name": src.name},
+                            "scan_id": scan_id,
+                            "frequency": freq_list,
+                            "age_buckets": age_buckets_raw,
+                            "from_summary": True,
+                            "generated_at": datetime.now().isoformat(),
+                        }
+                    # else: fall through to live ReportGenerator
         gen = ReportGenerator(db, config)
         custom = [int(d) for d in days.split(",")] if days else None
         # Custom-days variants get a distinct cache slot per bucket spec
