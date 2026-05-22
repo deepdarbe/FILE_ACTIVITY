@@ -193,3 +193,89 @@ def test_a_await_handles_async_with(fake_api_py):
 def test_a_await_runs_against_real_api_py():
     """Live api.py must pass A-AWAIT after PR #215."""
     assert g.check_a_await() is True
+
+
+# ---------------------------------------------------------------------------
+# C-CURSOR — read endpoints get_read_cursor, writes get_cursor
+# ---------------------------------------------------------------------------
+
+
+def test_c_cursor_passes_get_using_read_cursor(fake_api_py):
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def my_endpoint():\n"
+        "    with db.get_read_cursor() as cur:\n"
+        "        return cur.fetchone()\n"
+    )
+    assert g.check_c_cursor() is True
+
+
+def test_c_cursor_fails_get_using_writer_pool(fake_api_py):
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def my_endpoint():\n"
+        "    with db.get_cursor() as cur:\n"
+        "        return cur.fetchone()\n"
+    )
+    assert g.check_c_cursor() is False
+
+
+def test_c_cursor_get_writer_allowlist_works(fake_api_py, monkeypatch):
+    monkeypatch.setattr(
+        g, "C_CURSOR_GET_WRITER_ALLOWLIST", {"legit_get"},
+    )
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def legit_get():\n"
+        "    with db.get_cursor() as cur:\n"
+        "        return cur.fetchone()\n"
+    )
+    assert g.check_c_cursor() is True
+
+
+def test_c_cursor_passes_write_using_writer_pool(fake_api_py):
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def my_post():\n"
+        "    with db.get_cursor() as cur:\n"
+        "        cur.execute('INSERT ...')\n"
+    )
+    assert g.check_c_cursor() is True
+
+
+def test_c_cursor_fails_write_using_only_reader(fake_api_py):
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def bad_post():\n"
+        "    with db.get_read_cursor() as cur:\n"
+        "        return cur.fetchone()\n"
+    )
+    assert g.check_c_cursor() is False
+
+
+def test_c_cursor_write_using_both_pools_passes(fake_api_py):
+    """Write handler that reads (read pool) then writes (writer pool)
+    is fine — the writer pool call is what makes the SQL writable."""
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def mixed_post():\n"
+        "    with db.get_read_cursor() as cur:\n"
+        "        existing = cur.fetchone()\n"
+        "    with db.get_cursor() as cur:\n"
+        "        cur.execute('INSERT ...')\n"
+    )
+    assert g.check_c_cursor() is True
+
+
+def test_c_cursor_ignores_non_route_functions(fake_api_py):
+    fake_api_py.write_text(
+        "def helper_not_a_route():\n"
+        "    with db.get_cursor() as cur:\n"
+        "        return cur.fetchone()\n"
+    )
+    assert g.check_c_cursor() is True
+
+
+def test_c_cursor_runs_against_real_api_py():
+    """Live api.py must pass C-CURSOR with the documented allowlists."""
+    assert g.check_c_cursor() is True
