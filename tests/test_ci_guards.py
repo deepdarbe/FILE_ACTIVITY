@@ -1,0 +1,88 @@
+"""Unit tests for scripts/ci_guards.py.
+
+The CI guards are themselves a regression surface: a future "fix" that
+weakens a regex would silently let the original bug class back through.
+These tests pin the checks to their intended behaviour by exercising
+them on known-bad fixtures.
+
+Only D-CHAIN is tested here — it's the check added in the 2026-05-22
+migration and the one most directly tied to a recurring prod-bug
+class (#200 / #201 / #202 null-deref via chained innerHTML). The other
+checks (LOADERS, HTML-BUDGET, SVC-PARITY, YAML) were inherited and
+are exercised indirectly via the CI run on every PR.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+import scripts.ci_guards as g
+
+
+@pytest.fixture
+def fake_index_html(tmp_path, monkeypatch):
+    """Redirect INDEX_HTML at scripts.ci_guards to a tmp file we control."""
+    html = tmp_path / "index.html"
+    monkeypatch.setattr(g, "INDEX_HTML", html)
+    return html
+
+
+def test_d_chain_passes_on_safe_helper(fake_index_html):
+    fake_index_html.write_text(
+        """
+        <html><body><script>
+        _setHtmlSafe('foo', '<div>hi</div>');
+        _setHtmlSafe('bar', `<span>${x}</span>`);
+        </script></body></html>
+        """
+    )
+    assert g.check_innerhtml_direct_chain() is True
+
+
+def test_d_chain_fails_on_getelementbyid_chain(fake_index_html):
+    fake_index_html.write_text(
+        """
+        <html><body><script>
+        document.getElementById('foo').innerHTML = '<div>danger</div>';
+        </script></body></html>
+        """
+    )
+    assert g.check_innerhtml_direct_chain() is False
+
+
+def test_d_chain_fails_on_queryselector_chain(fake_index_html):
+    fake_index_html.write_text(
+        """
+        <html><body><script>
+        document.querySelector('.bar').innerHTML = '<div>danger</div>';
+        </script></body></html>
+        """
+    )
+    assert g.check_innerhtml_direct_chain() is False
+
+
+def test_d_chain_ignores_stored_reference(fake_index_html):
+    """`const el = ...; el.innerHTML = ...` is *also* a write but is not
+    the null-deref pattern we're guarding against — the stored-ref form
+    forces the author to either null-check or accept the risk locally.
+    HTML-BUDGET catches it via the global count; D-CHAIN does not.
+    """
+    fake_index_html.write_text(
+        """
+        <html><body><script>
+        const el = document.getElementById('foo');
+        if (el) el.innerHTML = '<div>safe</div>';
+        </script></body></html>
+        """
+    )
+    assert g.check_innerhtml_direct_chain() is True
+
+
+def test_d_chain_runs_against_real_index_html():
+    """Sanity: the live index.html in master must pass D-CHAIN.
+
+    This is the regression bait — if a future PR re-introduces the
+    chained pattern, this test fails locally before CI even runs.
+    """
+    assert g.check_innerhtml_direct_chain() is True
