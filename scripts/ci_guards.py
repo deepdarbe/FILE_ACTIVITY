@@ -536,6 +536,161 @@ def check_a_await() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# C-CURSOR — Rule 6 of endpoint-conventions.md
+# ---------------------------------------------------------------------------
+
+
+# GET handlers that legitimately use the writer pool (``get_cursor()``)
+# because the same path may UPDATE under a fallback. Each entry must
+# have a justification comment in api.py at the use-site. Adding a new
+# entry requires reviewer sign-off.
+C_CURSOR_GET_WRITER_ALLOWLIST = {
+    # api.py:879 (dashboard_init) — fixes scan_runs totals via UPDATE
+    # when total_files=0 fallback hits (Issue #181 Track A).
+    "dashboard_init",
+}
+
+# Write handlers (POST/DELETE/PUT/PATCH) that legitimately use the
+# read-only pool. These read metadata then delegate the actual write
+# to a separate engine (ArchiveEngine, ACL analyzer, background export
+# job) which holds its own connection. So the endpoint itself never
+# writes through ``get_cursor()``; the work happens elsewhere.
+C_CURSOR_WRITE_READER_ALLOWLIST: set[str] = {
+    # POST /api/archive/selective — reads file_ids, delegates write to
+    # ArchiveEngine.archive_files()
+    "archive_selective",
+    # POST /api/archive/bulk-from-list — same shape: read paths,
+    # delegate to ArchiveEngine
+    "archive_bulk_from_list",
+    # POST /api/archive/by-insight — reads insight + scan info,
+    # delegates to ArchiveEngine
+    "archive_by_insight",
+    # POST /api/export/start — reads scan_id then kicks off a
+    # background export job
+    "start_export",
+    # POST /api/security/acl/scan/{source_id} — reads scan_id,
+    # delegates to ACL analyzer which manages its own DB write path
+    "acl_snapshot",
+}
+
+
+_HTTP_WRITE_METHODS = {"post", "delete", "put", "patch"}
+_HTTP_READ_METHODS = {"get"}
+
+
+def _decorator_http_method(deco) -> str | None:
+    """Return the http method (lowercase) for a @app.<method>(...) call,
+    or None if this isn't a route decorator."""
+    import ast as _ast
+    if not isinstance(deco, _ast.Call):
+        return None
+    fn = deco.func
+    if not isinstance(fn, _ast.Attribute):
+        return None
+    if not (isinstance(fn.value, _ast.Name) and fn.value.id == "app"):
+        return None
+    return fn.attr.lower() if isinstance(fn.attr, str) else None
+
+
+def check_c_cursor() -> bool:
+    """Flag mixed read/write cursor usage in api.py endpoints.
+
+    Rule 6: GET endpoints use ``get_read_cursor()``; POST/DELETE/PUT/
+    PATCH use ``get_cursor()`` (writer pool). Mixing surfaces in the
+    audit history as the WAL leak class — long-lived writer
+    connections held by read paths block ``wal_checkpoint(TRUNCATE)``
+    and the WAL grows unbounded (#132 / #174 / #181 / #185, same root
+    cause hit 4 times).
+    """
+    import ast
+
+    if not _API_PY.exists():
+        _err("C-CURSOR", f"{_API_PY} not found")
+        return False
+    src = _API_PY.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        _err("C-CURSOR", f"api.py syntax error: {e}")
+        return False
+
+    class _CursorScanner(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.uses_writer = False
+            self.uses_reader = False
+
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if func.attr == "get_cursor":
+                    self.uses_writer = True
+                elif func.attr == "get_read_cursor":
+                    self.uses_reader = True
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node) -> None:
+            pass  # don't descend into nested defs
+
+        def visit_AsyncFunctionDef(self, node) -> None:
+            pass
+
+    def _own_body_cursors(fn) -> tuple[bool, bool]:
+        s = _CursorScanner()
+        for stmt in fn.body:
+            s.visit(stmt)
+        return s.uses_writer, s.uses_reader
+
+    offenders: list[tuple[str, int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # Find the http method from the closest @app.<method>(...) decorator.
+        http_method = None
+        for deco in node.decorator_list:
+            m = _decorator_http_method(deco)
+            if m in _HTTP_READ_METHODS or m in _HTTP_WRITE_METHODS:
+                http_method = m
+                break
+        if http_method is None:
+            continue  # not a route handler
+
+        uses_writer, uses_reader = _own_body_cursors(node)
+        # GET using writer → flag unless allowlisted
+        if http_method in _HTTP_READ_METHODS and uses_writer:
+            if node.name in C_CURSOR_GET_WRITER_ALLOWLIST:
+                continue
+            offenders.append((
+                node.name, node.lineno,
+                "GET handler uses get_cursor() (writer pool). Use "
+                "get_read_cursor() instead, or add to "
+                "C_CURSOR_GET_WRITER_ALLOWLIST with a justification.",
+            ))
+        # POST/DELETE/PUT/PATCH using reader-only → flag unless allowlisted
+        if http_method in _HTTP_WRITE_METHODS and uses_reader and not uses_writer:
+            if node.name in C_CURSOR_WRITE_READER_ALLOWLIST:
+                continue
+            offenders.append((
+                node.name, node.lineno,
+                f"{http_method.upper()} handler uses ONLY get_read_cursor() — "
+                "the read-only pool can't write. If this endpoint actually "
+                "writes, switch to get_cursor(). If it's read-only despite "
+                "being POST, add to C_CURSOR_WRITE_READER_ALLOWLIST.",
+            ))
+
+    if offenders:
+        for name, ln, msg in offenders:
+            _err("C-CURSOR", f"api.py:{ln} {name!r}: {msg}")
+        return False
+    _ok(
+        "C-CURSOR",
+        f"all read/write cursor usage matches HTTP method "
+        f"(GET-writer allowlist: {len(C_CURSOR_GET_WRITER_ALLOWLIST)}, "
+        f"write-reader allowlist: {len(C_CURSOR_WRITE_READER_ALLOWLIST)})",
+    )
+    return True
+
+
 CHECKS = {
     "yaml-dup": check_yaml_duplicates,
     "yaml-schema": check_yaml_schema,
@@ -545,6 +700,7 @@ CHECKS = {
     "svc-parity": check_service_name_parity,
     "r-cache": check_r_cache,
     "a-await": check_a_await,
+    "c-cursor": check_c_cursor,
 }
 
 
