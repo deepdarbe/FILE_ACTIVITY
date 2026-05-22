@@ -30,6 +30,18 @@ have caught today's hotfix regressions before they shipped:
     ``setup-source.ps1`` and ``install_service.ps1`` use
     ``FileActivity`` — silent no-op when update.bat tries to stop the
     service.
+  * R-CACHE — Rule 1 of docs/standards/endpoint-conventions.md. Every
+    direct ``analyzer_cache.get_or_compute(...)`` callsite in
+    ``src/dashboard/api.py`` must go through the
+    ``cached_report_endpoint(...)`` helper from
+    ``src/dashboard/_endpoint_helpers.py``. The exception is endpoints
+    that hand-roll cache for a documented reason; those are listed in
+    ``R_CACHE_ALLOWLIST`` with a justification.
+  * A-AWAIT — Rule 5 of the standard. Every ``async def`` route handler
+    in ``api.py`` must contain at least one ``await`` / ``async for`` /
+    ``async with`` in its own body. Otherwise it should be a plain
+    ``def`` so FastAPI dispatches it to the threadpool (prevents the
+    event-loop starvation that produced PR #215).
 
 Each check prints a GitHub Actions ``::error::`` annotation on failure
 and exits the script with a non-zero status. ``--check NAME`` lets the
@@ -338,6 +350,192 @@ def check_service_name_parity() -> bool:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# R-CACHE — direct analyzer_cache.get_or_compute outside the helper
+# ---------------------------------------------------------------------------
+
+
+# Endpoints permitted to call analyzer_cache.get_or_compute directly,
+# with a justification. Add to this list ONLY with PR reviewer sign-off.
+# The standard's Rule 1 says every other heavy-report endpoint goes
+# through cached_report_endpoint(...).
+R_CACHE_ALLOWLIST = {
+    # mit_naming_files paginates an in-memory list off a per-(scan_id, code)
+    # cached compute. The pagination split is incompatible with the
+    # cached_report_endpoint signature (which expects a single dict, not
+    # a list to slice). Tracked in #225 R-2 follow-up.
+    "mit_naming_files",
+    # report_full has an in-progress / partial response short-circuit
+    # that must run BEFORE cache lookup. Migrating would require a more
+    # invasive refactor — tracked in #225 R-2 follow-up.
+    "report_full",
+    # report_frequency has a fast-path that reads summary_json directly
+    # (no cache call). Its slow path DOES go through
+    # cached_report_endpoint after R-4. False-positive guard match —
+    # the regex below doesn't see the indirect call, only the literal.
+}
+
+
+_API_PY = REPO_ROOT / "src" / "dashboard" / "api.py"
+_HELPERS_PY = REPO_ROOT / "src" / "dashboard" / "_endpoint_helpers.py"
+
+
+def check_r_cache() -> bool:
+    """Flag direct analyzer_cache.get_or_compute() calls in api.py.
+
+    These should go through cached_report_endpoint(...) from
+    _endpoint_helpers.py unless explicitly allowlisted with a
+    justification.
+    """
+    import ast
+
+    if not _API_PY.exists():
+        _err("R-CACHE", f"{_API_PY} not found")
+        return False
+    src = _API_PY.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        _err("R-CACHE", f"api.py syntax error: {e}")
+        return False
+
+    # Find every function whose OWN body (not nested defs) contains a
+    # call to ``analyzer_cache.get_or_compute(...)``.
+    class _CallScanner(ast.NodeVisitor):
+        """Visits the body of one function — stops at nested defs."""
+
+        def __init__(self) -> None:
+            self.found = False
+
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "get_or_compute":
+                self.found = True
+                return
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node) -> None:
+            # Don't descend — nested def is checked separately.
+            pass
+
+        def visit_AsyncFunctionDef(self, node) -> None:
+            pass
+
+    def _own_body_has_get_or_compute(fn) -> bool:
+        s = _CallScanner()
+        for stmt in fn.body:
+            s.visit(stmt)
+            if s.found:
+                return True
+        return False
+
+    offenders: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if _own_body_has_get_or_compute(node):
+                offenders.append((node.name, node.lineno))
+    bad = [(n, ln) for n, ln in offenders if n not in R_CACHE_ALLOWLIST]
+    if bad:
+        for name, ln in bad:
+            _err(
+                "R-CACHE",
+                f"api.py:{ln} function {name!r} calls analyzer_cache.get_or_compute "
+                "directly. Route through cached_report_endpoint() from "
+                "src/dashboard/_endpoint_helpers.py, or add to R_CACHE_ALLOWLIST "
+                "with a justification (Rule 1 of endpoint-conventions.md).",
+            )
+        return False
+    _ok(
+        "R-CACHE",
+        f"all direct analyzer_cache calls go through helper "
+        f"(allowlisted: {len(R_CACHE_ALLOWLIST)})",
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# A-AWAIT — async def endpoint must use await
+# ---------------------------------------------------------------------------
+
+
+# Endpoints that legitimately need `async def` for the middleware /
+# request-body await contract. These are checked in PR #215's audit and
+# stay async. Anything else added as `async def` without an await should
+# either gain an await or be converted to plain def.
+A_AWAIT_ALLOWLIST: set[str] = set()
+
+
+def check_a_await() -> bool:
+    """Flag async def route handlers that don't await anything.
+
+    Per Rule 5: an async def whose body contains no await/async-for/
+    async-with is a perf bug — it blocks the FastAPI event loop on any
+    sync work it does. Convert to plain def so the threadpool dispatches
+    it. Prevents recurrence of PR #215.
+    """
+    import ast
+
+    if not _API_PY.exists():
+        _err("A-AWAIT", f"{_API_PY} not found")
+        return False
+    src = _API_PY.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        _err("A-AWAIT", f"api.py syntax error: {e}")
+        return False
+
+    class HasAwaitInOwnBody(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.found = False
+
+        def visit_Await(self, node: ast.Await) -> None:
+            self.found = True
+
+        def visit_AsyncFor(self, node) -> None:
+            self.found = True
+
+        def visit_AsyncWith(self, node) -> None:
+            self.found = True
+
+        def visit_FunctionDef(self, node) -> None:
+            pass  # don't descend into nested defs
+
+        def visit_AsyncFunctionDef(self, node) -> None:
+            pass
+
+    def body_awaits(fn) -> bool:
+        h = HasAwaitInOwnBody()
+        for stmt in fn.body:
+            h.visit(stmt)
+            if h.found:
+                return True
+        return False
+
+    # Check every AsyncFunctionDef in the file.
+    offenders: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef):
+            if body_awaits(node):
+                continue
+            if node.name in A_AWAIT_ALLOWLIST:
+                continue
+            offenders.append((node.name, node.lineno))
+
+    if offenders:
+        for name, ln in offenders:
+            _err(
+                "A-AWAIT",
+                f"api.py:{ln} async def {name!r} contains no await. "
+                "Convert to plain `def` so FastAPI dispatches to the "
+                "thread pool (Rule 5 of endpoint-conventions.md; "
+                "prevents PR #215 regression).",
+            )
+        return False
+    _ok("A-AWAIT", "all async def endpoints actually use await")
+    return True
+
+
 CHECKS = {
     "yaml-dup": check_yaml_duplicates,
     "yaml-schema": check_yaml_schema,
@@ -345,6 +543,8 @@ CHECKS = {
     "html-budget": check_innerhtml_budget,
     "html-chain": check_innerhtml_direct_chain,
     "svc-parity": check_service_name_parity,
+    "r-cache": check_r_cache,
+    "a-await": check_a_await,
 }
 
 
