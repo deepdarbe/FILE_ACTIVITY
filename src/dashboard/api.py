@@ -2309,9 +2309,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     def mit_naming_files(source_id: int, code: str = "R1",
                                 page: int = Query(1, ge=1, le=10000),
                                 page_size: int = Query(100, ge=1, le=500)):
-        """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6)."""
+        """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6).
+
+        Customer 2026-05-22: Adlandirma Uyumu - Profesyonel sekmesi 'Ihlal
+        eden dosyalar yukleniyor...' diye takiliyor. Same uncached pattern
+        as the parent report — iterated every scanned_files row on every
+        click. The matching list is now cached per (scan_id, code); the
+        page/page_size slice is computed in-memory off the cached list,
+        which is sub-ms for any page request.
+        """
         import re as re_mod
         from src.utils.size_formatter import format_size
+        from src.analyzer import cache as analyzer_cache
 
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
@@ -2331,35 +2340,47 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "B6": lambda p, n: any('.' in part and part not in ('', '.', '..') for part in p.replace('\\', '/').split('/')),
         }
 
-        check_fn = checks.get(code.upper())
+        code_upper = code.upper()
+        check_fn = checks.get(code_upper)
         if not check_fn:
             raise HTTPException(400, f"Gecersiz kod: {code}. Gecerli: {', '.join(checks.keys())}")
 
-        # Dosyalari tara ve ihlal edenleri topla
-        matching = []
-        with db.get_read_cursor() as cur:
-            cur.execute("""
-                SELECT id, file_path, file_name, file_size, owner, last_modify_time
-                FROM scanned_files WHERE scan_id=?
-            """, (scan_id,))
-            for row in cur:
-                if check_fn(row["file_path"], row["file_name"]):
-                    matching.append(dict(row))
+        def _compute_matching() -> list[dict]:
+            """Iterate scan once per (scan_id, code), cache the full list."""
+            matching_inner: list[dict] = []
+            with db.get_read_cursor() as cur:
+                cur.execute("""
+                    SELECT id, file_path, file_name, file_size, owner, last_modify_time
+                    FROM scanned_files WHERE scan_id=?
+                """, (scan_id,))
+                for row in cur:
+                    if check_fn(row["file_path"], row["file_name"]):
+                        matching_inner.append(dict(row))
+            return matching_inner
+
+        # Cache the matching list per (scan_id, code) — pagination is then
+        # a cheap in-memory slice off the cached list, so flipping pages
+        # is sub-ms instead of paying the full scan again.
+        envelope = analyzer_cache.get_or_compute(
+            db, f"mit_naming_files:{code_upper}", scan_id, _compute_matching,
+        )
+        matching = envelope.get("results", []) or []
 
         total = len(matching)
         offset = (page - 1) * page_size
-        page_files = matching[offset:offset + page_size]
+        page_files = [dict(f) for f in matching[offset:offset + page_size]]
         for f in page_files:
             f["file_size_formatted"] = format_size(f.get("file_size", 0))
             f["directory"] = f["file_path"].rsplit('\\', 1)[0] if '\\' in f["file_path"] else f["file_path"].rsplit('/', 1)[0]
 
         return {
-            "code": code.upper(),
+            "code": code_upper,
             "total": total,
             "page": page,
             "page_size": page_size,
             "total_pages": max(1, -(-total // page_size)),
-            "files": page_files
+            "files": page_files,
+            "cache": envelope.get("cache", {}),
         }
 
     @app.get("/api/reports/mit-naming/{source_id}/export")
