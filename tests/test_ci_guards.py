@@ -86,3 +86,110 @@ def test_d_chain_runs_against_real_index_html():
     chained pattern, this test fails locally before CI even runs.
     """
     assert g.check_innerhtml_direct_chain() is True
+
+
+# ---------------------------------------------------------------------------
+# R-CACHE — direct analyzer_cache.get_or_compute outside helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_api_py(tmp_path, monkeypatch):
+    """Redirect _API_PY at scripts.ci_guards to a tmp file we control."""
+    f = tmp_path / "api.py"
+    monkeypatch.setattr(g, "_API_PY", f)
+    return f
+
+
+def test_r_cache_passes_when_using_helper(fake_api_py):
+    fake_api_py.write_text(
+        "def safe_endpoint():\n"
+        "    return cached_report_endpoint(db, scan_id=1, report_name='X',\n"
+        "        compute_fn=lambda: {}, track_op=t, track_op_label='X',\n"
+        "        attach_envelope_fn=a)\n"
+    )
+    assert g.check_r_cache() is True
+
+
+def test_r_cache_fails_on_direct_call(fake_api_py):
+    fake_api_py.write_text(
+        "def bad_endpoint():\n"
+        "    return analyzer_cache.get_or_compute(db, 'X', 1, lambda: {})\n"
+    )
+    assert g.check_r_cache() is False
+
+
+def test_r_cache_allowlist_works(fake_api_py, monkeypatch):
+    monkeypatch.setattr(g, "R_CACHE_ALLOWLIST", {"legit_endpoint"})
+    fake_api_py.write_text(
+        "def legit_endpoint():\n"
+        "    return analyzer_cache.get_or_compute(db, 'X', 1, lambda: {})\n"
+    )
+    assert g.check_r_cache() is True
+
+
+def test_r_cache_doesnt_flag_nested_defs(fake_api_py):
+    """A function whose nested helper calls get_or_compute should NOT
+    fail R-CACHE — only the function that contains the call in its OWN
+    body. This is what makes the rule survive create_app(...) which is
+    a giant outer function containing many endpoints."""
+    fake_api_py.write_text(
+        "def create_app():\n"
+        "    def good_endpoint():\n"
+        "        return cached_report_endpoint(...)  # safe\n"
+        "    def bad_endpoint():\n"
+        "        return analyzer_cache.get_or_compute(db, 'X', 1, lambda: {})\n"
+    )
+    # create_app itself should NOT be flagged. bad_endpoint should be.
+    result = g.check_r_cache()
+    assert result is False
+
+
+def test_r_cache_runs_against_real_api_py():
+    """Live api.py must pass R-CACHE with the documented allowlist."""
+    assert g.check_r_cache() is True
+
+
+# ---------------------------------------------------------------------------
+# A-AWAIT — async def must use await
+# ---------------------------------------------------------------------------
+
+
+def test_a_await_passes_with_await(fake_api_py):
+    fake_api_py.write_text(
+        "async def good_endpoint(request):\n"
+        "    body = await request.json()\n"
+        "    return body\n"
+    )
+    assert g.check_a_await() is True
+
+
+def test_a_await_fails_without_await(fake_api_py):
+    fake_api_py.write_text(
+        "async def bad_endpoint():\n"
+        "    return {'hello': 'world'}\n"
+    )
+    assert g.check_a_await() is False
+
+
+def test_a_await_passes_plain_def(fake_api_py):
+    """Plain def (no async) is the desired shape — should always pass."""
+    fake_api_py.write_text(
+        "def fine_endpoint():\n"
+        "    return {'hello': 'world'}\n"
+    )
+    assert g.check_a_await() is True
+
+
+def test_a_await_handles_async_with(fake_api_py):
+    fake_api_py.write_text(
+        "async def good_endpoint():\n"
+        "    async with thing() as t:\n"
+        "        return t\n"
+    )
+    assert g.check_a_await() is True
+
+
+def test_a_await_runs_against_real_api_py():
+    """Live api.py must pass A-AWAIT after PR #215."""
+    assert g.check_a_await() is True
