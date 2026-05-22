@@ -5161,13 +5161,26 @@ async function archiveDrilldown() {
 }
 
 async function downloadDrilldownXLS(event) {
-    // Use the URL to determine source_id
-    const parts = ddCurrentUrl.split('/');
-    const sid = parts[parts.length - 1].split('?')[0];
-    if (!sid) { notify('Kaynak bulunamadi', 'warning'); return; }
+    // Customer 2026-05-22: clicking XLSX Indir on a drilldown was hitting
+    // /api/export/xls/{sid} which exports the FULL report (5-sheet
+    // summary), ignoring the drilldown filter completely. Instead, use
+    // the new /api/drilldown/{type}/{sid}/export.xlsx endpoint that
+    // mirrors the JSON drilldown URL (same path + query string) so the
+    // user gets ONLY the filtered rows.
+    //
+    // ddCurrentUrl is something like '/drilldown/frequency/1?min_days=30'.
+    // Convert to '/api/drilldown/frequency/1/export.xlsx?min_days=30'.
+    if (!ddCurrentUrl || !ddCurrentUrl.startsWith('/drilldown/')) {
+        notify('Drilldown URL bulunamadi', 'warning');
+        return;
+    }
+    const qIdx = ddCurrentUrl.indexOf('?');
+    const pathPart = qIdx >= 0 ? ddCurrentUrl.slice(0, qIdx) : ddCurrentUrl;
+    const queryPart = qIdx >= 0 ? ddCurrentUrl.slice(qIdx) : '';
+    const exportUrl = '/api' + pathPart + '/export.xlsx' + queryPart;
     const btn = event?.currentTarget;
     await withButtonLoading(btn, async (signal) => {
-        await fetchAndDownload(`/api/export/xls/${sid}`, signal, `drilldown_${sid}.xlsx`);
+        await fetchAndDownload(exportUrl, signal, 'drilldown.xlsx');
     });
 }
 

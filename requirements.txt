@@ -13,10 +13,10 @@ uvicorn[standard]>=0.27.0
 pywin32>=311
 
 # Configuration
-pyyaml>=6.0.1
+pyyaml>=6.0.3
 
 # Scheduling
-apscheduler>=3.10.0
+apscheduler>=3.11.2
 
 # Reports
 openpyxl>=3.1.0
@@ -26,7 +26,7 @@ reportlab>=4.0.0
 # When installed and analytics.enabled=true, heavy reports (duplicates,
 # growth, stats) run through DuckDB via the sqlite_scanner extension.
 # SQLite remains the source of truth; DuckDB only reads.
-duckdb>=1.0.0
+duckdb>=1.5.2
 
 # Parquet staging (optional): pyarrow lets the scanner stage rows to
 # Parquet files which DuckDB then bulk-INSERTs into SQLite via the

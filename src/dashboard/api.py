@@ -1301,10 +1301,24 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/status/{source_id}")
     def report_status(source_id: int):
+        """Cached per scan_id — Rule 1 of endpoint-conventions.md."""
         from src.analyzer.report_generator import ReportGenerator
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
-        return gen.generate_status_report(src.id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_status_report(src.id)
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="status",
+            compute_fn=lambda: gen.generate_status_report(src.id),
+            track_op=_track_op,
+            track_op_label=f"Durum raporu: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+        )
 
     # Issue #125 — context manager that wraps a block in start/finish on
     # the operations registry. Tracker outage MUST NOT break the work,
@@ -1329,113 +1343,124 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/frequency/{source_id}")
     def report_frequency(source_id: int, days: Optional[str] = None):
+        """Erisim sikligi — cached per scan_id (Rule 1).
+
+        EPIC #225 R-4: the previous dual-shape branch (PR #198 / #223)
+        is gone. db.get_scan_summary now normalises age_buckets to the
+        canonical list-shape via _summary_compat.normalize_summary, so
+        the fast-path here reads a single shape.
+        """
         from src.analyzer.report_generator import ReportGenerator
-        from src.analyzer import cache as analyzer_cache
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
+        from src.utils.size_formatter import format_size
+        from datetime import datetime
         src = _get_source(db, source_id)
-        # Once v2 summary_json'daki age_buckets'a bak — scanned_files'i
-        # hic tarama. Custom days verildiyse klasik hesaplamaya dus.
-        # Issue #194 update #5: the v2 fast-path used to return
-        # ``frequency`` as a dict, but every frontend page expects a
-        # list of bucket records (loadFrequency does freq.forEach()).
-        # Convert the v2 dict to the canonical list shape so existing
-        # callers keep working.
+
+        # Fast path: age_buckets are already in summary_json — no need to
+        # touch scanned_files. Only kicks in for the default bucket set
+        # (no ?days=... override).
         if not days:
             scan_id = db.get_latest_scan_id(src.id, include_running=True)
             if scan_id:
                 summary = db.get_scan_summary(scan_id)
                 if summary and isinstance(summary, dict) and "age_buckets" in summary:
-                    from datetime import datetime
-                    age_buckets_v2 = summary.get("age_buckets") or {}
-                    # Map v2 bin labels (non-cumulative) to the cumulative
-                    # "X+ gun erisilmemis" shape the frontend renders. We
-                    # don't have per-bucket size from v2 yet, so total_size
-                    # is left at 0 for the fast-path; falls through to the
-                    # full analyzer below if accurate sizes are needed.
-                    v2_to_classic = [
-                        ("<30d", 30, "30+ gun erisilmemis"),
-                        ("30-60d", 60, "60+ gun erisilmemis"),
-                        ("60-90d", 90, "90+ gun erisilmemis"),
-                        ("90-180d", 180, "180+ gun erisilmemis"),
-                        ("180-365d", 365, "365+ gun erisilmemis"),
-                        (">365d", 9999, "9999+ gun erisilmemis"),
+                    age_buckets = summary.get("age_buckets") or []
+                    list_label_map = [
+                        ("0-30",     30,   "30+ gun erisilmemis"),
+                        ("31-90",    90,   "60+ gun erisilmemis"),
+                        ("91-180",   180,  "90+ gun erisilmemis"),
+                        ("181-365",  365,  "180+ gun erisilmemis"),
+                        ("366+",     9999, "365+ gun erisilmemis"),
                     ]
-                    freq_list = [
-                        {
+                    by_label = {
+                        item.get("label"): item
+                        for item in age_buckets
+                        if isinstance(item, dict) and item.get("label")
+                    }
+                    freq_list = []
+                    for k, days_val, label in list_label_map:
+                        row = by_label.get(k)
+                        if not row:
+                            continue
+                        total_size = int(row.get("total_size", 0) or 0)
+                        freq_list.append({
                             "days": days_val,
                             "label": label,
-                            "file_count": int(age_buckets_v2.get(k, 0) or 0),
-                            "total_size": 0,
-                            "total_size_formatted": "0 B",
+                            "file_count": int(row.get("file_count", 0) or 0),
+                            "total_size": total_size,
+                            "total_size_formatted": format_size(total_size),
+                        })
+                    if freq_list:
+                        return {
+                            "source": {"id": source_id, "name": src.name},
+                            "scan_id": scan_id,
+                            "frequency": freq_list,
+                            "age_buckets": age_buckets,
+                            "from_summary": True,
+                            "generated_at": datetime.now().isoformat(),
                         }
-                        for k, days_val, label in v2_to_classic
-                        if k in age_buckets_v2
-                    ]
-                    return {
-                        "source": {"id": source_id, "name": src.name},
-                        "scan_id": scan_id,
-                        "frequency": freq_list,
-                        "age_buckets": age_buckets_v2,
-                        "from_summary": True,
-                        "generated_at": datetime.now().isoformat(),
-                    }
+                    # else: fall through to live ReportGenerator
+
+        # Slow path: custom bucket set OR summary_json missing age_buckets.
         gen = ReportGenerator(db, config)
         custom = [int(d) for d in days.split(",")] if days else None
-        # Custom-days variants get a distinct cache slot per bucket spec
-        # (otherwise different callers would shadow each other).
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if scan_id is None:
             return gen.generate_frequency_report(src.id, custom)
-        analyzer_name = "frequency" if not custom else f"frequency:{','.join(map(str, custom))}"
-        with _track_op(
-            "analysis",
-            f"Erisim sikligi analizi: {src.name}",
-            metadata={"source_id": src.id},
-        ):
-            envelope = analyzer_cache.get_or_compute(
-                db, analyzer_name, scan_id,
-                lambda: gen.generate_frequency_report(src.id, custom),
-            )
-            return _attach_cache_envelope(envelope)
+        # Custom-days variants get a distinct cache slot per bucket spec
+        # (otherwise different callers would shadow each other).
+        cache_suffix = ",".join(map(str, custom)) if custom else ""
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="frequency",
+            compute_fn=lambda: gen.generate_frequency_report(src.id, custom),
+            track_op=_track_op,
+            track_op_label=f"Erisim sikligi analizi: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+            custom_key_suffix=cache_suffix,
+        )
 
     @app.get("/api/reports/types/{source_id}")
     def report_types(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
-        from src.analyzer import cache as analyzer_cache
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
         src = _get_source(db, source_id)
-        with _track_op(
-            "analysis",
-            f"Tur analizi: {src.name}",
-            metadata={"source_id": src.id},
-        ):
-            gen = ReportGenerator(db, config)
-            scan_id = db.get_latest_scan_id(src.id, include_running=True)
-            if scan_id is None:
-                return gen.generate_type_report(src.id)
-            envelope = analyzer_cache.get_or_compute(
-                db, "types", scan_id,
-                lambda: gen.generate_type_report(src.id),
-            )
-            return _attach_cache_envelope(envelope)
+        gen = ReportGenerator(db, config)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_type_report(src.id)
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="types",
+            compute_fn=lambda: gen.generate_type_report(src.id),
+            track_op=_track_op,
+            track_op_label=f"Tur analizi: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+        )
 
     @app.get("/api/reports/sizes/{source_id}")
     def report_sizes(source_id: int):
         from src.analyzer.report_generator import ReportGenerator
-        from src.analyzer import cache as analyzer_cache
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
         src = _get_source(db, source_id)
-        with _track_op(
-            "analysis",
-            f"Boyut analizi: {src.name}",
-            metadata={"source_id": src.id},
-        ):
-            gen = ReportGenerator(db, config)
-            scan_id = db.get_latest_scan_id(src.id, include_running=True)
-            if scan_id is None:
-                return gen.generate_size_report(src.id)
-            envelope = analyzer_cache.get_or_compute(
-                db, "sizes", scan_id,
-                lambda: gen.generate_size_report(src.id),
-            )
-            return _attach_cache_envelope(envelope)
+        gen = ReportGenerator(db, config)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_size_report(src.id)
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="sizes",
+            compute_fn=lambda: gen.generate_size_report(src.id),
+            track_op=_track_op,
+            track_op_label=f"Boyut analizi: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+        )
 
     @app.get("/api/reports/full/{source_id}")
     def report_full(source_id: int):
@@ -1447,8 +1472,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         snapshot is available, return it (with ``is_partial: True``) so
         the Reports page renders rolling KPIs instead of the empty
         placeholder.
+
+        Customer 2026-05-22: Treemap Harita page (the only caller of
+        this endpoint) was empty because ``generate_full_report``
+        re-ran three separate GROUP BY queries (freq + types + sizes)
+        over 2.89M scanned_files on every page open — 30-90 sec per
+        click, often timed out before the SVG rendered. Now cached
+        via ``analyzer_cache.get_or_compute(db, "full", scan_id, ...)``
+        so the first click pays the compute and every subsequent
+        click is sub-ms. Same pattern as report_frequency / report_types
+        / report_sizes / mit_naming_report (PR #224).
         """
         from src.analyzer.report_generator import ReportGenerator
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         completed_scan_id = db.get_latest_scan_id(src.id, include_running=False)
         if completed_scan_id is None:
@@ -1465,7 +1501,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             metadata={"source_id": src.id},
         ):
             gen = ReportGenerator(db, config)
-            return gen.generate_full_report(src.id)
+            envelope = analyzer_cache.get_or_compute(
+                db, "full", completed_scan_id,
+                lambda: gen.generate_full_report(src.id),
+            )
+            return _attach_cache_envelope(envelope)
 
     # --- ARCHIVE API ---
 
@@ -1683,12 +1723,28 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/export/{source_id}")
     def report_export(source_id: int):
-        """HTML rapor dosyasi olustur ve indir."""
+        """HTML rapor dosyasi olustur ve indir.
+
+        Shares the "full" analyzer_cache entry with /api/reports/full so
+        the heavy generate_full_report compute runs at most once per
+        scan_id across both endpoints. Cache miss path runs the compute;
+        cache hit returns the cached dict and skips straight to HTML
+        rendering.
+        """
         from src.analyzer.report_generator import ReportGenerator
         from src.analyzer.report_exporter import ReportExporter
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
-        data = gen.generate_full_report(src.id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=False)
+        if scan_id is None:
+            data = gen.generate_full_report(src.id)
+        else:
+            envelope = analyzer_cache.get_or_compute(
+                db, "full", scan_id,
+                lambda: gen.generate_full_report(src.id),
+            )
+            data = envelope.get("results", {}) or {}
         if "error" in data:
             raise HTTPException(400, data["error"])
         exporter = ReportExporter(config)
@@ -1780,6 +1836,98 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         result["page"] = page
         result["limit"] = limit
         return result
+
+    @app.get("/api/drilldown/{filter_type}/{source_id}/export.xlsx")
+    def drilldown_export_xlsx(
+        filter_type: str,
+        source_id: int,
+        min_days: int = 0,
+        max_days: Optional[int] = None,
+        extension: str = "",
+        min_bytes: int = 0,
+        max_bytes: Optional[int] = None,
+        owner: str = "",
+    ):
+        """XLSX export of a drilldown filter result.
+
+        Customer 2026-05-22: clicking ``XLSX İndir`` inside any drilldown
+        modal (Erisim Sikligi/Type/Size/Owner) was hitting
+        ``/api/export/xls/{source_id}`` which exports the **full report**
+        (5-sheet GROUP-BY summary), ignoring the drilldown filter
+        completely AND running 5 separate queries over 2.89M rows on
+        every click. Customer experience: "Rapor almak istiyoruz, sonuc
+        alamiyoruz" — request would either time out or return the wrong
+        file.
+
+        This endpoint mirrors the four drilldown JSON endpoints
+        (frequency/type/size/owner) and emits an XLSX of the matching
+        files via ``XLSExporter.export_drilldown``. Filter params match
+        the JSON endpoint signatures exactly so the frontend can swap
+        ``/drilldown/`` → ``/api/drilldown/.../export.xlsx`` with
+        identical params and Just Work.
+
+        Row cap: 100_000. Beyond that the XLSX is too large to be useful
+        in Excel anyway (and Excel itself caps at 1,048,576 rows). Future
+        work: route oversize exports through ``write_large_workbook``
+        (multi-sheet) or ``stream_csv`` (issue #122 pattern) the same way
+        ``export_mit_naming_xlsx`` does — tracked in #225 R-2.
+        """
+        from fastapi.responses import StreamingResponse
+        from io import BytesIO
+        from src.analyzer.report_exporter_v2 import XLSExporter
+
+        src = _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama verisi bulunamadi")
+
+        MAX_ROWS = 100_000
+
+        if filter_type == "frequency":
+            run = _run_drilldown(analytics.get_files_by_frequency,
+                                 db.get_files_by_frequency)
+            result = run(src.id, scan_id, min_days, max_days, MAX_ROWS, 0)
+            sheet_title = f"freq_{min_days}-{max_days or 'inf'}"
+        elif filter_type == "type":
+            run = _run_drilldown(analytics.get_files_by_extension,
+                                 db.get_files_by_extension)
+            result = run(src.id, scan_id, extension, MAX_ROWS, 0)
+            sheet_title = f"type_{extension}" if extension else "type_all"
+        elif filter_type == "size":
+            run = _run_drilldown(analytics.get_files_by_size_range,
+                                 db.get_files_by_size_range)
+            result = run(src.id, scan_id, min_bytes, max_bytes, MAX_ROWS, 0)
+            sheet_title = f"size_{min_bytes}-{max_bytes or 'inf'}"
+        elif filter_type == "owner":
+            run = _run_drilldown(analytics.get_files_by_owner,
+                                 db.get_files_by_owner)
+            result = run(src.id, scan_id, owner, MAX_ROWS, 0)
+            sheet_title = (f"owner_{owner}" if owner else "owner_all")[:31]
+        else:
+            raise HTTPException(
+                400,
+                f"Gecersiz filter_type: {filter_type}. "
+                "Gecerli: frequency, type, size, owner",
+            )
+
+        files = result.get("files", []) or []
+
+        try:
+            exporter = XLSExporter(db, config)
+            data = exporter.export_drilldown(files, sheet_title)
+        except ImportError:
+            raise HTTPException(501, "openpyxl kurulu degil. pip install openpyxl")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error("drilldown XLSX export error: %s", e)
+            raise HTTPException(500, str(e))
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"drilldown_{filter_type}_{src.name}_{ts}.xlsx"
+        return StreamingResponse(
+            BytesIO(data),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     class DrilldownArchiveRequest(BaseModel):
         source_id: int
@@ -2194,31 +2342,59 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/mit-naming/{source_id}")
     def mit_naming_report(source_id: int):
-        """MIT Libraries dosya adlandirma standartlarina uyum analizi."""
-        from src.scanner.file_scanner import MITNamingAnalyzer
+        """MIT Libraries dosya adlandirma standartlarina uyum analizi.
 
+        Cached per scan_id — Rule 1 of endpoint-conventions.md. The
+        analyser iterates every scanned_files row, so on a 2.9M-file
+        scan a re-compute is 1-3 min. Cache hits return in ms.
+        """
+        from src.scanner.file_scanner import MITNamingAnalyzer
+        from src.dashboard._endpoint_helpers import cached_report_endpoint
+
+        src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
             raise HTTPException(404, "Tarama bulunamadi")
 
-        analyzer = MITNamingAnalyzer()
-        with db.get_read_cursor() as cur:
-            cur.execute("""
-                SELECT file_path, file_name FROM scanned_files
-                WHERE scan_id=?
-            """, (scan_id,))
-            for row in cur:
-                analyzer.analyze(row["file_path"], row["file_name"])
+        def _compute() -> dict:
+            analyzer = MITNamingAnalyzer()
+            with db.get_read_cursor() as cur:
+                cur.execute(
+                    "SELECT file_path, file_name FROM scanned_files "
+                    "WHERE scan_id=?",
+                    (scan_id,),
+                )
+                for row in cur:
+                    analyzer.analyze(row["file_path"], row["file_name"])
+            return analyzer.get_report()
 
-        return analyzer.get_report()
+        return cached_report_endpoint(
+            db,
+            scan_id=scan_id,
+            report_name="mit_naming",
+            compute_fn=_compute,
+            track_op=_track_op,
+            track_op_label=f"Adlandirma uyumu analizi: {src.name}",
+            track_op_metadata={"source_id": src.id},
+            attach_envelope_fn=_attach_cache_envelope,
+        )
 
     @app.get("/api/reports/mit-naming/{source_id}/files")
     def mit_naming_files(source_id: int, code: str = "R1",
                                 page: int = Query(1, ge=1, le=10000),
                                 page_size: int = Query(100, ge=1, le=500)):
-        """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6)."""
+        """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6).
+
+        Customer 2026-05-22: Adlandirma Uyumu - Profesyonel sekmesi 'Ihlal
+        eden dosyalar yukleniyor...' diye takiliyor. Same uncached pattern
+        as the parent report — iterated every scanned_files row on every
+        click. The matching list is now cached per (scan_id, code); the
+        page/page_size slice is computed in-memory off the cached list,
+        which is sub-ms for any page request.
+        """
         import re as re_mod
         from src.utils.size_formatter import format_size
+        from src.analyzer import cache as analyzer_cache
 
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
@@ -2238,42 +2414,61 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "B6": lambda p, n: any('.' in part and part not in ('', '.', '..') for part in p.replace('\\', '/').split('/')),
         }
 
-        check_fn = checks.get(code.upper())
+        code_upper = code.upper()
+        check_fn = checks.get(code_upper)
         if not check_fn:
             raise HTTPException(400, f"Gecersiz kod: {code}. Gecerli: {', '.join(checks.keys())}")
 
-        # Dosyalari tara ve ihlal edenleri topla
-        matching = []
-        with db.get_read_cursor() as cur:
-            cur.execute("""
-                SELECT id, file_path, file_name, file_size, owner, last_modify_time
-                FROM scanned_files WHERE scan_id=?
-            """, (scan_id,))
-            for row in cur:
-                if check_fn(row["file_path"], row["file_name"]):
-                    matching.append(dict(row))
+        def _compute_matching() -> list[dict]:
+            """Iterate scan once per (scan_id, code), cache the full list."""
+            matching_inner: list[dict] = []
+            with db.get_read_cursor() as cur:
+                cur.execute("""
+                    SELECT id, file_path, file_name, file_size, owner, last_modify_time
+                    FROM scanned_files WHERE scan_id=?
+                """, (scan_id,))
+                for row in cur:
+                    if check_fn(row["file_path"], row["file_name"]):
+                        matching_inner.append(dict(row))
+            return matching_inner
+
+        # Cache the matching list per (scan_id, code) — pagination is then
+        # a cheap in-memory slice off the cached list, so flipping pages
+        # is sub-ms instead of paying the full scan again.
+        envelope = analyzer_cache.get_or_compute(
+            db, f"mit_naming_files:{code_upper}", scan_id, _compute_matching,
+        )
+        matching = envelope.get("results", []) or []
 
         total = len(matching)
         offset = (page - 1) * page_size
-        page_files = matching[offset:offset + page_size]
+        page_files = [dict(f) for f in matching[offset:offset + page_size]]
         for f in page_files:
             f["file_size_formatted"] = format_size(f.get("file_size", 0))
             f["directory"] = f["file_path"].rsplit('\\', 1)[0] if '\\' in f["file_path"] else f["file_path"].rsplit('/', 1)[0]
 
         return {
-            "code": code.upper(),
+            "code": code_upper,
             "total": total,
             "page": page,
             "page_size": page_size,
             "total_pages": max(1, -(-total // page_size)),
-            "files": page_files
+            "files": page_files,
+            "cache": envelope.get("cache", {}),
         }
 
     @app.get("/api/reports/mit-naming/{source_id}/export")
     def mit_naming_export(source_id: int):
-        """MIT ihlal raporunu Excel olarak export et."""
+        """MIT ihlal raporunu CSV olarak export et.
+
+        Cached per scan_id — the full-scan iteration over 2.89M rows
+        otherwise re-pays the cost on every download. Cache stores the
+        per-code violation lists; CSV serialisation is cheap once the
+        dict is in memory.
+        """
         import re as re_mod
         from fastapi.responses import StreamingResponse
+        from src.analyzer import cache as analyzer_cache
         import io
 
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
@@ -2291,17 +2486,23 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "B5": ("Ayirici Yok", lambda p, n: len(n) > 10 and '_' not in n and '-' not in n),
         }
 
-        # Tum dosyalari tara
-        violations = {code: [] for code in checks}
-        with db.get_read_cursor() as cur:
-            cur.execute("""
-                SELECT file_path, file_name, file_size, owner, last_modify_time
-                FROM scanned_files WHERE source_id=? AND scan_id=?
-            """, (source_id, scan_id))
-            for row in cur:
-                for code, (label, fn) in checks.items():
-                    if fn(row["file_path"], row["file_name"]):
-                        violations[code].append(dict(row))
+        def _compute_violations() -> dict:
+            v: dict = {code: [] for code in checks}
+            with db.get_read_cursor() as cur:
+                cur.execute("""
+                    SELECT file_path, file_name, file_size, owner, last_modify_time
+                    FROM scanned_files WHERE source_id=? AND scan_id=?
+                """, (source_id, scan_id))
+                for row in cur:
+                    for code, (label, fn) in checks.items():
+                        if fn(row["file_path"], row["file_name"]):
+                            v[code].append(dict(row))
+            return v
+
+        envelope = analyzer_cache.get_or_compute(
+            db, "mit_naming_export", scan_id, _compute_violations,
+        )
+        violations = envelope.get("results", {}) or {code: [] for code in checks}
 
         # CSV olustur (Excel uyumlu)
         output = io.StringIO()

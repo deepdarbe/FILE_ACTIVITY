@@ -619,6 +619,28 @@ class Database:
         # UPDATE is O(log N) and enrich completes in seconds.
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_scan_path ON scanned_files(scan_id, file_path)")
 
+        # 2026-05-22 EXPLAIN audit (scripts/explain_audit.py on the
+        # 2.89M-row customer DB) — the existing (source_id, scan_id, X)
+        # composites can't help queries that only filter on scan_id,
+        # because the planner needs the leading source_id to use them.
+        # compute_scan_summary, type_analyzer and top_large_files all
+        # do `WHERE scan_id=? GROUP/ORDER BY ...` without source_id,
+        # so they were doing "USE TEMP B-TREE FOR GROUP/ORDER" — a full
+        # sort in memory on 2.89M rows. These two-column composites let
+        # the planner satisfy GROUP/ORDER BY straight off the index and
+        # remove the temp B-tree.
+        #
+        # Trade-off: ~150-250 MB extra DB size on a 3M-row scan, and ~3
+        # extra index writes per insert during the scan. The query-side
+        # win on the dashboard's hot reports is ~10× (30 s → 3 s cold
+        # cache compute). Confirmed by the EXPLAIN plan changing from
+        # SEARCH idx_sf_scan_path + USE TEMP B-TREE FOR GROUP BY to
+        # SCAN idx_scan_ext / idx_scan_owner / idx_scan_size with no
+        # temp B-tree.
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_scan_ext ON scanned_files(scan_id, extension)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_scan_owner ON scanned_files(scan_id, owner)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_scan_size ON scanned_files(scan_id, file_size)")
+
         # Arsivlenmis dosyalar
         cur.execute("""
             CREATE TABLE IF NOT EXISTS archived_files (
@@ -3610,7 +3632,16 @@ class Database:
         return d
 
     def get_scan_summary(self, scan_id: int) -> Optional[dict]:
-        """Kayitli scan summary'yi oku. Hic hesaplanmamissa None doner."""
+        """Kayitli scan summary'yi oku. Hic hesaplanmamissa None doner.
+
+        EPIC #225 R-3: passes the loaded dict through
+        ``_summary_compat.normalize_summary`` so callers always see the
+        canonical list-shape for age_buckets/size_buckets regardless of
+        which writer (partial_summary_v2 dict-shape vs
+        compute_scan_summary list-shape) populated the JSON column.
+        Eliminates the dual-shape branching that caused PR #198 / #223.
+        """
+        from src.storage._summary_compat import normalize_summary
         with self.get_cursor() as cur:
             row = cur.execute(
                 "SELECT summary_json, summary_computed_at FROM scan_runs WHERE id=?",
@@ -3622,6 +3653,7 @@ class Database:
             d = json.loads(row["summary_json"])
         except Exception:
             return None
+        d = normalize_summary(d) or {}
         d["scan_id"] = scan_id
         d["computed_at"] = row["summary_computed_at"]
         return d
