@@ -1301,10 +1301,25 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/status/{source_id}")
     def report_status(source_id: int):
+        """Same pattern as report_frequency/types/sizes — cached per scan_id.
+
+        Previously this endpoint re-ran generate_status_report (a GROUP BY
+        over all of scanned_files) on every call. On a 2.89M-file scan that
+        is 10–30 sec per click. Now cached via ``analyzer_cache`` and
+        invalidated automatically on a new scan.
+        """
         from src.analyzer.report_generator import ReportGenerator
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         gen = ReportGenerator(db, config)
-        return gen.generate_status_report(src.id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if scan_id is None:
+            return gen.generate_status_report(src.id)
+        envelope = analyzer_cache.get_or_compute(
+            db, "status", scan_id,
+            lambda: gen.generate_status_report(src.id),
+        )
+        return _attach_cache_envelope(envelope)
 
     # Issue #125 — context manager that wraps a block in start/finish on
     # the operations registry. Tracker outage MUST NOT break the work,
@@ -1490,8 +1505,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         snapshot is available, return it (with ``is_partial: True``) so
         the Reports page renders rolling KPIs instead of the empty
         placeholder.
+
+        Customer 2026-05-22: Treemap Harita page (the only caller of
+        this endpoint) was empty because ``generate_full_report``
+        re-ran three separate GROUP BY queries (freq + types + sizes)
+        over 2.89M scanned_files on every page open — 30-90 sec per
+        click, often timed out before the SVG rendered. Now cached
+        via ``analyzer_cache.get_or_compute(db, "full", scan_id, ...)``
+        so the first click pays the compute and every subsequent
+        click is sub-ms. Same pattern as report_frequency / report_types
+        / report_sizes / mit_naming_report (PR #224).
         """
         from src.analyzer.report_generator import ReportGenerator
+        from src.analyzer import cache as analyzer_cache
         src = _get_source(db, source_id)
         completed_scan_id = db.get_latest_scan_id(src.id, include_running=False)
         if completed_scan_id is None:
@@ -1508,7 +1534,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             metadata={"source_id": src.id},
         ):
             gen = ReportGenerator(db, config)
-            return gen.generate_full_report(src.id)
+            envelope = analyzer_cache.get_or_compute(
+                db, "full", completed_scan_id,
+                lambda: gen.generate_full_report(src.id),
+            )
+            return _attach_cache_envelope(envelope)
 
     # --- ARCHIVE API ---
 
