@@ -5021,7 +5021,7 @@ function showDrilldown(title, url, archiveParams) {
     document.getElementById('drilldown-overlay').classList.add('active');
     // Reset view toggle buttons
     const toggleBtns = document.querySelectorAll('#dd-view-toggle button');
-    toggleBtns.forEach(b => b.classList.toggle('active', b.textContent === 'Tablo'));
+    toggleBtns.forEach(b => b.classList.toggle('active', b.dataset.view === 'table'));
     ddViewMode = 'table';
     loadDrilldownPage(url, 1);
 }
@@ -5033,10 +5033,7 @@ function closeDrilldown() {
 function setDrilldownView(mode) {
     ddViewMode = mode;
     const toggleBtns = document.querySelectorAll('#dd-view-toggle button');
-    toggleBtns.forEach(b => b.classList.toggle('active',
-        (mode === 'table' && b.textContent === 'Tablo') ||
-        (mode === 'card' && b.textContent === 'Kart')
-    ));
+    toggleBtns.forEach(b => b.classList.toggle('active', b.dataset.view === mode));
     renderDrilldownData();
 }
 
@@ -5051,21 +5048,20 @@ function ddSortBy(col) {
 }
 
 function ddToggleAll(checked) {
-    ddSelectedFiles = checked ? new Set(ddCurrentFiles.map((_, i) => i)) : new Set();
+    ddSelectedFiles = checked ? new Set(ddCurrentFiles.map(f => f.file_path || '')) : new Set();
     renderDrilldownData();
 }
 
-function ddToggleRow(idx) {
-    if (ddSelectedFiles.has(idx)) ddSelectedFiles.delete(idx);
-    else ddSelectedFiles.add(idx);
+function ddToggleRow(filePath) {
+    if (ddSelectedFiles.has(filePath)) ddSelectedFiles.delete(filePath);
+    else ddSelectedFiles.add(filePath);
     renderDrilldownData();
 }
 
 function _extractFolder(filePath) {
     if (!filePath) return '-';
-    const sep = filePath.includes('\\') ? '\\' : '/';
-    const parts = filePath.split(sep);
-    return parts.length > 1 ? parts.slice(0, -1).join(sep) : '-';
+    const parts = filePath.split(/[/\\]+/);
+    return parts.length > 1 ? parts.slice(0, -1).join('\\') : '-';
 }
 
 function _sortFiles(files) {
@@ -5102,15 +5098,19 @@ function renderDrilldownData() {
                 <th onclick="ddSortBy('last_modify_time')">Son Degisiklik ${_sortArrow('last_modify_time')}</th>
                 <th onclick="ddSortBy('owner')">Sahip ${_sortArrow('owner')}</th>
             </tr></thead>
-            <tbody>${files.length ? files.map((f, i) => `<tr>
-                <td class="col-check"><input type="checkbox" ${ddSelectedFiles.has(i)?'checked':''} onchange="ddToggleRow(${i})"></td>
-                <td title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
-                <td title="${escapeHtml(_extractFolder(f.file_path))}">${escapeHtml(_extractFolder(f.file_path))}</td>
+            <tbody>${files.length ? files.map(f => {
+                const fp = f.file_path || '';
+                const checked = ddSelectedFiles.has(fp) ? 'checked' : '';
+                return `<tr>
+                <td class="col-check"><input type="checkbox" ${checked} onchange="ddToggleRow('${escapeHtml(fp).replace(/'/g, "\\'")}')"></td>
+                <td title="${escapeHtml(fp)}">${escapeHtml(f.file_name||'')}</td>
+                <td title="${escapeHtml(_extractFolder(fp))}">${escapeHtml(_extractFolder(fp))}</td>
                 <td class="col-size">${formatSize(f.file_size||0)}</td>
                 <td class="col-date">${escapeHtml((f.last_access_time||'').substring(0,16))}</td>
                 <td class="col-date">${escapeHtml((f.last_modify_time||'').substring(0,16))}</td>
                 <td>${escapeHtml(f.owner||'-')}</td>
-            </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
+            </tr>`;
+            }).join('') : '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
         `);
     } else {
         _setHtmlSafe('dd-table', `
@@ -9536,8 +9536,8 @@ function _fmtSize(bytes) {
             <h3 id="dd-title">Dosya Listesi</h3>
             <div class="dd-actions">
                 <div id="dd-view-toggle" class="dd-view-toggle">
-                    <button class="active" onclick="setDrilldownView('table')">Tablo</button>
-                    <button onclick="setDrilldownView('card')">Kart</button>
+                    <button data-view="table" class="active" onclick="setDrilldownView('table')">Tablo</button>
+                    <button data-view="card" onclick="setDrilldownView('card')">Kart</button>
                 </div>
                 <button class="btn-export" onclick="downloadDrilldownXLS(event)">XLS Indir</button>
                 <button id="dd-archive-btn" class="btn btn-sm btn-danger" onclick="archiveDrilldown()" style="display:none">Grubu Arsivle</button>
