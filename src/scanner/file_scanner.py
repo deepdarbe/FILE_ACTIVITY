@@ -1099,6 +1099,50 @@ class FileScanner:
             except Exception as e:
                 logger.warning("AI insights hesaplanamadi (scan_id=%d): %s", scan_id, e)
 
+            # Pre-warm the analyzer_cache for hot dashboard endpoints.
+            #
+            # Customer 2026-05-22: even after PR #224/#227/#228 caching the
+            # heavy reports, the **first** click after a scan completes still
+            # paid the compute cost (3-30 sec per report on a 2.89M-row
+            # scan, even with PR #230 indexes). Customer perception: "scan
+            # finished but dashboard still slow on first click". The work
+            # is identical either way — running it here, after scan
+            # completion but before the user's first click, shifts the
+            # wait into the scan timeline (which the customer already
+            # accepts as "wait") and out of the dashboard navigation
+            # timeline (which the customer expects to be snappy).
+            #
+            # Each pre-warm is best-effort: a failure is logged but does
+            # NOT block the scan from being marked complete. The dashboard
+            # endpoint will recompute on demand if any individual cache
+            # entry is missing.
+            try:
+                from src.analyzer.report_generator import ReportGenerator
+                from src.analyzer import cache as analyzer_cache
+                gen = ReportGenerator(self.db, self.config)
+                prewarm_specs = [
+                    ("frequency", lambda: gen.generate_frequency_report(source_id, None)),
+                    ("types", lambda: gen.generate_type_report(source_id)),
+                    ("sizes", lambda: gen.generate_size_report(source_id)),
+                    ("status", lambda: gen.generate_status_report(source_id)),
+                    ("full", lambda: gen.generate_full_report(source_id)),
+                ]
+                for name, fn in prewarm_specs:
+                    try:
+                        t0 = time.time()
+                        analyzer_cache.get_or_compute(self.db, name, scan_id, fn)
+                        logger.info(
+                            "Pre-warmed cache: %s (scan_id=%d, %.1f sn)",
+                            name, scan_id, time.time() - t0,
+                        )
+                    except Exception as e:  # pragma: no cover - defensive
+                        logger.warning(
+                            "Pre-warm failed for %s (scan_id=%d): %s",
+                            name, scan_id, e,
+                        )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Cache pre-warm phase skipped (scan_id=%d): %s", scan_id, e)
+
         # Issue #181 Track B1 — final flush at scan completion. Always
         # runs (even on failure / cancel) so the dashboard's last
         # snapshot reflects the actual end state and scan_state moves
