@@ -1854,6 +1854,98 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         result["limit"] = limit
         return result
 
+    @app.get("/api/drilldown/{filter_type}/{source_id}/export.xlsx")
+    def drilldown_export_xlsx(
+        filter_type: str,
+        source_id: int,
+        min_days: int = 0,
+        max_days: Optional[int] = None,
+        extension: str = "",
+        min_bytes: int = 0,
+        max_bytes: Optional[int] = None,
+        owner: str = "",
+    ):
+        """XLSX export of a drilldown filter result.
+
+        Customer 2026-05-22: clicking ``XLSX İndir`` inside any drilldown
+        modal (Erisim Sikligi/Type/Size/Owner) was hitting
+        ``/api/export/xls/{source_id}`` which exports the **full report**
+        (5-sheet GROUP-BY summary), ignoring the drilldown filter
+        completely AND running 5 separate queries over 2.89M rows on
+        every click. Customer experience: "Rapor almak istiyoruz, sonuc
+        alamiyoruz" — request would either time out or return the wrong
+        file.
+
+        This endpoint mirrors the four drilldown JSON endpoints
+        (frequency/type/size/owner) and emits an XLSX of the matching
+        files via ``XLSExporter.export_drilldown``. Filter params match
+        the JSON endpoint signatures exactly so the frontend can swap
+        ``/drilldown/`` → ``/api/drilldown/.../export.xlsx`` with
+        identical params and Just Work.
+
+        Row cap: 100_000. Beyond that the XLSX is too large to be useful
+        in Excel anyway (and Excel itself caps at 1,048,576 rows). Future
+        work: route oversize exports through ``write_large_workbook``
+        (multi-sheet) or ``stream_csv`` (issue #122 pattern) the same way
+        ``export_mit_naming_xlsx`` does — tracked in #225 R-2.
+        """
+        from fastapi.responses import StreamingResponse
+        from io import BytesIO
+        from src.analyzer.report_exporter_v2 import XLSExporter
+
+        src = _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama verisi bulunamadi")
+
+        MAX_ROWS = 100_000
+
+        if filter_type == "frequency":
+            run = _run_drilldown(analytics.get_files_by_frequency,
+                                 db.get_files_by_frequency)
+            result = run(src.id, scan_id, min_days, max_days, MAX_ROWS, 0)
+            sheet_title = f"freq_{min_days}-{max_days or 'inf'}"
+        elif filter_type == "type":
+            run = _run_drilldown(analytics.get_files_by_extension,
+                                 db.get_files_by_extension)
+            result = run(src.id, scan_id, extension, MAX_ROWS, 0)
+            sheet_title = f"type_{extension}" if extension else "type_all"
+        elif filter_type == "size":
+            run = _run_drilldown(analytics.get_files_by_size_range,
+                                 db.get_files_by_size_range)
+            result = run(src.id, scan_id, min_bytes, max_bytes, MAX_ROWS, 0)
+            sheet_title = f"size_{min_bytes}-{max_bytes or 'inf'}"
+        elif filter_type == "owner":
+            run = _run_drilldown(analytics.get_files_by_owner,
+                                 db.get_files_by_owner)
+            result = run(src.id, scan_id, owner, MAX_ROWS, 0)
+            sheet_title = (f"owner_{owner}" if owner else "owner_all")[:31]
+        else:
+            raise HTTPException(
+                400,
+                f"Gecersiz filter_type: {filter_type}. "
+                "Gecerli: frequency, type, size, owner",
+            )
+
+        files = result.get("files", []) or []
+
+        try:
+            exporter = XLSExporter(db, config)
+            data = exporter.export_drilldown(files, sheet_title)
+        except ImportError:
+            raise HTTPException(501, "openpyxl kurulu degil. pip install openpyxl")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error("drilldown XLSX export error: %s", e)
+            raise HTTPException(500, str(e))
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"drilldown_{filter_type}_{src.name}_{ts}.xlsx"
+        return StreamingResponse(
+            BytesIO(data),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     class DrilldownArchiveRequest(BaseModel):
         source_id: int
         filter_type: str  # "frequency", "type", "size", "owner"
