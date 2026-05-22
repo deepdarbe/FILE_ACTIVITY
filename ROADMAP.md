@@ -66,6 +66,11 @@ holds.
 
 ### Status diagram
 
+![Status diagram — post-stabilization 2026-05-22](docs/diagrams/status-2026-05-22.png)
+
+<details>
+<summary>Mermaid source (regenerate the PNG with <code>mmdc -i ... -o docs/diagrams/status-2026-05-22.png</code>)</summary>
+
 ```mermaid
 graph TD
     A[master 3f9d666<br/>post #215 #216 #217 #218] --> B[customer test client-side]
@@ -90,6 +95,8 @@ graph TD
     classDef done fill:#90EE90,stroke:#2d6a2d,color:#000
     class D,H,J done
 ```
+
+</details>
 
 ---
 
