@@ -47,6 +47,65 @@ when the week began.
 
 ---
 
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `57e2503`, 2026-05-22)
+
+A long autonomous wave landed **22 PRs** on top of #217. Current state:
+
+### Where we are
+- **master = `57e2503`**. All 9 CI guards green. Test suite: 710 passed,
+  16 baseline failures (watchdog / duckdb / MFT module imports missing in the
+  Linux test container — pre-existing, do NOT chase).
+- **Zero open PRs from our work.** Only #203 is open (the user's own April-30
+  1800-LOC stabilization bundle — triage comment posted, close/keep is the
+  user's call; do NOT merge as-is, its D2 DuckDB-removal conflicts with the
+  keep-DuckDB decision + #231/#232).
+
+### What shipped this wave (the 22 PRs)
+- **Perf / caching**: #224 (mit_naming), #227 (report_full + report_status),
+  #228 (mit_naming_files), #231 (drilldown XLSX filter-aware), #239
+  (report_export + mit_naming_export), #232 (pre-warm cache at scan complete
+  → first dashboard click is instant, not a 3-30s cold-cache wait).
+- **Perf / DB**: #230 — three composite indexes `(scan_id, extension)`,
+  `(scan_id, owner)`, `(scan_id, file_size)`. Removes temp-B-tree GROUP/ORDER
+  on the hot reports; cold compute ~30s → ~3s on the 2.89M-row DB. They
+  auto-build on next `update.cmd` restart (one-time 2-5 min).
+- **Refactor (EPIC #225)**: #233 R-1 `src/dashboard/_endpoint_helpers.py`
+  (`cached_report_endpoint` + `PaginationParams`); #234 R-2 migrated
+  types/sizes/status/mit_naming to the helper; #235 R-3
+  `src/storage/_summary_compat.py::normalize_summary` wired into
+  `db.get_scan_summary` (kills the dict-vs-list shape-mismatch bug class
+  #198/#223); #236 R-4 stripped the dual-shape branch from report_frequency.
+- **CI guards (6 → 9)**: #237 added **R-CACHE** (Rule 1) + **A-AWAIT** (Rule 5);
+  #238 added **C-CURSOR** (Rule 6). Each has an allowlist with justifications
+  in `scripts/ci_guards.py`. Self-tests in `tests/test_ci_guards.py` (23 tests).
+- **UX**: #222 — AI Insights drilldown is now a dense Excel-style table
+  (sort / multi-select / folder column / Tablo↔Kart toggle). Closed issue #221.
+- **Diagnostics**: #229 — `scripts/bench_api.py` (HTTP p50/p95/p99 + cache-hit)
+  and `scripts/explain_audit.py` (EXPLAIN QUERY PLAN red-flag finder).
+- **Dependabot**: 10 merged (#204-#211, #9, #10) incl. major bumps pillow 12
+  and elasticsearch 9 — both sub-agent-audited as SAFE before merge.
+
+### What's PENDING (pick up here)
+1. **Customer hasn't reported test results yet.** They were going to run
+   `update.cmd`, then `scripts\explain_audit.py` (expect the 3 flagged queries
+   → `flags: OK`) and `scripts\bench_api.py` (expect cold latency 5-10× lower).
+   First thing on resume: ask for / check those results.
+2. **EPIC #225 leftovers** — R-5c `P-PAGE`, R-5d `S-SHAPE`, R-5e `A-AUDIT`
+   guards + R-6 audit-trail backlog flush. Each needs its own allowlist tuning;
+   ship one per PR. See #225 for the plan.
+3. **#203 decision** — user to close or split into focused PRs (D5 e2e test,
+   D7 config_migrator, `-Branch` param are still useful; D2 DuckDB removal is not).
+4. **#114** storage Phase 3-5 — still deferred pending the real-DB
+   `bench_storage.py` result.
+
+### The 8 endpoint-conventions rules now have CI teeth
+`docs/standards/endpoint-conventions.md`. Auto-enforced: Rule 1 (R-CACHE),
+Rule 5 (A-AWAIT), Rule 6 (C-CURSOR), Rule 7 (D-CHAIN). Manual/pending:
+Rules 2/3/4/8. New report endpoints MUST use `cached_report_endpoint`;
+new `async def` MUST await; reads use `get_read_cursor`, writes `get_cursor`.
+
+---
+
 ## What this project is
 
 **Windows file-share analysis + archiving + compliance system.** Python 3.11, FastAPI dashboard on port 8085, SQLite (OLTP) + DuckDB (read-only analytics ATTACH).
@@ -197,17 +256,18 @@ Code-tracking issues:
   (#121, #167); Phase 3 = dashboard query layer rewrite (~30 endpoints).
   Architecturally significant — wait for the #217 bench result before committing.
 
-Dependabot queue (10 PRs open, none merged yet — handle in this order):
-- **Patch / minor (safe, batch-merge)**: #209 pyyaml 6.0.1→6.0.3, #208 duckdb 1.0→1.5,
-  #211 apscheduler 3.10→3.11
-- **CI actions (review, then merge)**: #205 actions/checkout v4→v6, #206 codeql-action v3→v4,
-  #204 docker/build-push-action v5→v7
-- **Majors (need code audit before merging)**: #210 pillow 10→12 (touches `src/scanner/image_hash.py`),
-  #207 elasticsearch 8→9 (touches `src/storage/backends/elasticsearch_backend.py`)
+Dependabot queue: **all 10 merged 2026-05-22** (#204-#211, #9, #10). pillow→12
+and elasticsearch→9 were sub-agent-audited SAFE before merge. Queue is empty.
+
+- **#225** — Endpoint-conventions refactor EPIC. R-1..R-4 + R-5a/b shipped;
+  R-5c (`P-PAGE`), R-5d (`S-SHAPE`), R-5e (`A-AUDIT`), R-6 (audit backlog)
+  still open. One PR each.
+- **#203** — user's own April-30 bundle, still open. Do NOT merge as-is (D2
+  DuckDB removal conflicts with keep-DuckDB + #231/#232). Triage comment posted.
 
 Closed-this-wave issues whose context might still be referenced: #14, #20, #80, #81, #83,
 #91, #112, #132, #165, #166, #172, #174, #175, #177, #181, #185, #193–#202, #212, #213,
-#194 (stabilization tracker).
+#194 (stabilization tracker), #215–#239 (the 22-PR perf+refactor wave), #221 (drilldown table).
 
 ---
 
