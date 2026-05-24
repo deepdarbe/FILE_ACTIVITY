@@ -2684,8 +2684,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.get("/api/insights/{source_id}/files")
     def insight_files(source_id: int, insight_type: str = "stale_1year",
                             page: int = Query(1, ge=1, le=10000),
-                            page_size: int = Query(100, ge=1, le=500)):
-        """AI insight tipine gore dosya listesi."""
+                            limit: int = Query(100, ge=1, le=500)):
+        """AI insight tipine gore dosya listesi.
+
+        page+limit sozlesmesi drilldown ailesiyle (``/api/drilldown/...``)
+        ayni — frontend bu listeyi ortak drilldown overlay'inde gosterir.
+        """
         from src.utils.size_formatter import format_size
         from src.analyzer.ai_insights import get_insight_files
 
@@ -2695,14 +2699,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         # Bilinmeyen insight_type artik sessizce bos liste donmuyor —
         # ValueError yukseliyor (issue #82, Bug 2). HTTP 400'e cevirip
-        # frontend'in mesaji modalda gostermesini sagliyoruz.
+        # frontend'in mesaji gostermesini sagliyoruz.
         try:
             files = get_insight_files(db, scan_id, insight_type)
         except ValueError as e:
             raise HTTPException(400, str(e))
         total = len(files)
-        offset = (page - 1) * page_size
-        page_files = files[offset:offset + page_size]
+        offset = (page - 1) * limit
+        page_files = files[offset:offset + limit]
 
         for f in page_files:
             f["file_size_formatted"] = format_size(f.get("file_size", 0))
@@ -2712,8 +2716,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "insight_type": insight_type,
             "total": total,
             "page": page,
-            "page_size": page_size,
-            "total_pages": max(1, -(-total // page_size)),
+            "limit": limit,
+            "total_pages": max(1, -(-total // limit)),
             "files": page_files
         }
 

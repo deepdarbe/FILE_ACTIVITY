@@ -5023,6 +5023,9 @@ function showDrilldown(title, url, archiveParams) {
     const toggleBtns = document.querySelectorAll('#dd-view-toggle button');
     toggleBtns.forEach(b => b.classList.toggle('active', b.dataset.view === 'table'));
     ddViewMode = 'table';
+    _setHtmlSafe('dd-table', '<tbody><tr><td style="text-align:center;padding:40px;color:var(--text-muted)">Yukleniyor…</td></tr></tbody>');
+    _setHtmlSafe('dd-info', '');
+    _setHtmlSafe('dd-pagination', '');
     loadDrilldownPage(url, 1);
 }
 
@@ -5097,6 +5100,7 @@ function renderDrilldownData() {
                 <th onclick="ddSortBy('last_access_time')">Son Erisim ${_sortArrow('last_access_time')}</th>
                 <th onclick="ddSortBy('last_modify_time')">Son Degisiklik ${_sortArrow('last_modify_time')}</th>
                 <th onclick="ddSortBy('owner')">Sahip ${_sortArrow('owner')}</th>
+                <th>Islem</th>
             </tr></thead>
             <tbody>${files.length ? files.map(f => {
                 const fp = f.file_path || '';
@@ -5109,14 +5113,16 @@ function renderDrilldownData() {
                 <td class="col-date">${escapeHtml((f.last_access_time||'').substring(0,16))}</td>
                 <td class="col-date">${escapeHtml((f.last_modify_time||'').substring(0,16))}</td>
                 <td>${escapeHtml(f.owner||'-')}</td>
+                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml(((f.directory||_extractFolder(f.file_path))||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
             </tr>`;
-            }).join('') : '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
+            }).join('') : '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
         `);
     } else {
         _setHtmlSafe('dd-table', `
             <tbody>${files.length ? files.map(f => `<tr style="display:block;margin-bottom:8px;padding:12px;border:1px solid var(--border);border-radius:8px;">
                 <td style="display:block;font-weight:600;margin-bottom:4px;" title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
                 <td style="display:block;font-size:11px;color:var(--text-muted)">${escapeHtml(_extractFolder(f.file_path))} | ${formatSize(f.file_size||0)} | ${escapeHtml((f.last_access_time||'').substring(0,10))} | ${escapeHtml(f.owner||'-')}</td>
+                <td style="display:block;margin-top:6px"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml(((f.directory||_extractFolder(f.file_path))||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
             </tr>`).join('') : '<tr><td style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
         `);
     }
@@ -5144,7 +5150,12 @@ async function loadDrilldownPage(url, page) {
         navHtml += `<span>Sayfa ${page} / ${totalPages || 1}</span>`;
         if (page < totalPages) navHtml += `<button class="dd-page-btn" onclick="loadDrilldownPage('${ddCurrentUrl}',${page+1})">Sonraki</button>`;
         _setHtmlSafe('dd-pagination', navHtml);
-    } catch(e) { notify(e.message, 'error'); }
+    } catch(e) {
+        notify(e.message, 'error');
+        _setHtmlSafe('dd-table', `<tbody><tr><td style="text-align:center;padding:30px;color:var(--danger,#dc2626)">Yuklenemedi: ${escapeHtml(e.message||'hata')}</td></tr></tbody>`);
+        _setHtmlSafe('dd-info', '');
+        _setHtmlSafe('dd-pagination', '');
+    }
 }
 
 async function archiveDrilldown() {
@@ -5800,98 +5811,25 @@ function showInsightFilesByCategory(category, explicitInsightType, sourceId) {
     showInsightFiles(resolveInsightType(category, explicitInsightType), sourceId);
 }
 
-async function showInsightFiles(insightType, sourceId) {
-    let data;
-    try {
-        data = await api(
-            `/insights/${sourceId}/files?insight_type=${encodeURIComponent(insightType)}&page=1&page_size=200`,
-            { silent: true }
-        );
-    } catch (e) {
-        // 400 from backend (unknown insight_type) carries a useful detail
-        // message — show it inside the modal so the user understands why
-        // the list is empty (issue #82, Bug 2).
-        notify('Dosya listesi yuklenemedi: ' + e.message, 'error');
-        showInsightFilesError(insightType, e.message);
-        return;
-    }
+// Insight tipi -> Turkce baslik. showInsightFiles, erisim sikligindaki
+// Excel-vari drilldown overlay'ini acar; sayfalama, siralama, Tablo/Kart
+// ve "Konuma Git" hepsi ortak overlay'den gelir (eski 200-satir cap'li,
+// spinner'siz modal kaldirildi — #222 yanlislikla Overview drilldown'una
+// uygulanmis, Insights'a degil).
+const INSIGHT_TYPE_LABELS = {
+    stale_1year: '1 Yildan Eski Dosyalar',
+    stale_3year: '3+ Yillik Eski Dosyalar',
+    stale_180: '180+ Gun Erisilmeyen Dosyalar',
+    large_files: 'Buyuk Dosyalar (>100MB)',
+    temp_files: 'Gecici/Yedek Dosyalar',
+    duplicates: 'Kopya Dosyalar',
+    all_files: 'Tum Dosyalar'
+};
 
-    const files = data.files || [];
-    const filesHtml = files.length ? files.map((f, i) => `
-        <tr>
-            <td>${i+1}</td>
-            <td style="max-width:200px;word-break:break-all;font-size:11px">${escapeHtml(f.file_name)}</td>
-            <td style="max-width:250px;word-break:break-all;font-size:11px" title="${escapeHtml(f.file_path)}">${escapeHtml(f.file_path)}</td>
-            <td>${escapeHtml(f.file_size_formatted || formatSize(f.file_size))}</td>
-            <td>${escapeHtml(f.owner || '-')}</td>
-            <td>${escapeHtml((f.last_access_time||'').substring(0,10))}</td>
-            <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml((f.directory||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
-        </tr>
-    `).join('') : '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
-
-    const typeLabels = {
-        stale_1year: '1 Yildan Eski Dosyalar',
-        stale_3year: '3+ Yillik Eski Dosyalar',
-        large_files: 'Buyuk Dosyalar (>100MB)',
-        temp_files: 'Gecici/Yedek Dosyalar',
-        duplicates: 'Kopya Dosyalar'
-    };
-
-    const modalContent = `
-        <div style="padding:20px">
-            <h3 style="margin:0 0 16px 0">${escapeHtml(typeLabels[insightType] || insightType)} - ${data.total} Dosya</h3>
-            <div style="max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
-                <table style="width:100%;font-size:12px">
-                    <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>#</th><th>Dosya Adi</th><th>Tam Yol</th><th>Boyut</th><th>Sahip</th><th>Son Erisim</th><th>Islem</th></tr></thead>
-                    <tbody>${filesHtml}</tbody>
-                </table>
-            </div>
-            ${data.total > 200 ? `<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:11px">Ilk 200 dosya (toplam ${data.total})</div>` : ''}
-            <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
-                <button class="btn btn-outline" onclick="closeModal('modal-insight-files')">Kapat</button>
-            </div>
-        </div>
-    `;
-
-    _renderInsightFilesModal(modalContent);
-}
-
-// Render an error state inside the same modal we'd use for results, so the
-// user sees *why* the list is empty rather than a phantom "broken button".
-function showInsightFilesError(insightType, detail) {
-    const safeDetail = String(detail || 'Bilinmeyen hata')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const safeType = String(insightType || '')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const modalContent = `
-        <div style="padding:20px">
-            <h3 style="margin:0 0 12px 0;color:var(--danger,#dc2626)">Dosya listesi alinamadi</h3>
-            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">
-                Insight tipi: <code>${safeType}</code>
-            </div>
-            <div style="font-size:13px;color:var(--text-primary);background:var(--bg-secondary);padding:12px;border-radius:var(--radius);border:1px solid var(--border);white-space:pre-wrap;word-break:break-word">
-                ${safeDetail}
-            </div>
-            <div style="display:flex;gap:12px;justify-content:flex-end;margin-top:16px">
-                <button class="btn btn-outline" onclick="closeModal('modal-insight-files')">Kapat</button>
-            </div>
-        </div>
-    `;
-    _renderInsightFilesModal(modalContent);
-}
-
-function _renderInsightFilesModal(html) {
-    let modal = document.getElementById('modal-insight-files');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'modal-insight-files';
-        modal.className = 'modal-overlay';
-        modal.onclick = (e) => { if(e.target===modal) modal.classList.remove('active'); };
-        modal.innerHTML = '<div class="modal" style="max-width:1100px;width:95%"></div>';
-        document.body.appendChild(modal);
-    }
-    modal.querySelector('.modal').innerHTML = html;
-    modal.classList.add('active');
+function showInsightFiles(insightType, sourceId) {
+    const label = INSIGHT_TYPE_LABELS[insightType] || insightType;
+    const url = `/insights/${sourceId}/files?insight_type=${encodeURIComponent(insightType)}`;
+    showDrilldown(label, url, null);
 }
 
 // ═══════════════════════════════════════════════════
