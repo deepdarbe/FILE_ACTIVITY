@@ -68,3 +68,17 @@ imagehash>=4.3,<5
 # falls back to the legacy polling watcher. Default config.yaml leaves
 # `watcher.backend: "watchdog"`; flip to "polling" to force the fallback.
 watchdog>=4.0,<5
+
+# ──────────────────────────────────────────────────────────────────────
+# PII checksum / format validation (issue #1)
+#
+# Post-filters PiiEngine regex hits, dropping false positives that fail a
+# checksum/format check: credit_card -> Luhn, iban -> ISO 7064 mod-97,
+# tckn -> TC kimlik algorithm, phone -> libphonenumber. Pure-Python; when
+# absent the engine keeps every regex hit (pre-validator behaviour). See
+# src/compliance/pii/validators.py.
+#
+# python-stdnum is LGPL-2.1+ — used as an unmodified library via dynamic
+# import, which carries no copyleft obligation on this project's own code.
+python-stdnum>=1.19
+phonenumbers>=8.13

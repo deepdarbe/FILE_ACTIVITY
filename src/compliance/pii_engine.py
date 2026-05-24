@@ -37,6 +37,7 @@ from typing import Optional
 
 from src.compliance._pii_backends import make_backend
 from src.compliance.pii.recognizer import ContextRecognizer, PiiHit, PiiRecognizer
+from src.compliance.pii.validators import is_plausible
 
 logger = logging.getLogger("file_activity.compliance.pii_engine")
 
@@ -46,7 +47,10 @@ class PiiEngine:
 
     DEFAULT_PATTERNS = {
         "email":       r"[\w\.-]+@[\w\.-]+\.\w+",
-        "iban_tr":     r"\bTR\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{2}\b",
+        # Full 26-char TR IBAN: TR + 2 check + five 4-digit groups + 2 tail.
+        # (The earlier 4-group form only matched 22-char strings, which are
+        # never valid IBANs — so it produced only false positives.)
+        "iban_tr":     r"\bTR\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{2}\b",
         "phone_tr":    r"\b(?:\+90|0)?\s?5\d{2}\s?\d{3}\s?\d{2}\s?\d{2}\b",
         "tckn":        r"\b\d{11}\b",
         "credit_card": r"\b(?:\d{4}[\s-]?){3}\d{4}\b",
@@ -277,6 +281,11 @@ class PiiEngine:
         grouped: dict[str, list[str]] = {}
         for h in all_hits:
             if h.entity_type == "context_signal":
+                continue
+            # Drop regex hits that positively fail a checksum / format check
+            # (e.g. a random 16-digit string that isn't a real card). No-ops
+            # when the optional python-stdnum / phonenumbers deps are absent.
+            if not is_plausible(h.entity_type, h.value):
                 continue
             if context_boost:
                 h = PiiHit(
