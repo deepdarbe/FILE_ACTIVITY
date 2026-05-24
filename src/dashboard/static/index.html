@@ -7139,20 +7139,57 @@ function loadStandards() {
 // to the console and kept the customer's "menüler arası gezinti yok"
 // experience even after PR #193 fixed the prior parse error.
 //
-// These stubs render a "Yakında" placeholder so the menus don't crash;
-// real implementations belong in the next-cycle backlog (frontend
-// integration wave #81 follow-up).
-function loadPii() {
-    const el = document.getElementById('page-pii');
-    if (!el) return;
-    el.innerHTML = `
-        <div style="padding:32px;text-align:center;color:var(--text-muted)">
-            <div style="font-size:48px;margin-bottom:12px">🔒</div>
-            <h2 style="margin:0 0 8px 0;color:var(--text-primary)">PII Bulgular</h2>
-            <p style="margin:0;font-size:13px">Bu sayfa yakında etkinleştirilecek (issue #81 follow-up).
-            Mevcut PII verisi <a href="/api/compliance/pii/findings" target="_blank">/api/compliance/pii/findings</a> endpoint'inden alınabilir.</p>
-        </div>
-    `;
+// loadRetention still renders a "Yakında" placeholder so its menu doesn't
+// crash; the policy CRUD UI is the remaining #81 follow-up. loadPii below is
+// now wired to /api/compliance/pii/findings + the feature-flag banner — it
+// fills #pii-list-container and leaves the page's static controls intact
+// (the old stub overwrote #page-pii, wiping the source/pattern selects).
+async function loadPii() {
+    const listEl = document.getElementById('pii-list-container');
+    if (!listEl) return;
+    const banner = document.getElementById('pii-disabled-banner');
+
+    // Rule 8: surface the exact config key when the feature is off.
+    try {
+        const cfg = await api('/compliance/config', { silent: true });
+        if (banner) banner.style.display = (cfg && cfg.pii && cfg.pii.enabled) ? 'none' : 'block';
+    } catch (e) { /* banner stays hidden if the flag fetch fails */ }
+
+    const sourceId = document.getElementById('pii-source')?.value || '';
+    const pattern = document.getElementById('pii-pattern-filter')?.value || '';
+    let url = '/compliance/pii/findings?page=1&page_size=100';
+    if (sourceId) url += `&source_id=${encodeURIComponent(sourceId)}`;
+    if (pattern) url += `&pattern=${encodeURIComponent(pattern)}`;
+
+    _setHtmlSafe('pii-list-container', '<div style="padding:20px;text-align:center;color:var(--text-muted)">Yukleniyor…</div>');
+    let data;
+    try {
+        data = await api(url, { silent: true });
+    } catch (e) {
+        _setHtmlSafe('pii-list-container', `<div style="padding:20px;text-align:center;color:var(--danger,#dc2626)">Bulgular alinamadi: ${escapeHtml(e.message||'hata')}</div>`);
+        return;
+    }
+    const rows = (data && data.findings) || [];
+    if (!rows.length) {
+        _setHtmlSafe('pii-list-container', '<div style="padding:24px;text-align:center;color:var(--text-muted)">Bulgu yok. PII taramasi kapaliysa yukaridaki uyariya bakin; aciksa once bir tarama calistirin.</div>');
+        return;
+    }
+    const body = rows.map(f => `
+        <tr>
+            <td style="max-width:340px;word-break:break-all;font-size:11px" title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_path||'')}</td>
+            <td>${escapeHtml(f.pattern_name||'')}</td>
+            <td style="text-align:right">${formatNum(f.hit_count||0)}</td>
+            <td style="font-family:monospace;font-size:11px">${escapeHtml(f.sample_snippet||'')}</td>
+            <td class="col-date">${escapeHtml((f.detected_at||'').substring(0,16))}</td>
+        </tr>`).join('');
+    _setHtmlSafe('pii-list-container', `
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Toplam ${formatNum((data && data.total) || rows.length)} bulgu (ilk ${rows.length})</div>
+        <div style="max-height:520px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius)">
+            <table style="width:100%;font-size:12px">
+                <thead style="position:sticky;top:0;background:var(--bg-secondary)"><tr><th>Dosya Yolu</th><th>Pattern</th><th>Isabet</th><th>Ornek (maskeli)</th><th>Tespit</th></tr></thead>
+                <tbody>${body}</tbody>
+            </table>
+        </div>`);
 }
 
 function loadRetention() {
