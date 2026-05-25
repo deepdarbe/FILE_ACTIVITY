@@ -367,6 +367,231 @@ security:
     assert parsed["security"]["orphan_sid"]["cache_ttl_minutes"] == 1440
 
 
+# ---------------------------------------------------------------------------
+# set_if_missing — insert an absent key (the #8/#9 + #1 durable fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def rules_parquet_set_if_missing():
+    return [
+        {
+            "path": "scanner.parquet_staging.enabled",
+            "old_default": True,
+            "new_default": False,
+            "set_if_missing": True,
+            "reason": "test",
+            "pr": "#174",
+        }
+    ]
+
+
+def test_set_if_missing_inserts_leaf_under_existing_parent(
+    tmp_path, rules_parquet_set_if_missing
+):
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  parquet_staging:
+    flush_rows: 50000
+""")
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert [r.action for r in results] == ["inserted"]
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["parquet_staging"]["enabled"] is False
+    assert parsed["scanner"]["parquet_staging"]["flush_rows"] == 50000
+    assert len(list(tmp_path.glob("config.yaml.bak-*"))) == 1
+
+
+def test_set_if_missing_inserts_intermediate_container(
+    tmp_path, rules_parquet_set_if_missing
+):
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  enrich_sizes: true
+  size_enrich_workers: 8
+""")
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert [r.action for r in results] == ["inserted"]
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["parquet_staging"]["enabled"] is False
+    # Existing siblings untouched.
+    assert parsed["scanner"]["enrich_sizes"] is True
+    assert parsed["scanner"]["size_enrich_workers"] == 8
+
+
+def test_set_if_missing_inserts_top_level_when_root_absent(
+    tmp_path, rules_parquet_set_if_missing
+):
+    cfg = _write(tmp_path / "config.yaml", """\
+dashboard:
+  port: 8085
+""")
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert [r.action for r in results] == ["inserted"]
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["parquet_staging"]["enabled"] is False
+    assert parsed["dashboard"]["port"] == 8085
+
+
+def test_set_if_missing_preserves_comments(tmp_path, rules_parquet_set_if_missing):
+    cfg = _write(tmp_path / "config.yaml", """\
+# top of file
+scanner:
+  # a comment about scanner
+  enrich_sizes: true   # inline note
+""")
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert results[0].action == "inserted"
+    new = cfg.read_text(encoding="utf-8")
+    assert "# top of file" in new
+    assert "# a comment about scanner" in new
+    assert "# inline note" in new
+
+
+def test_set_if_missing_present_value_still_flips(
+    tmp_path, rules_parquet_set_if_missing
+):
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  parquet_staging:
+    enabled: true
+""")
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert results[0].action == "applied"
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["parquet_staging"]["enabled"] is False
+
+
+def test_set_if_missing_present_at_new_default_is_skipped(
+    tmp_path, rules_parquet_set_if_missing
+):
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  parquet_staging:
+    enabled: false
+""")
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert results[0].action == "skipped"
+    assert not list(tmp_path.glob("config.yaml.bak-*"))
+
+
+def test_set_if_missing_scalar_ancestor_is_error(
+    tmp_path, rules_parquet_set_if_missing
+):
+    # Non-canonical: parquet_staging written as a scalar, not a mapping.
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  parquet_staging: true
+""")
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert results[0].action == "error"
+    # File left untouched.
+    assert "parquet_staging: true" in cfg.read_text(encoding="utf-8")
+    assert not list(tmp_path.glob("config.yaml.bak-*"))
+
+
+def test_set_if_missing_dry_run_does_not_write(
+    tmp_path, rules_parquet_set_if_missing
+):
+    original = """\
+scanner:
+  enrich_sizes: true
+"""
+    cfg = _write(tmp_path / "config.yaml", original)
+    results = migrate_config.migrate(cfg, rules_parquet_set_if_missing, dry_run=True)
+    assert results[0].action == "inserted"  # would-insert
+    assert cfg.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("config.yaml.bak-*"))
+
+
+def test_set_if_missing_is_idempotent(tmp_path, rules_parquet_set_if_missing):
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  enrich_sizes: true
+""")
+    first = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert first[0].action == "inserted"
+    # Re-run: key now present at new_default -> skipped, no further write.
+    second = migrate_config.migrate(cfg, rules_parquet_set_if_missing)
+    assert second[0].action == "skipped"
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["parquet_staging"]["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# Shipped set_if_missing rules — the real #8/#9 + #1 customer scenario
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_parquet_rule_inserts_when_absent(tmp_path):
+    """A preserved config that never carried scanner.parquet_staging must
+    get enabled:false inserted (the #8/#9 lock-source auto-disable)."""
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  enrich_sizes: true
+  size_enrich_workers: 8
+""")
+    rules = migrate_config.load_rules()
+    results = migrate_config.migrate(cfg, rules)
+    by_path = {r.path: r for r in results}
+    assert by_path["scanner.parquet_staging.enabled"].action == "inserted"
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["parquet_staging"]["enabled"] is False
+
+
+def test_shipped_read_owner_rule_inserts_true_when_absent(tmp_path):
+    """A preserved config missing scanner.read_owner must get true inserted
+    so a rescan actually collects owners (issue #1)."""
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  enrich_sizes: true
+""")
+    rules = migrate_config.load_rules()
+    results = migrate_config.migrate(cfg, rules)
+    by_path = {r.path: r for r in results}
+    assert by_path["scanner.read_owner"].action == "inserted"
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["read_owner"] is True
+
+
+def test_shipped_read_owner_explicit_false_is_preserved(tmp_path):
+    """An operator who explicitly disabled read_owner keeps it off — the
+    read_owner rule is insert-only, never a flip."""
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  read_owner: false
+""")
+    rules = migrate_config.load_rules()
+    results = migrate_config.migrate(cfg, rules)
+    by_path = {r.path: r for r in results}
+    assert by_path["scanner.read_owner"].action == "skipped"
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["scanner"]["read_owner"] is False
+
+
+def test_shipped_rules_both_insert_under_existing_scanner(tmp_path):
+    """The customer's real case: scanner exists but lacks BOTH keys. Both
+    inserts must land under the same scanner block (no duplicate scanner)."""
+    cfg = _write(tmp_path / "config.yaml", """\
+scanner:
+  enrich_sizes: true
+dashboard:
+  port: 8085
+""")
+    rules = migrate_config.load_rules()
+    results = migrate_config.migrate(cfg, rules)
+    by_path = {r.path: r for r in results}
+    assert by_path["scanner.parquet_staging.enabled"].action == "inserted"
+    assert by_path["scanner.read_owner"].action == "inserted"
+    text = cfg.read_text(encoding="utf-8")
+    assert text.count("scanner:") == 1, "must not create a duplicate scanner block"
+    parsed = yaml.safe_load(text)
+    assert parsed["scanner"]["parquet_staging"]["enabled"] is False
+    assert parsed["scanner"]["read_owner"] is True
+    assert parsed["scanner"]["enrich_sizes"] is True
+    assert parsed["dashboard"]["port"] == 8085
+
+
 def test_shipped_rules_applied_against_shipped_config_is_noop(tmp_path):
     """The shipped config.yaml is the post-migration state by definition.
     Running the migrator against a copy of the shipped config must
@@ -377,7 +602,7 @@ def test_shipped_rules_applied_against_shipped_config_is_noop(tmp_path):
     _shutil.copy(shipped, cfg)
     rules = migrate_config.load_rules()
     results = migrate_config.migrate(cfg, rules)
-    applied = [r for r in results if r.action == "applied"]
-    assert applied == [], (
-        f"shipped config.yaml triggers migrations against shipped rules: {applied}"
+    changed = [r for r in results if r.action in ("applied", "inserted")]
+    assert changed == [], (
+        f"shipped config.yaml triggers migrations against shipped rules: {changed}"
     )

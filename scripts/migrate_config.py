@@ -38,7 +38,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 
 import yaml
 
@@ -98,20 +98,23 @@ def _indent_of(line: str) -> int:
     return len(line) - len(line.lstrip(" "))
 
 
-def _iter_leaf_assignments(
+def _iter_key_lines(
     lines: list[str],
-) -> Iterator[tuple[int, str, list[str]]]:
-    """Yield ``(line_index, leaf_key, dotted_path_parts)`` for every line
-    that looks like a ``key: value`` assignment.
+) -> Iterator[tuple[int, str, list[str], bool, int]]:
+    """Yield ``(line_index, key, dotted_path_parts, is_container, indent)``
+    for every line that looks like a ``key:`` or ``key: value`` mapping
+    entry.
 
     Tracks an indent stack so nested keys resolve to their full path.
-    Comments and blank lines are skipped. Sequence members (``- ...``)
-    are ignored — we never migrate inside a list. List headers (``key:``
-    with no value) push the key onto the path for the children.
+    Comments, blank lines and sequence members (``- ...``) are skipped —
+    we never traverse into a list. A line whose value is empty is a
+    *container* header (``is_container=True``); it is both pushed onto the
+    path stack (so its children resolve) and emitted (so callers can
+    locate the header line when inserting a missing nested key).
     """
     # Stack of (indent, key) pairs; deepest entry is the current parent.
     stack: list[tuple[int, str]] = []
-    leaf_pattern = re.compile(
+    key_pattern = re.compile(
         r"^(?P<indent> *)(?P<key>[A-Za-z_][\w\-]*)\s*:\s*(?P<rest>.*)$"
     )
     for idx, raw in enumerate(lines):
@@ -122,7 +125,7 @@ def _iter_leaf_assignments(
         # We don't traverse into list items
         if stripped.startswith("- "):
             continue
-        m = leaf_pattern.match(line)
+        m = key_pattern.match(line)
         if not m:
             continue
         indent = len(m.group("indent"))
@@ -134,12 +137,11 @@ def _iter_leaf_assignments(
         # Strip trailing comment to detect "container" vs "leaf"
         value_part = rest.split("#", 1)[0].strip()
         path_parts = [k for _, k in stack] + [key]
-        if value_part == "":
-            # Container — push onto stack for children, do not emit
+        is_container = value_part == ""
+        if is_container:
+            # Push onto stack so children resolve to their full path.
             stack.append((indent, key))
-            continue
-        # Leaf assignment — emit
-        yield idx, key, path_parts
+        yield idx, key, path_parts, is_container, indent
 
 
 def _format_scalar(value: Any) -> str:
@@ -197,6 +199,110 @@ def _replace_value_on_line(line: str, new_value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Text-level insertion (for ``set_if_missing`` rules — adds an absent key)
+# ---------------------------------------------------------------------------
+
+
+def _render_block(suffix_parts: list[str], value: Any, base_indent: int) -> list[str]:
+    """Render ``suffix_parts`` as a nested YAML block whose deepest leaf is
+    assigned ``value``. Each level indents two spaces deeper than its
+    parent, starting at ``base_indent``. Every returned line ends in
+    ``\\n``. Example: ``(["parquet_staging", "enabled"], False, 2)`` →
+    ``["  parquet_staging:\\n", "    enabled: false\\n"]``."""
+    out: list[str] = []
+    last = len(suffix_parts) - 1
+    for depth, key in enumerate(suffix_parts):
+        pad = " " * (base_indent + depth * 2)
+        if depth == last:
+            out.append(f"{pad}{key}: {_format_scalar(value)}\n")
+        else:
+            out.append(f"{pad}{key}:\n")
+    return out
+
+
+def _find_deepest_container_header(
+    lines: list[str], container_path: list[str]
+) -> Optional[tuple[int, int]]:
+    """Return ``(line_index, indent)`` of the block header whose dotted path
+    equals ``container_path``, or ``None`` when no such header exists (e.g.
+    the mapping was written flow-style: ``scanner: {parquet_staging: ...}``)."""
+    for idx, _key, path_parts, is_container, indent in _iter_key_lines(lines):
+        if is_container and path_parts == container_path:
+            return idx, indent
+    return None
+
+
+def _detect_child_indent(
+    lines: list[str], container_path: list[str], header_indent: int
+) -> int:
+    """Indent used by the existing direct children of ``container_path``;
+    falls back to ``header_indent + 2`` when the container has none yet."""
+    depth = len(container_path)
+    for _idx, _key, path_parts, _is_c, indent in _iter_key_lines(lines):
+        if len(path_parts) == depth + 1 and path_parts[:depth] == container_path:
+            return indent
+    return header_indent + 2
+
+
+def _plan_insertion(
+    lines: list[str], doc: Any, path: str, value: Any
+) -> tuple[int, list[str]]:
+    """Plan a comment-preserving insertion of ``path: value``.
+
+    Returns ``(insert_index, rendered_lines)``: splice ``rendered_lines``
+    in *before* ``lines[insert_index]`` (``insert_index == len(lines)``
+    means append at EOF). Any missing intermediate containers along the
+    dotted path are created.
+
+    Strategy: walk the path against the parsed ``doc`` to find the deepest
+    ancestor that already exists as a mapping, then insert the remaining
+    suffix right after that ancestor's block header (so it lands among the
+    ancestor's children at the file's own indent). When no ancestor
+    exists, append the whole block at top level.
+
+    Raises ``ValueError`` when an existing ancestor is a scalar rather than
+    a mapping (a "non-canonical" config we refuse to guess at), or when an
+    ancestor is present in the parse but not locatable as a block header.
+    """
+    parts = path.split(".")
+    cur = doc if isinstance(doc, dict) else {}
+    container_path: list[str] = []
+    for p in parts[:-1]:
+        if isinstance(cur, dict) and p in cur:
+            nxt = cur[p]
+            if isinstance(nxt, dict):
+                cur = nxt
+                container_path.append(p)
+            elif nxt is None:
+                # Empty header (``key:`` with no children yet): insertable,
+                # but we cannot traverse deeper — the rest is all missing.
+                container_path.append(p)
+                break
+            else:
+                raise ValueError(
+                    f"ancestor {'.'.join(container_path + [p])!r} is a scalar; "
+                    f"refusing to insert nested key {path!r}"
+                )
+        else:
+            break
+
+    suffix = parts[len(container_path):]
+    if not container_path:
+        # Nothing on the path exists — append a fresh top-level block.
+        return len(lines), _render_block(suffix, value, 0)
+
+    header = _find_deepest_container_header(lines, container_path)
+    if header is None:
+        raise ValueError(
+            f"container {'.'.join(container_path)!r} is present in the parse "
+            f"but has no block header (flow style?); refusing to insert {path!r}"
+        )
+    header_idx, header_indent = header
+    child_indent = _detect_child_indent(lines, container_path, header_indent)
+    return header_idx + 1, _render_block(suffix, value, child_indent)
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -204,7 +310,7 @@ def _replace_value_on_line(line: str, new_value: Any) -> str:
 class MigrationResult:
     def __init__(self, path: str, action: str, detail: str = ""):
         self.path = path
-        self.action = action  # "applied" | "skipped" | "missing" | "error"
+        self.action = action  # applied | inserted | skipped | missing | error
         self.detail = detail
 
     def __repr__(self) -> str:
@@ -241,19 +347,48 @@ def migrate(
         return results
 
     # Decide per-rule whether to apply.
-    to_apply: list[tuple[dict, int]] = []  # (rule, line_index)
+    to_apply: list[tuple[dict, int]] = []  # (rule, line_index) — value rewrites
+    to_insert: list[dict] = []  # rules whose absent key we insert
     lines = text.splitlines(keepends=True)
 
     # Build an index of leaf assignments keyed by dotted path.
     leaf_lookup: dict[str, list[int]] = {}
-    for line_idx, _key, path_parts in _iter_leaf_assignments(lines):
-        leaf_lookup.setdefault(".".join(path_parts), []).append(line_idx)
+    for line_idx, _key, path_parts, is_container, _indent in _iter_key_lines(lines):
+        if not is_container:
+            leaf_lookup.setdefault(".".join(path_parts), []).append(line_idx)
 
     for rule in rules:
         path = rule["path"]
         found, current = _navigate(doc, path)
         if not found:
-            results.append(MigrationResult(path, "missing", "key not present"))
+            # Absent key. A plain flip rule no-ops here ("missing"). A
+            # ``set_if_missing`` rule INSERTS new_default, because for those
+            # keys the code-side default is the unsafe value — so an absent
+            # key means the customer silently runs what we shipped a default
+            # to avoid (e.g. parquet_staging.enabled defaults True in code).
+            if rule.get("set_if_missing"):
+                # Validate now (against the original parse) so a
+                # non-canonical config is reported as "error" and dry-run
+                # reports "inserted"; the real splice is re-planned later.
+                try:
+                    _plan_insertion(lines, doc, path, rule["new_default"])
+                except ValueError as e:
+                    results.append(MigrationResult(path, "error", str(e)))
+                    continue
+                to_insert.append(rule)
+                results.append(MigrationResult(
+                    path, "inserted", f"absent -> {rule['new_default']!r}",
+                ))
+            else:
+                results.append(MigrationResult(path, "missing", "key not present"))
+            continue
+        if current == rule["new_default"]:
+            # Already at the target value — nothing to do (and don't write a
+            # needless backup). Also makes a set_if_missing rule whose
+            # old_default == new_default a pure insert-when-absent.
+            results.append(MigrationResult(
+                path, "skipped", f"already at new_default={rule['new_default']!r}",
+            ))
             continue
         if current != rule["old_default"]:
             results.append(MigrationResult(
@@ -274,10 +409,12 @@ def migrate(
             f"{current!r} -> {rule['new_default']!r}",
         ))
 
-    if not to_apply or dry_run:
+    if (not to_apply and not to_insert) or dry_run:
         return results
 
-    # Apply edits.
+    # Apply edits. Value rewrites first: each rewrites one line in place so
+    # the line count is preserved, which keeps the precomputed insertion
+    # indices valid.
     new_lines = list(lines)
     for rule, line_idx in to_apply:
         try:
@@ -291,18 +428,44 @@ def migrate(
                     r_existing.detail = f"line rewrite failed: {e}"
             return results
 
+    # Then insertions. Re-plan each against the current (already-edited)
+    # text so that several inserts which share a missing ancestor stack
+    # under a single created block instead of producing duplicate
+    # top-level keys (e.g. two scanner.* keys into a config with no
+    # ``scanner:`` block at all).
+    for rule in to_insert:
+        cur_text = "".join(new_lines)
+        try:
+            cur_doc = yaml.safe_load(cur_text) or {}
+            insert_idx, rendered = _plan_insertion(
+                new_lines, cur_doc, rule["path"], rule["new_default"]
+            )
+        except (ValueError, yaml.YAMLError) as e:
+            for r_existing in results:
+                if r_existing.path == rule["path"]:
+                    r_existing.action = "error"
+                    r_existing.detail = f"insertion failed: {e}"
+            return results
+        if insert_idx >= len(new_lines):
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] = new_lines[-1] + "\n"
+            new_lines.extend(rendered)
+        else:
+            new_lines[insert_idx:insert_idx] = rendered
+
     new_text = "".join(new_lines)
 
-    # Verify the result still parses AND the new values are present.
+    # Verify the result still parses AND every changed value is present.
+    changed_rules = [r for r, _ in to_apply] + list(to_insert)
     try:
         new_doc = yaml.safe_load(new_text) or {}
     except yaml.YAMLError as e:
         for r in results:
-            if r.action == "applied":
+            if r.action in ("applied", "inserted"):
                 r.action = "error"
                 r.detail = f"post-edit parse failed: {e}"
         return results
-    for rule, _line_idx in to_apply:
+    for rule in changed_rules:
         _, new_val = _navigate(new_doc, rule["path"])
         if new_val != rule["new_default"]:
             for r_existing in results:
@@ -357,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
     rules = load_rules(Path(args.rules))
     results = migrate(Path(args.config), rules, dry_run=args.dry_run)
 
-    applied = [r for r in results if r.action == "applied"]
+    changed = [r for r in results if r.action in ("applied", "inserted")]
     errors = [r for r in results if r.action == "error"]
 
     for r in results:
@@ -367,9 +530,9 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         logger.error("config migration FAILED — %d rule(s) errored", len(errors))
         return 1
-    if applied:
-        verb = "WOULD APPLY" if args.dry_run else "applied"
-        logger.info("config migration: %s %d rule(s)", verb, len(applied))
+    if changed:
+        verb = "WOULD CHANGE" if args.dry_run else "changed"
+        logger.info("config migration: %s %d rule(s)", verb, len(changed))
     else:
         logger.info("config migration: no changes needed")
     return 0
