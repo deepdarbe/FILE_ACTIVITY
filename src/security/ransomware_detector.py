@@ -1,8 +1,8 @@
 """Ransomware canary + rename-velocity detector (issue #37).
 
-Consumes file events from the existing watcher (later from a USN-tail feed
-once issue #33 lands) and triggers alerts when ransomware-style behaviour is
-detected. The four rules implemented today are:
+Consumes file events from the existing watcher (and from the USN-tail feed,
+issue #33) and triggers alerts when ransomware-style behaviour is detected.
+The six rules implemented today are:
 
 1. ``rename_velocity``  -- > N renames per minute by a single user on a
    single source. Defaults: 50/min.
@@ -12,6 +12,13 @@ detected. The four rules implemented today are:
    Defaults: 100/min.
 4. ``canary_access``    -- ANY access to a designated canary file fires an
    immediate critical alert.
+5. ``encryption_burst`` -- > N USN_REASON_ENCRYPTION_CHANGE events per
+   minute by a single user. Catches in-place EFS-style encryption that
+   does NOT rename the file, which rename-velocity would miss entirely.
+   Defaults: 30/min.
+6. ``truncation_burst`` -- > N USN_REASON_DATA_TRUNCATION events per minute
+   by a single user. A mass-shrink/overwrite pattern (ransomware that
+   rewrites file contents in place) without a rename. Defaults: 40/min.
 
 Persistence
 -----------
@@ -53,6 +60,14 @@ DEFAULT_RENAME_THRESHOLD = 50
 DEFAULT_RENAME_WINDOW = 60
 DEFAULT_DELETE_THRESHOLD = 100
 DEFAULT_DELETE_WINDOW = 60
+# In-place encryption / truncation bursts (USN signals, issue #33). These
+# thresholds are lower than rename/delete because in-place encryption is a
+# rarer, higher-signal event during normal operation -- a burst of them is a
+# strong ransomware indicator on its own.
+DEFAULT_ENCRYPTION_THRESHOLD = 30
+DEFAULT_ENCRYPTION_WINDOW = 60
+DEFAULT_TRUNCATION_THRESHOLD = 40
+DEFAULT_TRUNCATION_WINDOW = 60
 DEFAULT_RISKY_EXTENSIONS = [
     "encrypted", "locked", "crypto", "crypt", "wcry", "wnry",
     "ryk", "lockbit", "conti", "cuba",
@@ -68,7 +83,10 @@ _MAX_SAMPLE_PATHS = 20
 # deliberately do NOT auto-kill on plain rename velocity from a single user
 # (could be a legitimate batch job); the operator opts in by toggling
 # ``auto_kill_session``.
-_KILL_RULES = {"canary_access", "risky_extension", "mass_deletion", "rename_velocity"}
+_KILL_RULES = {
+    "canary_access", "risky_extension", "mass_deletion", "rename_velocity",
+    "encryption_burst", "truncation_burst",
+}
 
 
 def _parse_event_time(raw) -> datetime:
@@ -115,6 +133,15 @@ class RansomwareDetector:
                                              DEFAULT_DELETE_THRESHOLD))
         self.delete_window = int(cfg.get("deletion_velocity_window",
                                           DEFAULT_DELETE_WINDOW))
+        # USN-derived in-place encryption / truncation bursts (issue #33).
+        self.encryption_threshold = int(cfg.get("encryption_velocity_threshold",
+                                                 DEFAULT_ENCRYPTION_THRESHOLD))
+        self.encryption_window = int(cfg.get("encryption_velocity_window",
+                                             DEFAULT_ENCRYPTION_WINDOW))
+        self.truncation_threshold = int(cfg.get("truncation_velocity_threshold",
+                                                 DEFAULT_TRUNCATION_THRESHOLD))
+        self.truncation_window = int(cfg.get("truncation_velocity_window",
+                                             DEFAULT_TRUNCATION_WINDOW))
 
         risky = cfg.get("risky_new_extensions") or DEFAULT_RISKY_EXTENSIONS
         self.risky_extensions = {str(e).strip().lower().lstrip(".") for e in risky if e}
@@ -138,6 +165,8 @@ class RansomwareDetector:
         # Rolling event buffers: (source_id, username) -> deque[(timestamp, path)]
         self._renames: dict = defaultdict(deque)
         self._deletes: dict = defaultdict(deque)
+        self._encryptions: dict = defaultdict(deque)
+        self._truncations: dict = defaultdict(deque)
         self._lock = threading.Lock()
 
         # De-dupe key per (source_id, username, rule) -> last_triggered datetime.
@@ -145,7 +174,10 @@ class RansomwareDetector:
         self._last_alert: dict = {}
         # Cooldown roughly equal to the analysis window so the same burst
         # doesn't keep retriggering.
-        self._cooldown_seconds = max(self.rename_window, self.delete_window, 60)
+        self._cooldown_seconds = max(
+            self.rename_window, self.delete_window,
+            self.encryption_window, self.truncation_window, 60,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -169,9 +201,15 @@ class RansomwareDetector:
               "source_id":  int,
               "username":   str,
               "file_path":  str,
-              "event_type": "create" | "modify" | "delete" | "rename" | "access",
+              "event_type": "create" | "modify" | "delete" | "rename" |
+                            "access" | "encryption_change" | "data_truncation",
               "old_path":   str (optional, for rename),
             }
+
+        ``encryption_change`` / ``data_truncation`` come from the USN tail
+        (``USN_REASON_ENCRYPTION_CHANGE`` / ``USN_REASON_DATA_TRUNCATION``)
+        and feed their own velocity counters -- these catch in-place
+        encryption that never renames the file, which rename-velocity misses.
         """
         if not self.enabled or not event:
             return None
@@ -241,6 +279,27 @@ class RansomwareDetector:
             alert = self._track_velocity(
                 self._deletes, "mass_deletion", source_id, username,
                 file_path, ts, self.delete_threshold, self.delete_window,
+                severity="critical",
+            )
+            if alert:
+                return alert
+
+        # USN_REASON_ENCRYPTION_CHANGE burst -- in-place encryption that does
+        # not rename the file. Rename-velocity is blind to this pattern.
+        if ev_type == "encryption_change":
+            alert = self._track_velocity(
+                self._encryptions, "encryption_burst", source_id, username,
+                file_path, ts, self.encryption_threshold, self.encryption_window,
+                severity="critical",
+            )
+            if alert:
+                return alert
+
+        # USN_REASON_DATA_TRUNCATION burst -- mass in-place overwrite/shrink.
+        if ev_type == "data_truncation":
+            alert = self._track_velocity(
+                self._truncations, "truncation_burst", source_id, username,
+                file_path, ts, self.truncation_threshold, self.truncation_window,
                 severity="critical",
             )
             if alert:

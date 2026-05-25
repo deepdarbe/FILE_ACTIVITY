@@ -215,6 +215,65 @@ class GapDetectionLogicTests(unittest.TestCase):
 # Real DeviceIoControl tests — Windows-only, skipped on Linux
 # ─────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────
+# Blocking-read parameter computation (issue #33) — pure, Linux-safe.
+# Validates the config-gated low-latency knob without touching ctypes.
+# ─────────────────────────────────────────────────────────────────────
+
+class BlockingReadParamsTests(unittest.TestCase):
+    def test_non_blocking_default_is_zero_zero(self):
+        # Default path: BytesToWaitFor=0, Timeout=0 -> immediate return.
+        self.assertEqual(NtfsUsnTailer._blocking_read_params(False, 1.0), (0, 0))
+
+    def test_blocking_sets_one_byte_wait_and_negative_timeout(self):
+        bytes_to_wait, timeout_100ns = NtfsUsnTailer._blocking_read_params(True, 1.0)
+        self.assertEqual(bytes_to_wait, 1)
+        # Relative NT time -> negative 100-ns intervals. 1s == 10,000,000.
+        self.assertEqual(timeout_100ns, -10_000_000)
+
+    def test_blocking_scales_timeout(self):
+        _, t = NtfsUsnTailer._blocking_read_params(True, 0.5)
+        self.assertEqual(t, -5_000_000)
+
+    def test_blocking_with_nonpositive_timeout_collapses_to_nonblocking(self):
+        # Guards against an unbounded driver wait.
+        self.assertEqual(NtfsUsnTailer._blocking_read_params(True, 0), (0, 0))
+        self.assertEqual(NtfsUsnTailer._blocking_read_params(True, -3), (0, 0))
+
+
+class BlockingConfigGateTests(unittest.TestCase):
+    """The usn_blocking config flag is parsed on construction and defaults
+    to the legacy non-blocking behavior. Construction works on Linux because
+    only the SQLite state table is touched."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="usn_cfg_")
+        self.dbpath = os.path.join(self.tmpdir, "cfg.db")
+        self.db = FakeDB(self.dbpath)
+
+    def tearDown(self):
+        for p in (self.dbpath,):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        try:
+            os.rmdir(self.tmpdir)
+        except OSError:
+            pass
+
+    def test_default_is_non_blocking(self):
+        t = NtfsUsnTailer(self.db, {}, source_id=1, volume_letter="C")
+        self.assertFalse(t.usn_blocking)
+        self.assertEqual(t.usn_blocking_timeout_seconds, 1.0)
+
+    def test_blocking_enabled_via_config(self):
+        cfg = {"scanner": {"usn_blocking": True, "usn_blocking_timeout_seconds": 2.5}}
+        t = NtfsUsnTailer(self.db, cfg, source_id=1, volume_letter="C")
+        self.assertTrue(t.usn_blocking)
+        self.assertEqual(t.usn_blocking_timeout_seconds, 2.5)
+
+
 @unittest.skipIf(sys.platform != "win32", "Requires Windows + admin")
 class WindowsIntegrationTests(unittest.TestCase):
     def test_initialize_on_c_volume(self):

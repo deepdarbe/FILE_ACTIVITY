@@ -221,3 +221,133 @@ def test_smb_kill_is_safe_on_linux():
         # the documented keys.
         assert "killed_session_ids" in out
         assert "dry_run" in out
+
+
+# ---------------------------------------------------------------------------
+# Issue #33: USN-derived in-place encryption / truncation burst detection.
+# These feed consume_event() with the distinct 'encryption_change' /
+# 'data_truncation' event types emitted by the USN tail. No real USN /
+# pywin32 is needed -- we drive consume_event() directly, so these run on
+# Linux CI exactly like the rename/delete velocity tests above.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def usn_detector(tmp_path):
+    """Detector with small, explicit encryption/truncation thresholds so the
+    burst boundary is cheap to exercise deterministically."""
+    db_path = tmp_path / "usn_ransom.db"
+    db = Database({"path": str(db_path)})
+    db.connect()
+    cfg = {
+        "security": {
+            "ransomware": {
+                "enabled": True,
+                # Keep the rename/delete rules out of the way; we only test
+                # the two new USN signals here.
+                "rename_velocity_threshold": 100000,
+                "deletion_velocity_threshold": 100000,
+                "encryption_velocity_threshold": 10,
+                "encryption_velocity_window": 60,
+                "truncation_velocity_threshold": 15,
+                "truncation_velocity_window": 60,
+                # Avoid the canary / risky-extension fast-paths firing first.
+                "risky_new_extensions": ["zzz_never_match"],
+                "canary_file_names": ["zzz_never_match_canary"],
+                "auto_kill_session": False,
+                "notification_email": "",
+            }
+        }
+    }
+    return RansomwareDetector(db, cfg), db
+
+
+def _fire_events(det, event_type, n, *, user="mallory", source=5, base_ts=None):
+    """Inject n events of one type spaced 100ms apart inside the window."""
+    base_ts = base_ts or datetime.now()
+    last = None
+    for i in range(n):
+        ts = base_ts + timedelta(milliseconds=i * 100)
+        last = det.consume_event({
+            "timestamp": ts,
+            "source_id": source,
+            "username": user,
+            # In-place encryption keeps the SAME name (no rename) -- this is
+            # exactly the pattern rename-velocity cannot see.
+            "file_path": f"/share/data/doc_{i}.docx",
+            "event_type": event_type,
+        }) or last
+    return last
+
+
+def test_encryption_burst_does_not_fire_below_threshold(usn_detector):
+    det, _db = usn_detector
+    # threshold is 10, exclusive (> N). Exactly 10 must NOT fire.
+    alert = _fire_events(det, "encryption_change", 10)
+    assert alert is None
+
+
+def test_encryption_burst_fires_at_threshold(usn_detector):
+    det, _db = usn_detector
+    # The 11th encryption_change crosses the > 10 boundary.
+    alert = _fire_events(det, "encryption_change", 11)
+    assert alert is not None
+    assert alert["rule_name"] == "encryption_burst"
+    assert alert["severity"] == "critical"
+    assert alert["file_count"] >= 11
+    assert alert["username"] == "mallory"
+    assert alert["sample_paths"], "should carry sample paths"
+    assert len(alert["sample_paths"]) <= 20
+
+
+def test_truncation_burst_does_not_fire_below_threshold(usn_detector):
+    det, _db = usn_detector
+    # threshold is 15, exclusive. Exactly 15 must NOT fire.
+    alert = _fire_events(det, "data_truncation", 15)
+    assert alert is None
+
+
+def test_truncation_burst_fires_at_threshold(usn_detector):
+    det, _db = usn_detector
+    alert = _fire_events(det, "data_truncation", 16)
+    assert alert is not None
+    assert alert["rule_name"] == "truncation_burst"
+    assert alert["severity"] == "critical"
+    assert alert["file_count"] >= 16
+
+
+def test_encryption_and_truncation_counters_are_independent(usn_detector):
+    det, _db = usn_detector
+    # 10 encryption + 15 truncation: neither crosses its own threshold, so
+    # the two counters must not bleed into each other.
+    enc = _fire_events(det, "encryption_change", 10, user="eve", source=6)
+    trunc = _fire_events(det, "data_truncation", 15, user="eve", source=6)
+    assert enc is None
+    assert trunc is None
+
+
+def test_encryption_burst_persists_to_db(usn_detector):
+    det, db = usn_detector
+    alert = _fire_events(det, "encryption_change", 11)
+    assert alert is not None
+    rows = det.get_active_alerts(since_minutes=60)
+    assert any(r["rule_name"] == "encryption_burst" for r in rows)
+    with db.get_cursor() as cur:
+        cur.execute(
+            "SELECT rule_name, severity FROM ransomware_alerts "
+            "WHERE rule_name = 'encryption_burst'"
+        )
+        raw = cur.fetchall()
+    assert raw, "encryption_burst alert should be persisted"
+
+
+def test_default_usn_thresholds_when_unconfigured(tmp_path):
+    """When the new keys are absent the detector still loads with the safe
+    documented defaults (30 / 40) -- no KeyError, no crash."""
+    db = Database({"path": str(tmp_path / "def.db")})
+    db.connect()
+    det = RansomwareDetector(db, {"security": {"ransomware": {"enabled": True}}})
+    assert det.encryption_threshold == 30
+    assert det.truncation_threshold == 40
+    # A modest burst below the default must stay silent.
+    alert = _fire_events(det, "encryption_change", 25, user="frank", source=9)
+    assert alert is None

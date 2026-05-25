@@ -160,6 +160,15 @@ scanner:
   # volume / izin yetersizse otomatik olarak polling'e duser.
   usn_tail_enabled: false
   usn_poll_interval_seconds: 1.0
+  # Issue #33: dusuk-gecikme bloklayan USN okuma. true ise FSCTL_READ_USN_JOURNAL
+  # cagrisi surucu icinde yeni kayit gelene (veya timeout dolana) kadar bloklar;
+  # tespit gecikmesi ~1sn -> ~0'a duser. usn_poll_interval_seconds bu modda
+  # atlanir (surucu okumasi kadansi kendisi saglar). Yalnizca usn_tail_enabled:
+  # true iken etkilidir. Varsayilan false = mevcut davranis (BytesToWaitFor=0 ile
+  # non-blocking polling). Gap-handling, state persist ve polling fallback her
+  # iki modda da korunur.
+  usn_blocking: false
+  usn_blocking_timeout_seconds: 1.0  # bloklayan okumanin surucu bekleme suresi (sn)
   batch_size: 1000            # DB batch insert boyutu
   skip_hidden: true           # Hidden attribute'lu dosyaları atla
   skip_system: true           # System attribute'lu dosyaları atla
@@ -325,6 +334,15 @@ security:
     rename_velocity_window: 60         # saniye
     deletion_velocity_threshold: 100   # > M delete / dakika -> alert
     deletion_velocity_window: 60       # saniye
+    # Issue #33: USN-tabanli yerinde-sifreleme tespiti. USN_REASON_ENCRYPTION_CHANGE
+    # ve USN_REASON_DATA_TRUNCATION patlamalari rename-velocity'nin kacirdigi
+    # yeniden-adlandirmayan (in-place) sifrelemeyi yakalar. Yalnizca USN tail
+    # akisinda anlamli (scanner.usn_tail_enabled). Esikler rename/delete'ten
+    # dusuk cunku bu olaylar normal kullanimda nadir + yuksek-sinyal.
+    encryption_velocity_threshold: 30    # > N ENCRYPTION_CHANGE / dakika -> alert
+    encryption_velocity_window: 60       # saniye
+    truncation_velocity_threshold: 40    # > N DATA_TRUNCATION / dakika -> alert
+    truncation_velocity_window: 60       # saniye
     risky_new_extensions:
       - encrypted
       - locked

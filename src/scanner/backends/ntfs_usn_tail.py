@@ -168,6 +168,23 @@ class NtfsUsnTailer:
         self._journal_id = None
         self._last_seen_usn = None
         self._gap_detected = False
+
+        # Lower-latency blocking read (config-gated). When True, the FIRST
+        # FSCTL_READ_USN_JOURNAL of each poll passes a nonzero BytesToWaitFor +
+        # Timeout so DeviceIoControl blocks in the driver until new records
+        # arrive (near-zero detection latency on local volumes) instead of
+        # returning immediately and sleeping ~1s in the loop. On timeout the
+        # call returns just the 8-byte next-USN header, which poll_once already
+        # treats as "no records" -- so gap-handling, state persistence and the
+        # polling fallback are all preserved. Default False = current behavior.
+        scanner_cfg = self.config.get("scanner", {}) or {}
+        self.usn_blocking = bool(scanner_cfg.get("usn_blocking", False))
+        # Driver wait timeout in seconds for the blocking read. Bounded so a
+        # stop_event can still be honored within roughly this interval.
+        self.usn_blocking_timeout_seconds = float(
+            scanner_cfg.get("usn_blocking_timeout_seconds", 1.0)
+        )
+
         ensure_state_table(self.db)
 
     # ── Detection ──────────────────────────────────────────────────────
@@ -311,11 +328,39 @@ class NtfsUsnTailer:
 
     # ── Polling ────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _blocking_read_params(blocking: bool, timeout_seconds: float) -> tuple:
+        """Compute (bytes_to_wait_for, timeout_100ns) for the read struct.
+
+        Pure / platform-independent so it can be unit-tested on Linux.
+
+        * Non-blocking (default): ``(0, 0)`` -- DeviceIoControl returns
+          immediately with whatever is pending.
+        * Blocking: ``BytesToWaitFor`` is set to 1 byte so the driver blocks
+          until *any* new record is journaled, and ``Timeout`` is a relative
+          NT time (negative count of 100-ns intervals) so the call still
+          returns periodically -- letting the run loop check ``stop_event``
+          and persist state. A non-positive timeout collapses to the
+          non-blocking behavior to avoid an unbounded driver wait.
+        """
+        if not blocking:
+            return 0, 0
+        if timeout_seconds <= 0:
+            return 0, 0
+        # Relative wait times are passed as negative 100-ns intervals.
+        timeout_100ns = -int(timeout_seconds * 10_000_000)
+        return 1, timeout_100ns
+
     def poll_once(self, callback: Callable[[dict], None]) -> int:
         """Read all pending USN entries, invoke callback per record.
 
-        Returns the number of records dispatched. Non-blocking
-        (BytesToWaitFor=0). Safe to call repeatedly.
+        Returns the number of records dispatched. The first read of each
+        round honors the ``scanner.usn_blocking`` gate: when off (default) the
+        call is non-blocking (``BytesToWaitFor=0``); when on it blocks in the
+        driver until a record arrives or the configured timeout elapses,
+        cutting detection latency from ~1s to near-zero. Subsequent reads in
+        the same round (draining a backlog) are always non-blocking. Safe to
+        call repeatedly either way.
         """
         if self._handle is None or self._journal_id is None:
             raise RuntimeError("NtfsUsnTailer: initialize() once before poll_once()")
@@ -331,19 +376,22 @@ class NtfsUsnTailer:
                 ("StartUsn", ctypes.c_int64),
                 ("ReasonMask", ctypes.c_uint32),
                 ("ReturnOnlyOnClose", ctypes.c_uint32),
-                ("Timeout", ctypes.c_uint64),
+                ("Timeout", ctypes.c_int64),
                 ("BytesToWaitFor", ctypes.c_uint64),
                 ("UsnJournalID", ctypes.c_uint64),
                 ("MinMajorVersion", ctypes.c_uint16),
                 ("MaxMajorVersion", ctypes.c_uint16),
             ]
 
+        bytes_to_wait, timeout_100ns = self._blocking_read_params(
+            self.usn_blocking, self.usn_blocking_timeout_seconds
+        )
         in_struct = READ_USN_JOURNAL_DATA_V1(
             StartUsn=self._last_seen_usn,
             ReasonMask=0xFFFFFFFF,
             ReturnOnlyOnClose=0,
-            Timeout=0,
-            BytesToWaitFor=0,
+            Timeout=timeout_100ns,
+            BytesToWaitFor=bytes_to_wait,
             UsnJournalID=self._journal_id,
             MinMajorVersion=2,
             MaxMajorVersion=3,
@@ -394,6 +442,11 @@ class NtfsUsnTailer:
 
             self._last_seen_usn = next_usn
             in_struct.StartUsn = next_usn
+            # Only the FIRST read of a round may block. Once we've started
+            # draining, switch to non-blocking so an empty backlog returns
+            # immediately instead of waiting for the next write.
+            in_struct.BytesToWaitFor = 0
+            in_struct.Timeout = 0
 
             # If buffer wasn't full, no more pending entries this round.
             if n < USN_BUFFER_SIZE - 1024:
@@ -414,17 +467,27 @@ class NtfsUsnTailer:
     def run_loop(self, callback: Callable[[dict], None],
                   poll_interval_seconds: float = 1.0,
                   stop_event: Optional[threading.Event] = None) -> None:
-        """Continuous tail loop. Blocks until ``stop_event`` is set."""
+        """Continuous tail loop. Blocks until ``stop_event`` is set.
+
+        In non-blocking mode the loop polls then sleeps ``poll_interval_seconds``
+        between rounds. In blocking mode (``scanner.usn_blocking: true``) the
+        driver read itself supplies both the cadence and stop-responsiveness
+        (it returns at most every ``usn_blocking_timeout_seconds``), so the
+        inter-round sleep is skipped to keep detection latency near-zero.
+        """
         if stop_event is None:
             stop_event = threading.Event()
-        logger.info("USN tail dongu baslatildi (kaynak %d, interval=%.1fs)",
-                    self.source_id, poll_interval_seconds)
+        logger.info(
+            "USN tail dongu baslatildi (kaynak %d, interval=%.1fs, blocking=%s)",
+            self.source_id, poll_interval_seconds, self.usn_blocking,
+        )
         while not stop_event.is_set():
             try:
                 self.poll_once(callback)
             except Exception as e:
                 logger.error("USN poll hatasi: %s", e)
-            stop_event.wait(timeout=poll_interval_seconds)
+            if not self.usn_blocking:
+                stop_event.wait(timeout=poll_interval_seconds)
         logger.info("USN tail dongu durduruldu (kaynak %d)", self.source_id)
 
 
