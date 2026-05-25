@@ -67,7 +67,7 @@ imagehash>=4.3,<5
 # ReadDirectoryChangesW is unreliable — WatcherFactory transparently
 # falls back to the legacy polling watcher. Default config.yaml leaves
 # `watcher.backend: "watchdog"`; flip to "polling" to force the fallback.
-watchdog>=4.0,<5
+watchdog>=6.0.0,<7
 
 # ──────────────────────────────────────────────────────────────────────
 # PII checksum / format validation (issue #1)
