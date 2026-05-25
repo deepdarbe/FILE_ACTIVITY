@@ -47,18 +47,44 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `57e2503`, 2026-05-22)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `09c668c`, 2026-05-25)
 
-A long autonomous wave landed **22 PRs** on top of #217. Current state:
+The 2026-05-24/25 session shipped **3 PRs** (#241–#243) + a 4-area "advanced
+tech" research pass, on top of the 2026-05-22 22-PR wave (kept below for
+history). Current state:
 
 ### Where we are
-- **master = `57e2503`**. All 9 CI guards green. Test suite: 710 passed,
-  16 baseline failures (watchdog / duckdb / MFT module imports missing in the
-  Linux test container — pre-existing, do NOT chase).
-- **Zero open PRs from our work.** Only #203 is open (the user's own April-30
-  1800-LOC stabilization bundle — triage comment posted, close/keep is the
-  user's call; do NOT merge as-is, its D2 DuckDB-removal conflicts with the
-  keep-DuckDB decision + #231/#232).
+- **master = `09c668c`**. Per-PR CI: 7/8 green; the only red is
+  `Pytest (Linux, Docker)` — the documented non-blocking flake (dies in ~20s
+  during docker build, `continue-on-error: true`). Do NOT chase it.
+- **No open PRs from this session's *merged* work.** 2 NEW subagent PRs are
+  IN FLIGHT (below). #203 still open (do NOT merge as-is — D2 DuckDB removal
+  conflicts with keep-DuckDB).
+
+### What shipped THIS session (#241–#243)
+- **#241** — AI Insights **"İncele"** rerouted to the #222 Excel drilldown
+  overlay (loading state + server pagination + sort + Konuma-Git column; #222
+  had upgraded the *Overview* drilldown, never Insights). + **PII page** wired
+  to `/api/compliance/pii/findings` + Rule-8 banner (was a stub that wiped the
+  page). + `scripts/onenote_export.py` (Markdown→OneNote via Graph). Customer
+  confirmed İncele works.
+- **#242** — **PII checksum validators** (`src/compliance/pii/validators.py`):
+  credit_card→Luhn, iban→mod-97, tckn→TC-kimlik (python-stdnum), phone→
+  libphonenumber. Post-filter in `PiiEngine.scan_file`; no-ops without the
+  optional deps (requirements-accel.txt). + fixed `iban_tr` regex (4→5 groups;
+  the old form never matched a real 26-char TR IBAN).
+- **#243** — **orphan-SID report on by default** via a `config_migrations.yaml`
+  rule (false→true). update.cmd flips preserved configs; no-op vs shipped
+  config. Domain-joined → SIDs resolve via pywin32 LookupAccountSid, no LDAP.
+
+### IN FLIGHT — 2 subagent PRs (check open PRs + CI on resume)
+- **SQLite FTS5 search** (`claude/fts5-search`) — trigram FTS over
+  file_path/name/owner + dashboard search endpoint + box. Zero new dep.
+- **USN detection signals** (`claude/usn-detection`) — blocking USN read +
+  ENCRYPTION_CHANGE/DATA_TRUNCATION burst signals into ransomware_detector
+  (activates the empty Anomaly page). Zero new dep.
+- **Trust-but-verify:** review each diff + CI before merging (built by
+  subagents, not main-thread-tested).
 
 ### What shipped this wave (the 22 PRs)
 - **Perf / caching**: #224 (mit_naming), #227 (report_full + report_status),
@@ -86,17 +112,32 @@ A long autonomous wave landed **22 PRs** on top of #217. Current state:
   and elasticsearch 9 — both sub-agent-audited as SAFE before merge.
 
 ### What's PENDING (pick up here)
-1. **Customer hasn't reported test results yet.** They were going to run
-   `update.cmd`, then `scripts\explain_audit.py` (expect the 3 flagged queries
-   → `flags: OK`) and `scripts\bench_api.py` (expect cold latency 5-10× lower).
-   First thing on resume: ask for / check those results.
-2. **EPIC #225 leftovers** — R-5c `P-PAGE`, R-5d `S-SHAPE`, R-5e `A-AUDIT`
-   guards + R-6 audit-trail backlog flush. Each needs its own allowlist tuning;
-   ship one per PR. See #225 for the plan.
-3. **#203 decision** — user to close or split into focused PRs (D5 e2e test,
-   D7 config_migrator, `-Branch` param are still useful; D2 DuckDB removal is not).
-4. **#114** storage Phase 3-5 — still deferred pending the real-DB
-   `bench_storage.py` result.
+1. **#8/#9 — THE remaining real customer bug.** "Kopya Dosyalar" + "Adlandırma
+   Uyumu" pages stick on "yükleniyor", no data. Root cause found:
+   `loadDuplicates` / `loadNaming` (index.html) **swallow errors**
+   (`catch{ console.error }`) → permanent spinner; backend is either just SLOW
+   (cold compute on 2.89M rows) or ERRORING on the real DB. BLOCKED on the
+   customer's diagnostic (rescan-test / `file_activity.log` tail / F12-Network
+   status). Fix = (a) surface errors in those loaders, (b) fix the real backend
+   cause — likely the Parquet-export approach in item 2.
+2. **Advanced-tech research roadmap (this session — ADOPT/PILOT/SKIP):**
+   - **Analytics@scale (→#8/#9):** ADOPT **Parquet export (pyarrow) at
+     scan-complete + DuckDB/Polars query the Parquet** (cold GROUP BY ~30s→<1s,
+     **WAL-safe**). ❌ **REJECT "persistent DuckDB ATTACH"** — it IS the
+     4×-fixed WAL-leak anti-pattern (pinned by `test_analytics_per_query.py`).
+     chDB=SKIP (no Windows wheel).
+   - **Windows monitoring (→#2):** USN signals (in flight). PILOT ETW FileIO
+     via raw ctypes; WATCH FSRM (Server-SKU only); SKIP MiniFilter (kernel sign).
+   - **Near-dup:** ADOPT MinHash+LSH (`datasketch`) + PDQ (`pdqhash`).
+   - **Search:** ADOPT SQLite FTS5 (in flight); Tantivy=PILOT; DuckDB-FTS=WATCH.
+   - **PR order:** FTS5 (in flight) → USN (in flight) → Parquet-reports (after
+     the #8/#9 diagnostic) → MinHash+PDQ.
+3. **Customer activation guide** given for config-gated features (PII /
+   wrong-ext+`python-magic-bin` / image-hash / AD) = their config.yaml +
+   `pip install -r requirements-accel.txt` + rescan. **puremagic REJECTED for
+   wrong-ext** (can't detect executables → would miss the disguise case).
+4. **EPIC #225 leftovers** (R-5c P-PAGE / R-5d S-SHAPE / R-5e A-AUDIT / R-6),
+   **#203** decision, **#114** storage Phase 3-5 — all still deferred.
 
 ### The 8 endpoint-conventions rules now have CI teeth
 `docs/standards/endpoint-conventions.md`. Auto-enforced: Rule 1 (R-CACHE),
