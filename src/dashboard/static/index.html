@@ -5489,7 +5489,10 @@ async function loadNaming() {
         // Issue #80: reusable entity-list ile ihlal eden dosyalari listele
         renderMitNamingEntityList(sourceId, data);
         _attachNamingViewToggle();
-    } catch(e) { console.error('MIT naming load error:', e); }
+    } catch(e) {
+        console.error('MIT naming load error:', e);
+        _setHtmlSafe('naming-summary-cards', `<div style="padding:20px;color:var(--danger,#dc2626)">Adlandirma raporu yuklenemedi: ${escapeHtml(e.message||'hata')}. Tarama suruyorsa bitince tekrar deneyin.</div>`);
+    }
 }
 
 // Issue #84 — Gorsel ↔ Profesyonel mod toggle for Adlandirma Uyumu.
@@ -6142,7 +6145,11 @@ async function loadDuplicates(page) {
         dupSelectedFiles.clear();
         updateDupSelection();
         _attachDuplicatesViewToggle();
-    } catch(e) { console.error('Duplicates load error:', e); }
+    } catch(e) {
+        console.error('Duplicates load error:', e);
+        _setHtmlSafe('dup-summary-cards', `<div style="padding:20px;color:var(--danger,#dc2626)">Kopya raporu yuklenemedi: ${escapeHtml(e.message||'hata')}. Tarama suruyorsa bitince tekrar deneyin.</div>`);
+        _setHtmlSafe('dup-table', '');
+    }
 }
 
 // Issue #84 — Gorsel ↔ Profesyonel mod toggle for Kopya Dosyalar.
