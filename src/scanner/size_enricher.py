@@ -103,6 +103,13 @@ class SizeEnricher:
         # specific files, e.g. some legacy network FS edge cases).
         self.max_mb = int(scanner_cfg.get("size_enrich_max_mb", 0) or 0)
 
+        # Issue #1 — capture owner during this same post-walk pass when
+        # scanner.read_owner is on. The MFT backend is path-only (yields no
+        # owner), so without this the owner column stays NULL and the
+        # dashboard shows "(Bilinmiyor)". Windows-only resolution
+        # (LookupAccountSid); a no-op on other platforms.
+        self.read_owner = bool(scanner_cfg.get("read_owner", False))
+
         # Lazy-loaded FSCTL backend on Windows. Module import happens
         # inside ``enrich`` to keep Linux/macOS test runs free of any
         # ctypes setup cost.
@@ -305,12 +312,32 @@ class SizeEnricher:
             )
             return None
 
-        return {
+        row = {
             "file_size": size,
             "last_modify_time": _to_iso(getattr(st, "st_mtime", None)),
             "last_access_time": _to_iso(getattr(st, "st_atime", None)),
             "creation_time": _to_iso(getattr(st, "st_ctime", None)),
         }
+        if self.read_owner:
+            # Resolve owner in the same post-walk pass (Windows-only; None
+            # on other platforms or on failure). bulk_update_file_sizes
+            # COALESCEs it, so a None never clobbers an owner a richer
+            # backend (e.g. the SMB walk) already populated.
+            row["owner"] = self._resolve_owner(path)
+        return row
+
+    @staticmethod
+    def _resolve_owner(path: str) -> Optional[str]:
+        """Best-effort file owner (``DOMAIN\\name``) via the win32 helper.
+
+        Lazy-imports so Linux/macOS runs pay nothing; returns ``None`` when
+        pywin32/Windows is unavailable or the lookup fails.
+        """
+        try:
+            from src.scanner.win_attributes import _get_file_owner, _long_path
+            return _get_file_owner(_long_path(path))
+        except Exception:  # pragma: no cover - defensive
+            return None
 
     # ── (future) FSCTL backend hook ──────────────────────────────────
 

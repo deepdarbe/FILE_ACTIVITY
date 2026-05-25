@@ -1561,7 +1561,9 @@ class Database:
         Used by the post-walk size-enrich pass (see
         :class:`src.scanner.size_enricher.SizeEnricher`). Each row dict
         carries ``scan_id``, ``file_path``, ``file_size`` and any subset
-        of ``last_modify_time`` / ``last_access_time`` / ``creation_time``.
+        of ``last_modify_time`` / ``last_access_time`` / ``creation_time`` /
+        ``owner`` (owner is filled by the post-walk pass when
+        ``scanner.read_owner`` is on, for path-only backends like MFT — #1).
         The match is on ``(scan_id, file_path)`` so the same path on a
         different historical scan is not affected.
 
@@ -1586,6 +1588,7 @@ class Database:
                 r.get("last_modify_time"),
                 r.get("last_access_time"),
                 r.get("creation_time"),
+                r.get("owner"),
                 int(r["scan_id"]),
                 r["file_path"],
             )
@@ -1596,7 +1599,8 @@ class Database:
             "SET file_size = ?, "
             "    last_modify_time = COALESCE(?, last_modify_time), "
             "    last_access_time = COALESCE(?, last_access_time), "
-            "    creation_time    = COALESCE(?, creation_time) "
+            "    creation_time    = COALESCE(?, creation_time), "
+            "    owner            = COALESCE(?, owner) "
             "WHERE scan_id = ? AND file_path = ?"
         )
 
