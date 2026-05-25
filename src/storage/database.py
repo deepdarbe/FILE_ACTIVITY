@@ -2270,7 +2270,7 @@ class Database:
             scan_id = self.get_latest_scan_id(source_id)
         if not scan_id:
             return []
-        with self.get_cursor() as cur:
+        with self.get_read_cursor() as cur:
             cur.execute("""
                 SELECT
                     COALESCE(owner, 'Bilinmiyor') as owner,
@@ -2292,7 +2292,7 @@ class Database:
             params_base.append(owner)
         where = f"source_id = ? AND scan_id = ? AND {owner_cond}"
 
-        with self.get_cursor() as cur:
+        with self.get_read_cursor() as cur:
             cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params_base)  # noqa: S608
             total = cur.fetchone()["cnt"]
             cur.execute(f"""
@@ -3012,7 +3012,7 @@ class Database:
 
         # Son scan_id'yi bul
         if not scan_id:
-            with self.get_cursor() as cur:
+            with self.get_read_cursor() as cur:
                 cur.execute("""
                     SELECT id FROM scan_runs WHERE source_id=? AND status='completed'
                     ORDER BY started_at DESC LIMIT 1
@@ -3023,7 +3023,7 @@ class Database:
                             "groups": [], "page": page, "page_size": page_size, "total_pages": 1}
                 scan_id = row["id"]
 
-        with self.get_cursor() as cur:
+        with self.get_read_cursor() as cur:
             # Tek CTE ile ozetleri (toplam grup, toplam israf, toplam dosya)
             # ve sayfalanmis gruplari iki ayri sorguda tek aggregate uzerinden
             # alir. Onceki kodda ayni GROUP BY uc kere calisiyordu; buyuk
