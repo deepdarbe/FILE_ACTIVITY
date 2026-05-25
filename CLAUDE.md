@@ -47,14 +47,21 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `09c668c`, 2026-05-25)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `b76c4a0`, 2026-05-25)
 
-The 2026-05-24/25 session shipped **3 PRs** (#241–#243) + a 4-area "advanced
-tech" research pass, on top of the 2026-05-22 22-PR wave (kept below for
-history). Current state:
+The 2026-05-24/25 session shipped **8 PRs** (#241–#246, #252, #253) + 2 docs
+PRs (#244, #254) + a 4-area "advanced tech" research pass, on top of the
+2026-05-22 22-PR wave (kept below for history). Current state:
+
+**▶ NEXT SESSION — start here:** the customer's reported bugs are all
+CODE-FIXED & merged; resume from the PENDING list below. Highest-value
+remaining *code* task = the **durable `migrate_config` missing-key fix** for
+`scanner.parquet_staging` (PENDING item 1) so the #8/#9 lock source
+auto-disables on `update.cmd` without the operator hand-editing config; then
+MinHash+PDQ near-dup. `git log --oneline -15` confirms the real tip.
 
 ### Where we are
-- **master = `09c668c`**. Per-PR CI: 7/8 green; the only red is
+- **master = `b76c4a0`**. Per-PR CI: 7/8 green; the only red is
   `Pytest (Linux, Docker)` — the documented non-blocking flake (dies in ~20s
   during docker build, `continue-on-error: true`). Do NOT chase it.
 - **All this session's PRs are merged** (#241–#246, #252, #253 — below).
