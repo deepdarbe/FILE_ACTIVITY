@@ -35,9 +35,9 @@ FIXTURE_CORPUS = [
      "Reach me at alice@example.com or bob@example.com — also "
      "carol+inbox@some-corp.co for invoices."),
     ("iban",
-     "IBAN: TR33 0006 1005 1978 6457 26\n"
-     "Spaceless: TR330006100519786457260000 (too long, won't match)\n"
-     "Second IBAN TR55 1234 5678 9012 3456 78 in body."),
+     "IBAN: TR33 0006 1005 1978 6457 8413 26\n"
+     "Spaceless: TR3300061005197864572600009999 (too long, won't match)\n"
+     "Second IBAN TR55 1234 5678 9012 3456 7890 12 in body."),
     ("tckn", "Citizen 12345678901 and another 98765432101."),
     ("phone_tr",
      "Cep: 0532 123 45 67 ve sabit hat 0212 555 11 22 (sabit yok); "
@@ -47,7 +47,7 @@ FIXTURE_CORPUS = [
     ("multiline",
      "first line\n"
      "alice@example.com second line\n"
-     "TR33 0006 1005 1978 6457 26\n"
+     "TR33 0006 1005 1978 6457 8413 26\n"
      "12345678901\n"
      "tail"),
     ("multibyte",

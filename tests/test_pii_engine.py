@@ -63,14 +63,15 @@ def _seed_file(db, source_id, scan_id, file_path):
 
 def test_scan_file_detects_email_iban_tckn(engine_db, tmp_path):
     engine, _ = engine_db
-    # The default iban_tr regex shipped in the spec matches the
-    # TR + 2-digit-checksum + 5x4-digit groups + 2-digit tail layout
-    # (22 digit groups), so we use exactly that shape in the fixture.
+    # iban_tr matches a full 26-char TR IBAN (TR + 2 check + 5x4 groups +
+    # 2 tail) and the checksum validator (issue #1) keeps it only if mod-97
+    # passes — so the fixture uses a real, checksum-valid IBAN plus a
+    # checksum-valid TC kimlik no.
     p = tmp_path / "doc.txt"
     p.write_text(
         "Contact alice@example.com or bob@example.com, also "
-        "carol@example.com.\nIBAN: TR33 0006 1005 1978 6457 26\n"
-        "TCKN: 12345678901\n",
+        "carol@example.com.\nIBAN: TR33 0006 1005 1978 6457 8413 26\n"
+        "TCKN: 71234567836\n",
         encoding="utf-8",
     )
     out = engine.scan_file(str(p))
