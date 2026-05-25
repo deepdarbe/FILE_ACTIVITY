@@ -15,11 +15,17 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
+
+# PaginationParams is used as a FastAPI ``Depends()`` default in route
+# signatures, so it must be importable at module scope (the decorator
+# evaluates the signature when create_app runs). cached_report_endpoint
+# stays a lazy import inside each handler per the existing convention.
+from src.dashboard._endpoint_helpers import PaginationParams
 
 # ── Arka plan export kuyrugu ──
 _export_jobs = {}  # job_id -> {status, progress, file_path, error, created_at, ...}
@@ -1590,6 +1596,35 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     def archive_search(q: str, extension: Optional[str] = None,
                               page: int = Query(1, ge=1, le=10000)):
         return db.search_archived_files(q, extension=extension, page=page)
+
+    @app.get("/api/files/search")
+    def search_files(q: str, source_id: Optional[int] = None,
+                            p: PaginationParams = Depends()):
+        """Embedded full-text substring search over scanned files.
+
+        Path / file-name / owner substring search backed by the
+        ``scanned_files_fts`` trigram index (issue: embedded SEARCH). Plain
+        ``def`` so FastAPI dispatches the sync DB work to the thread pool
+        (Rule 5). ``db.search_files`` reads via ``get_read_cursor()``
+        internally (Rule 6) so this never contends with a running scan.
+
+        ``source_id`` is optional: when given, results are scoped to that
+        source's latest scan; when omitted, the whole index is searched
+        (handy for "where is this file across all shares?"). Pagination is
+        the canonical ``PaginationParams`` (Rule 2).
+        """
+        scan_id = None
+        if source_id is not None:
+            src = _get_source(db, source_id)
+            scan_id = db.get_latest_scan_id(src.id, include_running=True)
+            if not scan_id:
+                # Source exists but has no scan yet — empty page, not 400,
+                # so the search box renders "0 sonuc" cleanly.
+                return p.response(total=0, items=[])
+        result = db.search_files(
+            q, scan_id=scan_id, limit=p.page_size, offset=p.offset,
+        )
+        return p.response(total=result["total"], items=result["files"])
 
     @app.get("/api/archive/stats")
     def archive_stats():

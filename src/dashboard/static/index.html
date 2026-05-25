@@ -620,6 +620,7 @@ body.sidebar-open { overflow: hidden; }
         <div class="nav-label">Genel <span class="chev">&#9660;</span></div>
         <div class="nav-item active" onclick="showPage('overview')" title="Genel Bakis"><span class="icon">📈</span> <span>Genel Bakis</span></div>
         <div class="nav-item" onclick="showPage('sources')" title="Kaynaklar"><span class="icon">📁</span> <span>Kaynaklar</span></div>
+        <div class="nav-item" onclick="showPage('search')" title="Dosya Arama"><span class="icon">🔎</span> <span>Dosya Arama</span></div>
     </div>
     <div class="nav-section" data-group="Analiz">
         <div class="nav-label">Analiz <span class="chev">&#9660;</span></div>
@@ -788,6 +789,28 @@ body.sidebar-open { overflow: hidden; }
             <button class="btn btn-outline" onclick="optimizeDb()" style="font-size:12px;border-color:var(--info);color:var(--info)">Optimize Et</button>
         </div>
     </div>
+</div>
+
+<!-- ============ FILE SEARCH (FTS5 trigram) ============ -->
+<div class="page" id="page-search">
+    <div class="page-header">
+        <div><h2>Dosya Arama</h2><div class="desc">Yol / dosya adi / sahip icinde hizli alt-dize arama (FTS5 trigram)</div></div>
+    </div>
+    <div class="form-row" style="margin-bottom:16px">
+        <div class="form-group" style="flex:2">
+            <label>Arama (en az 3 karakter)</label>
+            <input id="file-search-q" placeholder="rapor, .xlsx, CORP\\ahmet, \\Finans\\ ..." onkeyup="if(event.key==='Enter')runFileSearch()">
+        </div>
+        <div class="form-group">
+            <label>Kaynak</label>
+            <select id="file-search-source"></select>
+        </div>
+        <div class="form-group" style="flex:0 0 auto;align-self:flex-end">
+            <button class="btn btn-primary" onclick="runFileSearch()">Ara</button>
+        </div>
+    </div>
+    <div id="file-search-meta" style="font-size:12px;color:var(--text-secondary);margin-bottom:8px"></div>
+    <div class="table-wrap"><table id="file-search-table"></table></div>
 </div>
 
 <!-- ============ TREEMAP ============ -->
@@ -2728,7 +2751,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, 'image-duplicates': loadImageDuplicates, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
+    const loaders = { overview: loadOverview, sources: loadSources, search: loadFileSearch, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, 'image-duplicates': loadImageDuplicates, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -9519,6 +9542,71 @@ function _fmtSize(bytes) {
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
     if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
     return (bytes / 1073741824).toFixed(1) + ' GB';
+}
+
+// ═══════════════════════════════════════════════════
+// FILE SEARCH (FTS5 trigram) — page-search
+//
+// Substring search over file_path / file_name / owner via the
+// /api/files/search endpoint (backed by scanned_files_fts). Renders into
+// #file-search-table exclusively through _setHtmlSafe (D-CHAIN / Rule 7).
+// ═══════════════════════════════════════════════════
+function loadFileSearch() {
+    // Reuse the standard source selector; an empty option = "all sources".
+    populateSourceSelect('file-search-source');
+    const sel = document.getElementById('file-search-source');
+    // Default to "all sources" so the box works before picking a source.
+    if (sel) sel.value = '';
+    _setHtmlSafe('file-search-table', '');
+    _setHtmlSafe('file-search-meta', 'Aramak icin en az 3 karakter girin ve Enter\'a basin.');
+}
+
+async function runFileSearch() {
+    const qEl = document.getElementById('file-search-q');
+    const srcEl = document.getElementById('file-search-source');
+    const q = qEl ? qEl.value.trim() : '';
+    const sourceId = srcEl ? srcEl.value : '';
+    if (q.length < 3) {
+        _setHtmlSafe('file-search-meta', 'En az 3 karakter gerekli (trigram arama).');
+        _setHtmlSafe('file-search-table', '');
+        return;
+    }
+    _setHtmlSafe('file-search-meta', 'Araniyor...');
+    let url = '/files/search?q=' + encodeURIComponent(q) + '&page_size=100';
+    if (sourceId) url += '&source_id=' + encodeURIComponent(sourceId);
+    let data;
+    try {
+        data = await api(url);
+    } catch (e) {
+        _setHtmlSafe('file-search-meta', 'Arama hatasi: ' + escapeHtml(e.message || String(e)));
+        _setHtmlSafe('file-search-table', '');
+        return;
+    }
+    const items = (data && data.items) || [];
+    const total = (data && data.total) || 0;
+    if (!items.length) {
+        _setHtmlSafe('file-search-meta', '"' + escapeHtml(q) + '" icin sonuc bulunamadi.');
+        _setHtmlSafe('file-search-table', '<div class="empty-state"><div class="icon">🔎</div><h3>Sonuc Yok</h3><p>Farkli bir terim deneyin. Tarama tamamlandiktan sonra arama indeksi guncellenir.</p></div>');
+        return;
+    }
+    const shown = items.length;
+    _setHtmlSafe('file-search-meta',
+        'Toplam ' + formatNum(total) + ' eslesme' +
+        (total > shown ? (' (ilk ' + shown + ' gosteriliyor)') : ''));
+    const rows = items.map(f => {
+        const folderAttr = escapeHtml(((f.directory || _extractFolder(f.file_path)) || '').replace(/\\/g, '\\\\\\\\'));
+        return '<tr>' +
+            '<td style="word-break:break-all">' + escapeHtml(f.file_name || '') + '</td>' +
+            '<td style="word-break:break-all;color:var(--text-secondary);font-size:12px">' + escapeHtml(f.file_path || '') + '</td>' +
+            '<td style="white-space:nowrap">' + escapeHtml(f.owner || 'Bilinmiyor') + '</td>' +
+            '<td style="white-space:nowrap;text-align:right">' + _fmtSize(f.file_size || 0) + '</td>' +
+            '<td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder(\'' + folderAttr + '\')">Konuma Git</button></td>' +
+            '</tr>';
+    }).join('');
+    const html =
+        '<thead><tr><th>Dosya Adi</th><th>Yol</th><th>Sahip</th><th style="text-align:right">Boyut</th><th></th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>';
+    _setHtmlSafe('file-search-table', html);
 }
 
 

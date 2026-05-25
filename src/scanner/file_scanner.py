@@ -1143,6 +1143,22 @@ class FileScanner:
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Cache pre-warm phase skipped (scan_id=%d): %s", scan_id, e)
 
+            # Rebuild the FTS5 trigram search index now that scanned_files
+            # is fully populated + size-enriched. Lives alongside the cache
+            # pre-warm for the same reason: do the one-shot index build
+            # inside the scan timeline (which the operator already accepts
+            # as "wait") so the search box is instant on first use. The
+            # scanner does NOT keep the index live via per-row triggers —
+            # that would tax every one of the millions of bulk inserts —
+            # so this rebuild is what makes a fresh scan searchable.
+            # Best-effort: rebuild_fts swallows + logs its own errors.
+            try:
+                self.db.rebuild_fts(scan_id)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "FTS rebuild skipped (scan_id=%d): %s", scan_id, e,
+                )
+
         # Issue #181 Track B1 — final flush at scan completion. Always
         # runs (even on failure / cancel) so the dashboard's last
         # snapshot reflects the actual end state and scan_state moves
