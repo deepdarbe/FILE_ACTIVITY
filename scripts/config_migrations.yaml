@@ -52,3 +52,15 @@ migrations:
     new_default: "watchdog"
     reason: "PR #14 — watchdog backend supersedes polling for local NTFS"
     pr: "#14"
+
+  # Operator decision 2026-05-24 — enable the orphaned-SID report by default.
+  # The fleet is domain-joined, so SIDs resolve via Windows LookupAccountSid
+  # (pywin32) WITHOUT the optional active_directory LDAP config; the report is
+  # read-only + cached, so default-on is low cost. The shipped config.yaml
+  # already ships ``true`` (so this is a no-op there) — the rule only flips
+  # preserved customer configs still carrying the old ``false``.
+  - path: "security.orphan_sid.enabled"
+    old_default: false
+    new_default: true
+    reason: "operator decision — orphaned-SID report on by default for domain-joined fleets (resolves via Windows LookupAccountSid; no LDAP config needed)"
+    pr: "#56"
