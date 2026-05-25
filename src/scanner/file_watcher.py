@@ -151,6 +151,20 @@ class FileWatcher:
     def _on_usn_event(self, event: dict) -> None:
         """Bridge USN reasons to existing _record_audit semantics."""
         reasons = set(event.get("reason") or [])
+        fname = event.get("file_name", "")
+
+        # -- Security-only signals ----------------------------------------
+        # ENCRYPTION_CHANGE / DATA_TRUNCATION are routed to the ransomware
+        # detector as DISTINCT event types so the in-place-encryption
+        # velocity rules (issue #33) can fire. These run independently of
+        # the single audit etype chosen below, because a USN record can
+        # carry an encryption flag alongside a data-overwrite flag, and
+        # the velocity counter must see every encryption / truncation event.
+        if "ENCRYPTION_CHANGE" in reasons:
+            self._feed_detector("encryption_change", fname)
+        if "DATA_TRUNCATION" in reasons:
+            self._feed_detector("data_truncation", fname)
+
         # Choose ONE event_type per record (ordered by priority)
         if "FILE_DELETE" in reasons:
             etype = "delete"
@@ -158,7 +172,8 @@ class FileWatcher:
             etype = "create"
         elif "RENAME_NEW_NAME" in reasons:
             etype = "rename"
-        elif reasons & {"DATA_OVERWRITE", "DATA_EXTEND", "DATA_TRUNCATION"}:
+        elif reasons & {"DATA_OVERWRITE", "DATA_EXTEND", "DATA_TRUNCATION",
+                        "ENCRYPTION_CHANGE"}:
             etype = "modify"
         else:
             # Skip BASIC_INFO_CHANGE / SECURITY_CHANGE / CLOSE noise
@@ -166,7 +181,6 @@ class FileWatcher:
         # USN gives us the file name, not full path. Best effort path is
         # the volume root + name; the watcher doesn't reconstruct full
         # parent path here (would require an MFT lookup).
-        fname = event.get("file_name", "")
         with self._stats_lock:
             if etype == "create":
                 self.stats["new_files"] += 1
@@ -180,6 +194,27 @@ class FileWatcher:
             self._record_audit(etype, fname, owner=None)
         except Exception as e:
             logger.debug("USN _on_usn_event audit hata: %s", e)
+
+    def _feed_detector(self, event_type: str, fname: str) -> None:
+        """Forward a USN-derived security signal to the ransomware detector.
+
+        Best-effort: a detector failure must never break USN tailing. This
+        does NOT write an audit row (the audit path is handled separately in
+        :meth:`_on_usn_event`); it only drives the velocity counters.
+        """
+        det = self.ransomware_detector
+        if det is None:
+            return
+        try:
+            det.consume_event({
+                "timestamp": datetime.now(),
+                "source_id": self.source_id,
+                "username": None,
+                "file_path": fname,
+                "event_type": event_type,
+            })
+        except Exception as e:
+            logger.debug("USN detector fan-out error (%s): %s", event_type, e)
 
     def get_status(self):
         with self._stats_lock:
