@@ -1232,6 +1232,42 @@ class Database:
             "ON image_hashes(dhash)"
         )
 
+        # ──────────────────────────────────────────────
+        # Embedded SEARCH (FTS5 + trigram) over scanned_files.
+        #
+        # Fast path/name/owner *substring* search across multi-million-row
+        # scans, in-process, with zero new infrastructure (SQLite ships
+        # with the FTS5 + trigram tokenizer in Python 3.11's bundled
+        # sqlite3). The trigram tokenizer is what makes ``LIKE '%foo%'``-
+        # style substring matching index-backed instead of a full table
+        # scan — a plain unicode61 tokenizer would only match whole tokens,
+        # not the "any 3+ char fragment of the path" the operator wants.
+        #
+        # External-content table (content='scanned_files',
+        # content_rowid='id'): the FTS index stores only the tokens, not a
+        # second copy of the text columns, so the on-disk cost is far
+        # smaller than a standalone contentless+stored table. ``scanned_files``
+        # has a stable INTEGER PRIMARY KEY (``id``) which is exactly what
+        # content_rowid needs.
+        #
+        # IMPORTANT — no per-row INSERT/UPDATE/DELETE sync triggers here
+        # (unlike ``archived_files_fts`` above). The scanner bulk-inserts
+        # millions of rows per scan; firing an FTS trigger per row would
+        # multiply the insert cost and re-introduce write-lock pressure the
+        # stabilization week worked to remove. Instead the index is
+        # (re)built in one shot at scan-complete via ``rebuild_fts()`` —
+        # see ``FileScanner._finalize`` cache pre-warm block.
+        cur.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS scanned_files_fts USING fts5(
+                file_path,
+                file_name,
+                owner,
+                content='scanned_files',
+                content_rowid='id',
+                tokenize='trigram'
+            )
+        """)
+
         conn.commit()
         cur.close()
         logger.info("Veritabani tablolari olusturuldu")
@@ -1884,6 +1920,125 @@ class Database:
             rows = cur.fetchall()
 
         return {"total": total, "page": page, "page_size": page_size, "results": rows}
+
+    # ──────────────────────────────────────────────
+    # Embedded SEARCH (FTS5 + trigram) over scanned_files
+    #
+    # See the ``scanned_files_fts`` CREATE in ``_create_tables`` for the
+    # design rationale (external-content trigram index, rebuilt in one
+    # shot at scan-complete rather than via per-row triggers).
+    # ──────────────────────────────────────────────
+
+    # Trigram tokenizer indexes overlapping 3-character windows, so any
+    # MATCH term must be at least 3 characters or FTS5 returns nothing.
+    # We surface that as an explicit, friendly empty result instead of a
+    # confusing "no rows" with a 1-2 char query.
+    _FTS_MIN_QUERY_LEN = 3
+
+    @staticmethod
+    def _fts_phrase(query: str) -> str:
+        """Wrap raw user input as a single FTS5 phrase token.
+
+        The whole query becomes one double-quoted phrase so path search
+        is *substring* search (trigram), not a boolean expression. Any
+        embedded double-quote is escaped by doubling it (FTS5 string
+        literal escaping), which also neutralises FTS5 operator syntax
+        (NEAR/AND/OR/``*``/``:``) that would otherwise let a query string
+        change the query semantics.
+        """
+        return '"' + query.replace('"', '""') + '"'
+
+    def rebuild_fts(self, scan_id: Optional[int] = None) -> None:
+        """(Re)build the ``scanned_files_fts`` trigram index in one shot.
+
+        Called at scan-complete (alongside the #232 cache pre-warm) so the
+        search box reflects the freshly-scanned data without paying a
+        per-row trigger cost during the bulk insert.
+
+        ``scan_id`` is accepted for call-site symmetry and logging, but an
+        external-content FTS5 index can only be rebuilt *wholesale* from
+        its content table — there is no per-partition rebuild. That is the
+        correct behaviour here: the index mirrors all of ``scanned_files``,
+        and retention pruning keeps that to the last N scans, so a full
+        rebuild stays cheap relative to the scan that just ran. Idempotent
+        and best-effort: a failure is logged, never raised, so it can
+        never block a scan from completing.
+        """
+        try:
+            with self.get_cursor() as cur:
+                t0 = time.time()
+                # 'rebuild' wipes and repopulates the index from the
+                # external content table. The CREATE in _create_tables is
+                # IF NOT EXISTS, so this is safe on a fresh or existing DB.
+                cur.execute(
+                    "INSERT INTO scanned_files_fts(scanned_files_fts) "
+                    "VALUES('rebuild')"
+                )
+                logger.info(
+                    "FTS5 search index rebuilt (scan_id=%s, %.1f sn)",
+                    scan_id, time.time() - t0,
+                )
+        except sqlite3.DatabaseError as e:  # pragma: no cover - defensive
+            logger.warning(
+                "FTS5 rebuild_fts basarisiz (kritik degil, scan_id=%s): %s",
+                scan_id, e,
+            )
+
+    def search_files(self, query: str, scan_id: Optional[int] = None,
+                     limit: int = 100, offset: int = 0) -> dict:
+        """Substring search over file_path / file_name / owner via FTS5.
+
+        Returns ``{"total": int, "files": [<scanned_files row dict>, ...],
+        "query": str}``. ``total`` is the full match count (for pagination);
+        ``files`` is the ``limit``/``offset`` page, ordered by file_size
+        DESC so the biggest hits surface first (mirrors the drilldown
+        endpoints).
+
+        A query shorter than the trigram minimum (3 chars) returns an empty
+        result rather than scanning — trigram MATCH can't satisfy it anyway.
+        Reads run on the read-only connection pool so this never contends
+        with a running scan's writer lock (issue #132 contract).
+        """
+        q = (query or "").strip()
+        if len(q) < self._FTS_MIN_QUERY_LEN:
+            return {"total": 0, "files": [], "query": q}
+
+        phrase = self._fts_phrase(q)
+        limit = max(1, min(int(limit), 500))
+        offset = max(0, int(offset))
+
+        where = "scanned_files_fts MATCH ?"
+        count_params: list = [phrase]
+        page_params: list = [phrase]
+        if scan_id is not None:
+            where += " AND sf.scan_id = ?"
+            count_params.append(scan_id)
+            page_params.append(scan_id)
+
+        # get_read_cursor: short-lived read-only connection — independent
+        # of the scanner's writer pool, never blocks WAL checkpoint.
+        with self.get_read_cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt "
+                "FROM scanned_files_fts f "
+                "JOIN scanned_files sf ON sf.id = f.rowid "
+                f"WHERE {where}",  # noqa: S608 - where is built from literals only
+                count_params,
+            )
+            row = cur.fetchone()
+            total = (row["cnt"] if row else 0) or 0
+
+            cur.execute(
+                "SELECT sf.* "
+                "FROM scanned_files_fts f "
+                "JOIN scanned_files sf ON sf.id = f.rowid "
+                f"WHERE {where} "  # noqa: S608 - where is built from literals only
+                "ORDER BY sf.file_size DESC "
+                "LIMIT ? OFFSET ?",
+                page_params + [limit, offset],
+            )
+            files = [dict(r) for r in cur.fetchall()]
+        return {"total": total, "files": files, "query": q}
 
     def get_archive_stats(self) -> dict:
         """Arsiv genel istatistikleri."""
