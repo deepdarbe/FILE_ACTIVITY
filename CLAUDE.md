@@ -57,9 +57,9 @@ history). Current state:
 - **master = `09c668c`**. Per-PR CI: 7/8 green; the only red is
   `Pytest (Linux, Docker)` — the documented non-blocking flake (dies in ~20s
   during docker build, `continue-on-error: true`). Do NOT chase it.
-- **No open PRs from this session's *merged* work.** 2 NEW subagent PRs are
-  IN FLIGHT (below). #203 still open (do NOT merge as-is — D2 DuckDB removal
-  conflicts with keep-DuckDB).
+- **All this session's PRs are merged** (#241–#246, #252, #253 — below).
+  Only #203 stays open (do NOT merge as-is — D2 DuckDB removal conflicts
+  with keep-DuckDB).
 
 ### What shipped THIS session (#241–#243)
 - **#241** — AI Insights **"İncele"** rerouted to the #222 Excel drilldown
@@ -77,14 +77,17 @@ history). Current state:
   rule (false→true). update.cmd flips preserved configs; no-op vs shipped
   config. Domain-joined → SIDs resolve via pywin32 LookupAccountSid, no LDAP.
 
-### IN FLIGHT — 2 subagent PRs (check open PRs + CI on resume)
-- **SQLite FTS5 search** (`claude/fts5-search`) — trigram FTS over
-  file_path/name/owner + dashboard search endpoint + box. Zero new dep.
-- **USN detection signals** (`claude/usn-detection`) — blocking USN read +
-  ENCRYPTION_CHANGE/DATA_TRUNCATION burst signals into ransomware_detector
-  (activates the empty Anomaly page). Zero new dep.
-- **Trust-but-verify:** review each diff + CI before merging (built by
-  subagents, not main-thread-tested).
+### Also merged THIS session (#245 #246 #252 #253)
+- **#252** — **#8/#9 fix**: duplicate/owner report reads moved to
+  `get_read_cursor` (no writer-lock contention → no mid-scan 500) +
+  `loadDuplicates`/`loadNaming` surface errors instead of an infinite spinner.
+- **#253** — **#1 owner fix**: SizeEnricher resolves owner (LookupAccountSid)
+  in the post-walk pass when `read_owner` is on, so MFT path-only scans stop
+  showing "(Bilinmiyor)". Windows-only resolution; verify on the box.
+- **#245** — **SQLite FTS5** trigram file search (new "Dosya Arama" page +
+  `/api/files/search`, index rebuilt at scan-complete; zero new dep).
+- **#246** — **USN signals**: low-latency blocking read + encryption/
+  truncation burst rules (activates the Anomaly page when the watcher runs).
 
 ### What shipped this wave (the 22 PRs)
 - **Perf / caching**: #224 (mit_naming), #227 (report_full + report_status),
@@ -112,26 +115,26 @@ history). Current state:
   and elasticsearch 9 — both sub-agent-audited as SAFE before merge.
 
 ### What's PENDING (pick up here)
-1. **#8/#9 — THE remaining real customer bug.** "Kopya Dosyalar" + "Adlandırma
-   Uyumu" pages stick on "yükleniyor", no data. Root cause found:
-   `loadDuplicates` / `loadNaming` (index.html) **swallow errors**
-   (`catch{ console.error }`) → permanent spinner; backend is either just SLOW
-   (cold compute on 2.89M rows) or ERRORING on the real DB. BLOCKED on the
-   customer's diagnostic (rescan-test / `file_activity.log` tail / F12-Network
-   status). Fix = (a) surface errors in those loaders, (b) fix the real backend
-   cause — likely the Parquet-export approach in item 2.
+1. **#8/#9 + #1 — CODE-FIXED this session (#252/#253); verify on the box.**
+   Stuck Kopya/Adlandırma: reads are now lock-resilient + errors surface
+   (#252). Root lock source is `scanner.parquet_staging` (DuckDB ingest
+   contention, #174) confirmed in the customer log — **operator must set it
+   `false`** (the #243-style migration didn't reach this box: the key is
+   absent / non-canonical, so a **durable `migrate_config` missing-key set**
+   is the remaining TODO). Owner "(Bilinmiyor)" fixed by #253 — needs a
+   Windows rescan with `read_owner: true`.
 2. **Advanced-tech research roadmap (this session — ADOPT/PILOT/SKIP):**
    - **Analytics@scale (→#8/#9):** ADOPT **Parquet export (pyarrow) at
      scan-complete + DuckDB/Polars query the Parquet** (cold GROUP BY ~30s→<1s,
      **WAL-safe**). ❌ **REJECT "persistent DuckDB ATTACH"** — it IS the
      4×-fixed WAL-leak anti-pattern (pinned by `test_analytics_per_query.py`).
      chDB=SKIP (no Windows wheel).
-   - **Windows monitoring (→#2):** USN signals (in flight). PILOT ETW FileIO
-     via raw ctypes; WATCH FSRM (Server-SKU only); SKIP MiniFilter (kernel sign).
-   - **Near-dup:** ADOPT MinHash+LSH (`datasketch`) + PDQ (`pdqhash`).
-   - **Search:** ADOPT SQLite FTS5 (in flight); Tantivy=PILOT; DuckDB-FTS=WATCH.
-   - **PR order:** FTS5 (in flight) → USN (in flight) → Parquet-reports (after
-     the #8/#9 diagnostic) → MinHash+PDQ.
+   - **Windows monitoring (→#2):** USN signals ✓ shipped (#246). PILOT ETW
+     FileIO via raw ctypes; WATCH FSRM (Server-SKU only); SKIP MiniFilter.
+   - **Near-dup:** ADOPT MinHash+LSH (`datasketch`) + PDQ (`pdqhash`) — NEXT.
+   - **Search:** SQLite FTS5 ✓ shipped (#245); Tantivy=PILOT; DuckDB-FTS=WATCH.
+   - **PR order:** FTS5 ✓ #245 → USN ✓ #246 → Parquet-reports (optional now
+     that #252 made reads lock-resilient) → MinHash+PDQ (remaining ADOPTs).
 3. **Customer activation guide** given for config-gated features (PII /
    wrong-ext+`python-magic-bin` / image-hash / AD) = their config.yaml +
    `pip install -r requirements-accel.txt` + rescan. **puremagic REJECTED for
