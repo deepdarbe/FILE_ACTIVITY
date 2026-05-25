@@ -349,6 +349,24 @@ def test_shipped_rules_file_parses():
         assert "." in r["path"], f"rule path must be dotted: {r['path']!r}"
 
 
+def test_orphan_sid_rule_flips_preserved_false(tmp_path):
+    """2026-05-24 operator rule: a preserved config with the orphaned-SID
+    report disabled is flipped on (domain-joined fleets), siblings intact."""
+    cfg = _write(tmp_path / "config.yaml", """\
+security:
+  orphan_sid:
+    enabled: false
+    cache_ttl_minutes: 1440
+""")
+    rules = migrate_config.load_rules()
+    results = migrate_config.migrate(cfg, rules)
+    by_path = {r.path: r for r in results}
+    assert by_path["security.orphan_sid.enabled"].action == "applied"
+    parsed = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    assert parsed["security"]["orphan_sid"]["enabled"] is True
+    assert parsed["security"]["orphan_sid"]["cache_ttl_minutes"] == 1440
+
+
 def test_shipped_rules_applied_against_shipped_config_is_noop(tmp_path):
     """The shipped config.yaml is the post-migration state by definition.
     Running the migrator against a copy of the shipped config must
