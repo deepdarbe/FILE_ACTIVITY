@@ -3321,6 +3321,93 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             g["waste_size_formatted"] = format_size(g.get("waste_size", 0))
         return result
 
+    # --- TEXT NEAR-DUPLICATES (MinHash+LSH, roadmap ADOPT) ---
+    # Similar-but-not-identical documents the exact content-hash pass misses.
+    # Opt-in + on-demand (reading content is expensive); never auto-runs.
+
+    @app.get("/api/duplicates/text-near/status")
+    def text_near_dup_status():
+        """Rule 8: surface the config gate + optional-dep availability."""
+        from src.analyzer.text_minhash import TextNearDuplicateEngine
+        engine = TextNearDuplicateEngine(db, config)
+        return {
+            "enabled": engine.enabled,
+            "available": engine.available,
+            "config_key": "text_near_duplicates.enabled",
+            "dep": "datasketch",
+            "threshold": engine.threshold,
+            "shingle_size": engine.shingle_size,
+            "num_perm": engine.num_perm,
+            "min_bytes": engine.min_bytes,
+            "max_bytes": engine.max_bytes,
+        }
+
+    @app.post("/api/duplicates/text-near/{source_id}/compute")
+    def text_near_dup_compute(
+        source_id: int,
+        threshold: Optional[float] = None,
+        max_files: Optional[int] = None,
+    ):
+        """Run MinHash+LSH near-dup detection for the latest scan and persist.
+
+        Returns a summary (zeroed when datasketch is absent). Plain ``def`` so
+        the (blocking, I/O-heavy) run is dispatched to the thread pool.
+        """
+        from src.analyzer.text_minhash import TextNearDuplicateEngine
+        from src.utils.size_formatter import format_size
+
+        _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            raise HTTPException(404, "Tamamlanmis scan yok")
+
+        engine = TextNearDuplicateEngine(db, config)
+        if not engine.available:
+            return {
+                "available": False,
+                "reason": "datasketch_not_installed",
+                "scan_id": scan_id,
+                "groups": 0,
+            }
+        stats = engine.compute(scan_id, threshold=threshold, max_files=max_files)
+        stats["scan_id"] = scan_id
+        stats["waste_size_formatted"] = format_size(stats.get("waste_size", 0))
+        return stats
+
+    @app.get("/api/duplicates/text-near/{source_id}")
+    def text_near_dup_report(
+        source_id: int,
+        page: int = Query(1, ge=1, le=10000),
+        page_size: int = Query(50, ge=1, le=500),
+    ):
+        """Read cached text near-dup groups (waste_size DESC). No compute."""
+        from src.analyzer.text_minhash import TextNearDuplicateEngine
+        from src.utils.size_formatter import format_size
+
+        _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(source_id, include_running=False)
+        if not scan_id:
+            return {
+                "has_data": False,
+                "reason": "no_completed_scan",
+                "scan_id": None,
+                "total_groups": 0,
+                "groups": [],
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 1,
+            }
+
+        engine = TextNearDuplicateEngine(db, config)
+        result = engine.get_report(scan_id, page=page, page_size=page_size)
+        result["has_data"] = True
+        result["total_waste_size_formatted"] = format_size(
+            result.get("total_waste_size", 0))
+        for g in result.get("groups", []):
+            g["total_size_formatted"] = format_size(g.get("total_size", 0))
+            g["waste_size_formatted"] = format_size(g.get("waste_size", 0))
+        return result
+
     # --- DUPLICATE QUARANTINE (issue #83 Phase 1) ---
     # Quarantine-only delete. Files MOVE to data/quarantine/<YYYYMMDD>/<hash>/,
     # they are NEVER os.remove()'d. Hard delete + auto-cleanup are Phase 2.
