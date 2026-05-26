@@ -787,7 +787,9 @@ body.sidebar-open { overflow: hidden; }
             <button class="btn btn-outline" onclick="loadDbStats()" style="font-size:12px">Istatistikler</button>
             <button class="btn btn-outline" onclick="cleanupOldScans()" style="font-size:12px;border-color:var(--warning);color:var(--warning)">Eski Taramalari Temizle</button>
             <button class="btn btn-outline" onclick="optimizeDb()" style="font-size:12px;border-color:var(--info);color:var(--info)">Optimize Et</button>
+            <button class="btn btn-outline" onclick="downloadDiagBundle(this)" style="font-size:12px;border-color:var(--accent);color:var(--accent)" title="Surum, ortam, config, log ve DB sagligini tek zip'te toplar — destek icin paylasin">Tanilama Paketi</button>
         </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--text-muted)">Tanilama paketi: surum + ortam (domain durumu) + maskelenmis config + son log + tarama/sahip durumu. Sirlar maskelenir; sahip adlari/UNC yollari icin <code>fa.cmd diag --no-redact</code>.</div>
     </div>
 </div>
 
@@ -5735,6 +5737,15 @@ async function exportNamingReport(event) {
             signal,
             `naming-${sourceId}.xlsx`
         );
+    });
+}
+
+async function downloadDiagBundle(btn) {
+    // Tanilama paketi (zip) indir. fetchAndDownload auth/cookie davranisini
+    // export ile ayni sekilde ele alir; isim Content-Disposition'dan gelir.
+    await withButtonLoading(btn, async (signal) => {
+        const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '');
+        await fetchAndDownload(`${API}/system/diag-bundle`, signal, `diag-${ts}.zip`);
     });
 }
 

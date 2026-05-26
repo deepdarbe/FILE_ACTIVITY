@@ -486,6 +486,9 @@ telemetry:
     repo: "deepdarbe/file_activity"
     # Name of the env var that holds a fine-scoped GitHub PAT with
     # ``issues: write``. Never put the token itself in this file.
+    # The same repo + token also power ``fa.cmd diag --upload`` (open a
+    # diagnostics issue). The dashboard "Tanilama Paketi" download button
+    # and plain ``fa.cmd diag`` need NO token — they just write a local zip.
     token_env: "FILEACTIVITY_TELEMETRY_TOKEN"
     label: "auto-report"
   rate_limit:

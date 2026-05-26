@@ -4254,6 +4254,34 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     # --- SYSTEM API ---
 
+    @app.get("/api/system/diag-bundle")
+    def system_diag_bundle(lines: int = 200):
+        """Tanilama paketini (zip) indir: surum, ortam, config, log, DB sagligi.
+
+        Read-only: ``collect`` touches the DB only through ``get_read_cursor``
+        (Rule 6). Plain ``def`` so Starlette runs the blocking IO on the
+        thread pool (Rule 5). Secrets are always redacted and owner names /
+        UNC paths are omitted here — use ``fa.cmd diag --no-redact`` on the
+        box if those are needed.
+        """
+        from datetime import datetime
+        import io
+        from fastapi.responses import StreamingResponse
+        from scripts.collect_diag import (
+            build_bundle_bytes, collect, render_markdown,
+        )
+
+        diag_data = collect(db, config, log_lines=max(1, min(lines, 2000)),
+                            redact=True)
+        markdown = render_markdown(diag_data)
+        payload = build_bundle_bytes(diag_data, markdown)
+        filename = f"diag-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        return StreamingResponse(
+            io.BytesIO(payload),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
     @app.post("/api/system/open-folder")
     async def open_folder(request: Request):
         """Dizini Windows Explorer'da ac (yalnizca yerel istemci icin)."""
