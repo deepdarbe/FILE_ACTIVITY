@@ -1882,6 +1882,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         min_bytes: int = 0,
         max_bytes: Optional[int] = None,
         owner: str = "",
+        format: str = "xlsx",
     ):
         """XLSX export of a drilldown filter result.
 
@@ -1916,27 +1917,27 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not scan_id:
             raise HTTPException(404, "Tarama verisi bulunamadi")
 
-        MAX_ROWS = 100_000
-
+        # Resolve the filter-specific runner + positional args once, so the
+        # XLSX (capped) and CSV (uncapped stream) paths share one lookup.
         if filter_type == "frequency":
             run = _run_drilldown(analytics.get_files_by_frequency,
                                  db.get_files_by_frequency)
-            result = run(src.id, scan_id, min_days, max_days, MAX_ROWS, 0)
+            f_args = (min_days, max_days)
             sheet_title = f"freq_{min_days}-{max_days or 'inf'}"
         elif filter_type == "type":
             run = _run_drilldown(analytics.get_files_by_extension,
                                  db.get_files_by_extension)
-            result = run(src.id, scan_id, extension, MAX_ROWS, 0)
+            f_args = (extension,)
             sheet_title = f"type_{extension}" if extension else "type_all"
         elif filter_type == "size":
             run = _run_drilldown(analytics.get_files_by_size_range,
                                  db.get_files_by_size_range)
-            result = run(src.id, scan_id, min_bytes, max_bytes, MAX_ROWS, 0)
+            f_args = (min_bytes, max_bytes)
             sheet_title = f"size_{min_bytes}-{max_bytes or 'inf'}"
         elif filter_type == "owner":
             run = _run_drilldown(analytics.get_files_by_owner,
                                  db.get_files_by_owner)
-            result = run(src.id, scan_id, owner, MAX_ROWS, 0)
+            f_args = (owner,)
             sheet_title = (f"owner_{owner}" if owner else "owner_all")[:31]
         else:
             raise HTTPException(
@@ -1945,6 +1946,58 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 "Gecerli: frequency, type, size, owner",
             )
 
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # CSV (issue #122 / #225 R-2): stream EVERY matching row, no 100k cap.
+        # Pages through the same tested runner so there is no per-filter SQL to
+        # keep in sync; only one page is held in memory at a time.
+        if (format or "").lower() == "csv":
+            from src.utils.xlsx_writer import stream_csv
+            columns = [
+                {"key": "file_path", "header": "file_path", "width": 60},
+                {"key": "file_name", "header": "file_name", "width": 30},
+                {"key": "owner", "header": "owner", "width": 24},
+                {"key": "file_size", "header": "file_size", "width": 14},
+                {"key": "last_modify_time", "header": "last_modify_time", "width": 22},
+                {"key": "last_access_time", "header": "last_access_time", "width": 22},
+            ]
+
+            def _all_rows():
+                PAGE = 100_000
+                offset = 0
+                while True:
+                    res = run(src.id, scan_id, *f_args, PAGE, offset)
+                    chunk = res.get("files", []) or []
+                    if not chunk:
+                        break
+                    for f in chunk:
+                        yield {
+                            "file_path": f.get("file_path", "") or "",
+                            "file_name": f.get("file_name", "") or "",
+                            "owner": f.get("owner", "") or "",
+                            "file_size": f.get("file_size", 0) or 0,
+                            "last_modify_time": f.get("last_modify_time", "") or "",
+                            "last_access_time": f.get("last_access_time", "") or "",
+                        }
+                    if len(chunk) < PAGE:
+                        break
+                    offset += PAGE
+
+            filename_csv = f"drilldown_{filter_type}_{src.name}_{ts}.csv"
+            return StreamingResponse(
+                stream_csv(_all_rows(), columns),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename_csv}"',
+                    "X-Format-Fallback": "csv",
+                },
+            )
+
+        # XLSX (default) — Excel-friendly, capped at 100k. Larger result sets
+        # use the CSV button; the cap is intentional because openpyxl
+        # materialises the whole workbook in memory.
+        MAX_ROWS = 100_000
+        result = run(src.id, scan_id, *f_args, MAX_ROWS, 0)
         files = result.get("files", []) or []
 
         try:
@@ -1956,7 +2009,6 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             logger.error("drilldown XLSX export error: %s", e)
             raise HTTPException(500, str(e))
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"drilldown_{filter_type}_{src.name}_{ts}.xlsx"
         return StreamingResponse(
             BytesIO(data),
@@ -2077,18 +2129,22 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         else:
             # Fallback to file ownership from scanned_files
             owners = []
+            used_source_id = source_id
             if source_id:
                 owners = db.get_file_owners_stats(source_id)
             else:
-                # Try all sources
+                # Try all sources; remember which one actually had a scan so
+                # the frontend drill-down targets the right source (#KullaniciAktivite).
                 sources = db.get_sources()
                 for s in sources:
                     sid = db.get_latest_scan_id(s.id)
                     if sid:
                         owners = db.get_file_owners_stats(s.id, sid)
+                        used_source_id = s.id
                         break
             return {
                 "source": "file_ownership",
+                "source_id": used_source_id,
                 "owners": owners,
                 "top_users": [],
                 "department_stats": [],
