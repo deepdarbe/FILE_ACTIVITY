@@ -324,7 +324,12 @@ Closed-this-wave issues whose context might still be referenced: #14, #20, #80, 
 
 ## Hard rules
 
-- **NEVER force-push master.** PR-and-squash only.
+- **NEVER force-push master.** PR-and-**squash**-merge only — never a plain merge
+  commit, for every PR (operator preference, confirmed 2026-05-26). Squash keeps
+  master a clean linear history (one commit per PR) and avoids re-introducing
+  already-squashed branch commits into the graph. **Whenever a merge decision
+  comes up, proactively tell the operator which method is correct and why before
+  merging** — don't make them ask.
 - **NEVER skip git hooks** (`--no-verify`) without explicit user permission.
 - **NEVER mass-overwrite the customer's `config.yaml`.** `setup-source.ps1` preserves user
   config on update. New config keys default to safe values in code; document in `config.yaml`
