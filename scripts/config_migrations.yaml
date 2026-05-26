@@ -21,9 +21,18 @@ migrations:
   # against the writer pool on multi-million-row scans. Customer's WAL
   # leaked to 13+ GB and the scan kept hitting "database is locked".
   # New default is the executemany path which uses busy_timeout + retry.
+  #
+  # set_if_missing: the CODE-side default (src/storage/staging.py:
+  # ``bool(ps_cfg.get("enabled", True))``) is True, so a preserved config
+  # that never carried this key runs the unsafe path silently — and a
+  # plain flip rule no-ops on an absent key. set_if_missing INSERTS
+  # ``enabled: false`` so update.cmd reaches boxes whose config predates
+  # the key (the #8/#9 customer: dashboard reports stuck because the live
+  # parquet ingest locked the DB during a scan).
   - path: "scanner.parquet_staging.enabled"
     old_default: true
     new_default: false
+    set_if_missing: true
     reason: "PR #174 — parquet_staging caused WAL contention + 'database is locked' on multi-million-row scans"
     pr: "#174"
 
@@ -64,3 +73,23 @@ migrations:
     new_default: true
     reason: "operator decision — orphaned-SID report on by default for domain-joined fleets (resolves via Windows LookupAccountSid; no LDAP config needed)"
     pr: "#56"
+
+  # Issue #1 — owner shows "(Bilinmiyor)" on MFT scans. The MFT backend
+  # is path-only; owner is resolved in the post-walk size-enrich pass
+  # (#253) ONLY when scanner.read_owner is on. The code-side default is
+  # False (src/scanner/size_enricher.py, src/utils/config_loader.py) while
+  # the shipped config.yaml carries ``true`` — so a PRESERVED config that
+  # never had the key collects no owners on a rescan, and the dashboard
+  # stays "(Bilinmiyor)" forever. This is a PURE insert-when-absent rule:
+  # old_default == new_default == true, so a present value is never
+  # rewritten — an operator who explicitly set ``read_owner: false`` keeps
+  # it off (current != old_default -> skipped), and a present ``true`` is a
+  # no-op (current == new_default -> skipped). Only an ABSENT key triggers
+  # the insert. NOTE: this just ENABLES collection; owners still populate
+  # only after a completed rescan.
+  - path: "scanner.read_owner"
+    old_default: true
+    new_default: true
+    set_if_missing: true
+    reason: "issue #1 — ensure owner collection is on so MFT rescans stop showing (Bilinmiyor); preserved configs missing the key fall back to code-default False"
+    pr: "#1"
