@@ -4445,19 +4445,25 @@ async function loadUsers() {
             // Heatmap: empty
             _setHtmlSafe('users-heatmap', '<div style="padding:20px;color:var(--text-muted);font-size:12px">Event log verisi yok - heatmap kullanilamiyor</div>');
 
-            // Owner table with drill-down + archive button
+            // Owner table with drill-down + archive button. defaultSid prefers
+            // the source the backend actually aggregated owners from, so the
+            // drill-down hits the right scan even with multiple sources.
             const srcSelect = document.getElementById('freq-source') || document.getElementById('types-source') || document.getElementById('overview-source');
-            const defaultSid = srcSelect ? srcSelect.value : (sources.length ? sources[0].id : '');
+            const defaultSid = data.source_id || (srcSelect && srcSelect.value) || (sources.length ? sources[0].id : '');
             _setHtmlSafe('users-table', `
                 <thead><tr><th>Sahip</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Yuzde</th><th>Islem</th></tr></thead>
                 <tbody>${owners.length ? owners.map(o => {
                     const pct = totalSize > 0 ? ((o.total_size||0)/totalSize*100).toFixed(1) : '0';
-                    const ownerEsc = escapeHtml(o.owner || '');
-                    return `<tr class="clickable-row" onclick="drilldownOwner('${ownerEsc}', '${defaultSid}')">
+                    // owner is "DOMAIN\\user"; a raw backslash in a single-quoted
+                    // onclick JS string is swallowed (\\g -> g) so the lookup misses
+                    // and the file list comes back empty. Escape backslash + quote.
+                    const ownerJs = (o.owner || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                    const sid = parseInt(defaultSid) || 0;
+                    return `<tr class="clickable-row" onclick="drilldownOwner('${ownerJs}', '${defaultSid}')">
                         <td><strong>${escapeHtml(o.owner || 'Bilinmiyor')}</strong></td>
                         <td>${formatNum(o.file_count)}</td><td>${formatSize(o.total_size)}</td>
                         <td><div style="display:flex;align-items:center;gap:8px"><div style="flex:1;background:var(--bg-primary);border-radius:3px;height:6px;overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--accent);border-radius:3px"></div></div><span style="font-size:11px">${pct}%</span></div></td>
-                        <td style="display:flex;gap:4px"><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();drilldownOwner('${ownerEsc}', '${defaultSid}')">Dosyalar</button><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();showDrilldown('Arsivle: ${ownerEsc}', '/drilldown/owner/${defaultSid}?owner=${encodeURIComponent(o.owner||'')}', {source_id:${parseInt(defaultSid)||0}, filter_type:'owner', owner:'${ownerEsc}'})">Arsivle</button></td>
+                        <td style="display:flex;gap:4px"><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();drilldownOwner('${ownerJs}', '${defaultSid}')">Dosyalar</button><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();showDrilldown('Arsivle: ${ownerJs}', '/drilldown/owner/${defaultSid}?owner=${encodeURIComponent(o.owner||'')}', {source_id:${sid}, filter_type:'owner', owner:'${ownerJs}'})">Arsivle</button></td>
                     </tr>`;
                 }).join('') : '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Sahiplik verisi bulunamadi. config.yaml dosyasinda read_owner: true yapin.</td></tr>'}</tbody>
             `);
@@ -5218,6 +5224,25 @@ async function downloadDrilldownXLS(event) {
     await withButtonLoading(btn, async (signal) => {
         await fetchAndDownload(exportUrl, signal, 'drilldown.xlsx');
     });
+}
+
+async function downloadDrilldownCSV(event) {
+    // Same drilldown filter as XLS, but ?format=csv streams every matching row
+    // (no 100k Excel cap) — for owners/types/sizes with millions of files.
+    if (!ddCurrentUrl || !ddCurrentUrl.startsWith('/drilldown/')) {
+        notify('Drilldown URL bulunamadi', 'warning');
+        return;
+    }
+    const qIdx = ddCurrentUrl.indexOf('?');
+    const pathPart = qIdx >= 0 ? ddCurrentUrl.slice(0, qIdx) : ddCurrentUrl;
+    const queryPart = qIdx >= 0 ? ddCurrentUrl.slice(qIdx) : '';
+    const sep = queryPart ? '&' : '?';
+    const exportUrl = '/api' + pathPart + '/export.xlsx' + queryPart + sep + 'format=csv';
+    const btn = event?.currentTarget;
+    // Big exports can take minutes to stream; allow up to 10 min before abort.
+    await withButtonLoading(btn, async (signal) => {
+        await fetchAndDownload(exportUrl, signal, 'drilldown.csv');
+    }, 600000);
 }
 
 function drilldownOwner(owner, sourceId) {
@@ -9633,7 +9658,8 @@ async function runFileSearch() {
                     <button data-view="table" class="active" onclick="setDrilldownView('table')">Tablo</button>
                     <button data-view="card" onclick="setDrilldownView('card')">Kart</button>
                 </div>
-                <button class="btn-export" onclick="downloadDrilldownXLS(event)">XLS Indir</button>
+                <button class="btn-export" onclick="downloadDrilldownXLS(event)" title="Excel (en fazla 100.000 satir)">XLS Indir</button>
+                <button class="btn-export" onclick="downloadDrilldownCSV(event)" title="CSV - tum satirlar, 100.000 siniri yok (buyuk listeler icin)">CSV Indir</button>
                 <button id="dd-archive-btn" class="btn btn-sm btn-danger" onclick="archiveDrilldown()" style="display:none">Grubu Arsivle</button>
                 <button class="btn btn-sm btn-outline" onclick="closeDrilldown()">Kapat</button>
             </div>
