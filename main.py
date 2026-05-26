@@ -103,8 +103,10 @@ def cli(ctx, config):
     # Check which command is being invoked
     invoked = ctx.invoked_subcommand
 
-    # 'check' and 'version' commands don't need DB
-    no_db_commands = ["check", "version"]
+    # 'check' / 'version' need no DB; 'diag' uses only the read-only pool
+    # (get_read_cursor opens its own ro connection), so it must run even when
+    # the writer cannot connect — that is exactly when diagnostics matter.
+    no_db_commands = ["check", "version", "diag"]
 
     if invoked in no_db_commands:
         # Don't connect to DB for these commands
@@ -198,6 +200,58 @@ def version():
     # drifted years past the actual release tag (#194 config audit).
     click.echo(f"FILE ACTIVITY v{_read_version_string()}")
     click.echo("Windows File Share Analysis & Archiving System")
+
+
+# -----------------------------------------------
+# DIAG KOMUTU - tanilama paketi
+# -----------------------------------------------
+
+@cli.command("diag")
+@click.option("--out", default=None,
+              help="Cikti klasoru (varsayilan: <data>/diagnostics)")
+@click.option("--lines", default=200, help="Log kuyrugu satir sayisi")
+@click.option("--no-redact", "no_redact", is_flag=True,
+              help="Ornek sahip adlari / UNC yollarini dahil et")
+@click.option("--upload", is_flag=True, help="GitHub issue olarak da gonder")
+@click.option("--repo", default=None,
+              help="owner/name (varsayilan: telemetry.github.repo)")
+@click.option("--token", default=None,
+              help="GitHub token (varsayilan: $FILEACTIVITY_TELEMETRY_TOKEN)")
+@click.pass_context
+def diag(ctx, out, lines, no_redact, upload, repo, token):
+    """Tanilama paketi olustur: surum, ortam, config, log, DB sagligi."""
+    import os as _os
+    from scripts.collect_diag import (
+        _scrub_paths, build_bundle, collect, render_markdown,
+        resolve_github, upload_to_github,
+    )
+
+    app = ctx.obj
+    diag_data = collect(app.db, app.config, log_lines=lines, redact=not no_redact)
+    markdown = render_markdown(diag_data)
+
+    db_conf = app.config.get("database", {}) or {}
+    data_dir = _os.path.dirname(
+        _os.path.abspath(db_conf.get("path", "data/file_activity.db"))
+    )
+    out_dir = out or _os.path.join(data_dir, "diagnostics")
+    bundle = build_bundle(diag_data, markdown, out_dir)
+    click.echo(f"[OK] Tanilama paketi: {bundle}")
+
+    if upload:
+        gh_repo, gh_token, label, scrub = resolve_github(app.config, repo, token)
+        if not gh_repo or not gh_token:
+            click.echo("[UYARI] --upload atlandi: telemetry.github.repo + "
+                       "$FILEACTIVITY_TELEMETRY_TOKEN (veya --repo/--token) gerekli",
+                       err=True)
+            return
+        body = _scrub_paths(markdown) if scrub else markdown
+        try:
+            url = upload_to_github(body, gh_repo, gh_token, label=label)
+            click.echo(f"[OK] GitHub issue: {url}")
+        except Exception as exc:  # noqa: BLE001 - report, don't crash the CLI
+            click.echo(f"[HATA] GitHub yukleme basarisiz: {exc}", err=True)
+            ctx.exit(1)
 
 
 # -----------------------------------------------
