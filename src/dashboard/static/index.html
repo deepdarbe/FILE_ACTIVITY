@@ -668,6 +668,7 @@ body.sidebar-open { overflow: hidden; }
         <div class="nav-item" onclick="showPage('chargeback')" title="Chargeback / Cost Center"><span class="icon">💵</span> <span>Chargeback / Cost Center</span></div>
         <div class="nav-item" onclick="showPage('forecast')" title="Kapasite Tahmini"><span class="icon">🔮</span> <span>Kapasite Tahmini</span></div>
         <div class="nav-item" onclick="showPage('image-duplicates')" title="Gorsel Duplikasyonlar"><span class="icon">🖼️</span> <span>Gorsel Duplikasyonlar</span></div>
+        <div class="nav-item" onclick="showPage('text-neardup')" title="Benzer Metin (Near-Dup)"><span class="icon">📝</span> <span>Benzer Metin</span></div>
     </div>
     <div class="nav-section" data-group="Entegrasyonlar">
         <div class="nav-label">Entegrasyonlar <span class="chev">&#9660;</span></div>
@@ -1533,6 +1534,35 @@ body.sidebar-open { overflow: hidden; }
         <h3 class="panel-title">Benzer Gorsel Gruplari</h3>
         <div id="imgdup-container">
             <div style="color:var(--text-muted);font-size:13px;padding:20px">Kaynak secin...</div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ BENZER METIN (MinHash+LSH near-dup) ============ -->
+<div class="page" id="page-text-neardup">
+    <div class="page-header">
+        <div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Raporlar &raquo; Benzer Metin</div>
+            <h2>Benzer Metin Dosyalari</h2>
+            <div class="desc">MinHash+LSH ile benzer ama ayni olmayan metin/dokuman dosyalari (icerik-hash'in kacirdigi revizyon kopyalari vb.). Talep uzerine hesaplanir.</div>
+        </div>
+        <div class="actions">
+            <select id="tnd-source" onchange="loadTextNearDup()" style="width:200px">
+                <option value="">Kaynak secin...</option>
+            </select>
+            <button class="btn btn-primary" id="tnd-compute-btn" onclick="computeTextNearDup(event)">Hesapla</button>
+        </div>
+    </div>
+
+    <!-- Off-feature banner (Rule 8: config gate + optional dep) -->
+    <div id="tnd-feature-banner" style="display:none;margin-bottom:16px;padding:12px 16px;background:rgba(245,158,11,0.08);border:1px solid var(--warning);border-radius:var(--radius);color:var(--warning);font-size:13px"></div>
+
+    <div class="cards" id="tnd-kpi-cards"></div>
+
+    <div class="panel" style="margin-top:20px">
+        <h3 class="panel-title">Benzer Metin Gruplari</h3>
+        <div id="tnd-container">
+            <div style="color:var(--text-muted);font-size:13px;padding:20px">Kaynak secin, sonra "Hesapla"ya basin.</div>
         </div>
     </div>
 </div>
@@ -2753,7 +2783,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, search: loadFileSearch, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, 'image-duplicates': loadImageDuplicates, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
+    const loaders = { overview: loadOverview, sources: loadSources, search: loadFileSearch, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, 'image-duplicates': loadImageDuplicates, 'text-neardup': loadTextNearDup, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -2798,10 +2828,10 @@ async function loadSources() {
 }
 
 function populateAllSourceSelects() {
-    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','ext-anomaly-source','pii-source','cb-source','fc-source'].forEach(id => populateSourceSelect(id));
+    ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','ext-anomaly-source','tnd-source','pii-source','cb-source','fc-source'].forEach(id => populateSourceSelect(id));
     // Auto-select first source if only one
     if (sources.length === 1) {
-        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','ext-anomaly-source','pii-source','cb-source','fc-source'].forEach(id => {
+        ['overview-source','freq-source','types-source','sizes-source','treemap-source','insights-source','ah-source','dup-source','growth-source','naming-source','orphan-sids-source','acl-source','ext-anomaly-source','tnd-source','pii-source','cb-source','fc-source'].forEach(id => {
             const sel = document.getElementById(id);
             if (sel && !sel.value) sel.value = sources[0].id;
         });
@@ -9461,6 +9491,84 @@ async function exportForecastXlsx(ev) {
 // Gorsel Duplikasyonlar (issue #144 Phase 2)
 // ============================================================
 let _imgdupScanId = null;
+
+async function loadTextNearDup() {
+    const sel = document.getElementById('tnd-source');
+    const sourceId = sel ? sel.value : '';
+    const bannerEl = document.getElementById('tnd-feature-banner');
+
+    // Rule 8: surface the config gate + optional-dep availability.
+    try {
+        const st = await api('/duplicates/text-near/status', { silent: true });
+        if (st && (!st.enabled || !st.available)) {
+            let msg = '<strong>Benzer metin tespiti hazir degil.</strong> ';
+            if (!st.enabled) msg += 'Etkinlestirin: <code>config.yaml</code> &rarr; <code>text_near_duplicates.enabled: true</code>. ';
+            if (!st.available) msg += 'Paket eksik: <code>pip install -r requirements-accel.txt</code> (datasketch). ';
+            _setHtmlSafe('tnd-feature-banner', msg);
+            if (bannerEl) bannerEl.style.display = 'block';
+        } else if (bannerEl) {
+            bannerEl.style.display = 'none';
+        }
+    } catch (e) { /* leave banner as-is on status error */ }
+
+    if (!sourceId) {
+        _setHtmlSafe('tnd-kpi-cards', '');
+        _setHtmlSafe('tnd-container', '<div style="color:var(--text-muted);font-size:13px;padding:20px">Kaynak secin, sonra "Hesapla"ya basin.</div>');
+        return;
+    }
+
+    let data;
+    try {
+        data = await api(`/duplicates/text-near/${sourceId}`, { silent: true });
+    } catch (e) {
+        _setHtmlSafe('tnd-container', `<div style="padding:20px;color:var(--danger,#dc2626)">Hata: ${escapeHtml(e.message||'')}</div>`);
+        return;
+    }
+    if (!data || !data.has_data) {
+        _setHtmlSafe('tnd-kpi-cards', '');
+        _setHtmlSafe('tnd-container', '<div style="color:var(--text-muted);font-size:13px;padding:20px">Tamamlanmis tarama yok veya henuz hesaplanmadi — "Hesapla"ya basin.</div>');
+        return;
+    }
+    const groups = data.groups || [];
+    _setHtmlSafe('tnd-kpi-cards', `
+        <div class="card accent"><div class="card-label">Grup</div><div class="card-value">${formatNum(data.total_groups||0)}</div></div>
+        <div class="card warning"><div class="card-label">Benzer Dosya</div><div class="card-value">${formatNum(data.total_files||0)}</div></div>
+        <div class="card danger"><div class="card-label">Israf (tahmini)</div><div class="card-value" style="font-size:18px">${escapeHtml(data.total_waste_size_formatted||'0')}</div></div>
+    `);
+    if (!groups.length) {
+        _setHtmlSafe('tnd-container', '<div style="color:var(--text-muted);font-size:13px;padding:20px">Benzer metin grubu bulunamadi. (Esik yuksekse config\'te dusurmeyi deneyin.)</div>');
+        return;
+    }
+    const body = groups.map(g => {
+        const files = (g.files||[]).map(f => `<tr><td style="max-width:520px;word-break:break-all;font-size:11px" title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_path||'')}</td><td style="text-align:right;white-space:nowrap">${escapeHtml(formatSize(f.file_size||0))}</td></tr>`).join('');
+        const sim = (g.avg_similarity != null) ? Math.round(g.avg_similarity*100) + '%' : '-';
+        return `<div style="margin-bottom:14px;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+            <div style="padding:8px 12px;background:var(--bg-secondary);font-size:12px;display:flex;justify-content:space-between;gap:8px">
+                <span><strong>${formatNum(g.file_count||0)}</strong> dosya · benzerlik ~${sim}</span>
+                <span>Israf: ${escapeHtml(g.waste_size_formatted||'0')}</span>
+            </div>
+            <table style="width:100%;font-size:12px"><tbody>${files}</tbody></table>
+        </div>`;
+    }).join('');
+    _setHtmlSafe('tnd-container', body);
+}
+
+async function computeTextNearDup(event) {
+    const sel = document.getElementById('tnd-source');
+    const sourceId = sel ? sel.value : '';
+    if (!sourceId) { notify('Lutfen bir kaynak secin', 'warning'); return; }
+    const btn = event?.currentTarget;
+    // Reading content is slow; allow up to 10 min before the client aborts.
+    await withButtonLoading(btn, async () => {
+        const r = await api(`/duplicates/text-near/${sourceId}/compute`, { method: 'POST' });
+        if (r && r.available === false) {
+            notify('datasketch yuklu degil — once requirements-accel.txt kurun', 'warning');
+        } else {
+            notify(`Hesaplandi: ${formatNum((r&&r.groups)||0)} grup, ${formatNum((r&&r.duplicate_files)||0)} dosya`, 'success');
+        }
+        await loadTextNearDup();
+    }, 600000);
+}
 
 async function loadImageDuplicates() {
     const page = document.getElementById('page-image-duplicates');
