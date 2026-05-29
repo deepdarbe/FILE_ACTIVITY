@@ -860,6 +860,39 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_dhm_group ON duplicate_hash_members(group_id)"
         )
 
+        # MinHash+LSH near-duplicate detection for text files (roadmap ADOPT).
+        # Complements the exact content-hash tables above by storing groups of
+        # files that are *similar* (Jaccard >= threshold), not byte-identical.
+        # Written on-demand by TextNearDuplicateEngine.compute(); never auto.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS text_near_dup_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER NOT NULL,
+                file_count INTEGER NOT NULL,
+                total_size INTEGER NOT NULL DEFAULT 0,
+                waste_size INTEGER NOT NULL DEFAULT 0,
+                avg_similarity REAL,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS text_near_dup_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL REFERENCES text_near_dup_groups(id) ON DELETE CASCADE,
+                file_id INTEGER,
+                file_path TEXT NOT NULL,
+                file_size INTEGER DEFAULT 0
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tnd_scan_waste "
+            "ON text_near_dup_groups(scan_id, waste_size DESC)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tnd_member_group "
+            "ON text_near_dup_members(group_id)"
+        )
+
         # Ransomware alerts (issue #37) — canary access, rename velocity,
         # mass deletion and risky-extension rules persist here. Idempotent.
         cur.execute("""

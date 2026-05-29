@@ -82,3 +82,14 @@ watchdog>=4.0,<5
 # import, which carries no copyleft obligation on this project's own code.
 python-stdnum>=1.19
 phonenumbers>=8.13
+
+# ──────────────────────────────────────────────────────────────────────
+# Text near-duplicate detection (roadmap ADOPT)
+#
+# MinHash+LSH over word k-shingles finds files that are *similar* but not
+# byte-identical — the exact content-hash pass (content_duplicates.py) only
+# catches identical bytes. Pure-Python, MIT. When absent the engine is a
+# graceful no-op (the text_near_duplicates feature stays off). Gated by
+# text_near_duplicates.enabled, triggered on-demand from the dashboard.
+# See src/analyzer/text_minhash.py.
+datasketch>=1.5

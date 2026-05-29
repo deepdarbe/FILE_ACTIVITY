@@ -247,6 +247,21 @@ content_duplicates:
   workers: 4                  # ProcessPoolExecutor boyutu (CPU-bound)
   prefix_bytes: 4096          # Ilk 4 KB hash icin
 
+text_near_duplicates:
+  # MinHash+LSH ile metin near-dup tespiti: icerik-hash'in kacirdigi
+  # *benzer ama ayni olmayan* dosyalari yakalar (ornek: bir belgenin iki
+  # revizyonu). Icerik okudugu icin pahali → varsayilan KAPALI, dashboard'dan
+  # talep uzerine calisir (her taramada otomatik degil). 'datasketch' paketi
+  # gerekir (requirements-accel.txt); yoksa ozellik no-op olur.
+  # Yalnizca duz-metin uzantilari (docx/pdf gibi formatlar kapsam disi).
+  enabled: false
+  min_bytes: 1024             # bu boyutun altindaki dosyalari atla
+  max_bytes: 10485760         # her dosyadan en fazla 10 MB icerik oku
+  num_perm: 128               # MinHash permutasyon sayisi (dogruluk/maliyet)
+  threshold: 0.8              # near-dup icin Jaccard benzerlik esigi
+  shingle_size: 5             # kelime k-shingle boyutu
+  max_files: 50000            # tek calismada en fazla dosya (maliyet siniri)
+
 duplicates:
   # Issue #83 Phase 1 — duplicate delete is QUARANTINE-only. Files are
   # MOVED to <dir>/<YYYYMMDD>/<sha1(parent)>/ with a SHA-256 sidecar +
