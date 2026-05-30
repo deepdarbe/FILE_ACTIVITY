@@ -5618,17 +5618,27 @@ async function renderMitNamingEntityList(sourceId, report) {
         '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:12px">' +
         'Ihlal eden dosyalar yukleniyor...</div>';
 
-    // Hangi kurallar icin dosya cekilecek? Rapordaki kurallar (count > 0).
-    const codesToFetch = []
-        .concat((report.requirements || []).map(r => r.code))
-        .concat((report.best_practices || []).map(b => b.code));
+    // Sort violating codes by count desc; fetch only the top few up front.
+    // Cold-fetching ALL codes in parallel crushed the threadpool on a 2.89M
+    // file scan (customer 2026-05-27) and left "Yukleniyor..." stuck. The
+    // rest load on demand via the "Diger N kurali da yukle" button below.
+    // report.__loadAll is set by _loadAllNamingRules() to bypass the slice.
+    const sortedCodes = []
+        .concat((report.requirements || []).map(r => ({code: r.code, count: r.count || 0})))
+        .concat((report.best_practices || []).map(b => ({code: b.code, count: b.count || 0})))
+        .filter(x => x.count > 0)
+        .sort((a, b) => b.count - a.count);
 
-    if (codesToFetch.length === 0) {
+    if (sortedCodes.length === 0) {
         container.innerHTML =
             '<div style="padding:30px;text-align:center;color:var(--success);font-size:13px">' +
             'Hicbir ihlal yok — listelenecek dosya bulunamadi.</div>';
         return;
     }
+
+    const INITIAL_LIMIT = report && report.__loadAll ? sortedCodes.length : 3;
+    const codesToFetch = sortedCodes.slice(0, INITIAL_LIMIT).map(x => x.code);
+    const remainingCount = Math.max(0, sortedCodes.length - INITIAL_LIMIT);
 
     // Her kural icin ilk 50 dosyayi cek; ayni dosyayi birden fazla kural
     // birlestirecekse "rules" alaninda biriktir. UI tarafinda her satir =
@@ -5727,10 +5737,39 @@ async function renderMitNamingEntityList(sourceId, report) {
             },
             emptyMessage: 'Ihlal eden dosya bulunamadi',
         });
+
+        // Surface a "load more" button when we only fetched the top codes,
+        // so the user can opt into the long full-fetch when they actually
+        // want every violation. Stored-ref appendChild — D-CHAIN safe.
+        if (remainingCount > 0) {
+            const hint = document.createElement('div');
+            hint.style.cssText = 'padding:12px;text-align:center;font-size:12px;color:var(--text-muted);border-top:1px solid var(--border);margin-top:8px';
+            hint.innerHTML = '<button class="btn btn-outline" onclick="_loadAllNamingRules(' + sourceId + ')">Diger ' + remainingCount + ' kurali da yukle</button>' +
+                '<div style="margin-top:6px;font-size:11px">En cok ihlal alan ilk ' + codesToFetch.length + ' kural gosterildi · tum kurallari yuklemek dakikalar surebilir</div>';
+            container.appendChild(hint);
+        }
     } catch (e) {
         container.innerHTML =
             '<div style="padding:20px;color:var(--danger);font-size:12px">' +
             'Liste yuklenemedi: ' + (e && e.message ? e.message : e) + '</div>';
+    }
+}
+
+async function _loadAllNamingRules(sourceId) {
+    // Re-render the entity-list with every violating code (not just the top
+    // few). renderMitNamingEntityList honours report.__loadAll to bypass the
+    // slice; the cache makes the already-fetched top codes effectively free.
+    const container = document.getElementById('mit-naming-container');
+    if (!container) return;
+    container.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-muted);font-size:12px">Tum kurallar yukleniyor (uzun surebilir)...</div>';
+    try {
+        const report = await api('/reports/mit-naming/' + sourceId, { silent: true });
+        report.__loadAll = true;
+        await renderMitNamingEntityList(sourceId, report);
+    } catch (e) {
+        container.innerHTML =
+            '<div style="padding:20px;color:var(--danger);font-size:12px">' +
+            'Yuklenemedi: ' + (e && e.message ? e.message : e) + '</div>';
     }
 }
 
