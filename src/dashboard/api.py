@@ -1963,6 +1963,56 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             ]
 
             def _all_rows():
+                # Direct cursor stream for the simple-WHERE filters — single
+                # SELECT, no OFFSET. 1.36M-row owner exports went from
+                # multi-minute (deep OFFSET re-scan per page) to seconds.
+                # Frequency keeps the paged runner because its date-range SQL
+                # lives there and frequency sets are not typically huge.
+                direct = False
+                where_sql = ""
+                where_params: tuple = ()
+                if filter_type == "owner" and owner:
+                    where_sql = "AND owner = ?"
+                    where_params = (owner,)
+                    direct = True
+                elif filter_type == "type" and extension:
+                    where_sql = "AND LOWER(extension) = ?"
+                    where_params = (extension.lower(),)
+                    direct = True
+                elif filter_type == "size":
+                    upper = (max_bytes if max_bytes is not None
+                             else 9_223_372_036_854_775_807)
+                    where_sql = "AND file_size BETWEEN ? AND ?"
+                    where_params = (min_bytes, upper)
+                    direct = True
+
+                if direct:
+                    sql = (
+                        "SELECT file_path, file_name, owner, file_size, "
+                        "last_modify_time, last_access_time FROM scanned_files "
+                        f"WHERE source_id = ? AND scan_id = ? {where_sql} "
+                        "ORDER BY file_size DESC"
+                    )
+                    with db.get_read_cursor() as cur:
+                        cur.execute(sql, (src.id, scan_id, *where_params))
+                        while True:
+                            chunk = cur.fetchmany(5000)
+                            if not chunk:
+                                break
+                            for r in chunk:
+                                yield {
+                                    "file_path": r["file_path"] or "",
+                                    "file_name": r["file_name"] or "",
+                                    "owner": r["owner"] or "",
+                                    "file_size": r["file_size"] or 0,
+                                    "last_modify_time": r["last_modify_time"] or "",
+                                    "last_access_time": r["last_access_time"] or "",
+                                }
+                    return
+
+                # Paged fallback: frequency (date-range SQL is encapsulated in
+                # the runner) and any "show-all" mode where the direct WHERE
+                # would be wrong.
                 PAGE = 100_000
                 offset = 0
                 while True:
