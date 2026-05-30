@@ -5628,15 +5628,21 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.get("/api/security/image-duplicates")
     def image_duplicates(
         scan_id: Optional[int] = None,
-        hash_type: str = Query("phash", pattern="^(phash|dhash|ahash)$"),
-        max_distance: int = Query(5, ge=0, le=64),
+        hash_type: str = Query("phash", pattern="^(phash|dhash|ahash|pdq)$"),
+        max_distance: int = Query(5, ge=0, le=256),
     ):
         """Return groups of near-duplicate images for a scan.
 
         Near-duplicate = Hamming distance between perceptual hashes
-        <= max_distance (default 5).
+        <= max_distance (default 5 for pHash/dHash/aHash; 64 for PDQ).
         """
         from src.analyzer.image_hash import find_duplicate_groups
+        from src.analyzer.image_pdq import find_pdq_duplicate_groups
+
+        hash_column = "pdq_hash" if hash_type == "pdq" else hash_type
+        effective_max_distance = max_distance
+        if hash_type == "pdq" and max_distance == 5:
+            effective_max_distance = 64
 
         if scan_id is None:
             with db.get_read_cursor() as cur:
@@ -5657,13 +5663,20 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 "reason": "no_completed_scan",
             }
 
-        rows = db.find_similar_images(scan_id, hash_type=hash_type)
+        rows = db.find_similar_images(scan_id, hash_type=hash_column)
         total_images = len(rows)
-        raw_groups = find_duplicate_groups(rows, hash_type=hash_type, max_distance=max_distance)
+        if hash_type == "pdq":
+            raw_groups = find_pdq_duplicate_groups(rows, max_distance=effective_max_distance)
+        else:
+            raw_groups = find_duplicate_groups(
+                rows,
+                hash_type=hash_column,
+                max_distance=effective_max_distance,
+            )
 
         groups = []
         for members in raw_groups:
-            rep_hash = members[0].get(hash_type, "")
+            rep_hash = members[0].get(hash_column, "")
             groups.append({
                 "hash": rep_hash,
                 "count": len(members),
@@ -5672,7 +5685,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                         "file_id": m.get("file_id"),
                         "file_path": m.get("file_path", ""),
                         "file_size": m.get("file_size", 0),
-                        hash_type: m.get(hash_type, ""),
+                        hash_column: m.get(hash_column, ""),
                     }
                     for m in members
                 ],
@@ -5681,7 +5694,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return {
             "scan_id": scan_id,
             "hash_type": hash_type,
-            "max_distance": max_distance,
+            "max_distance": effective_max_distance,
             "total_images": total_images,
             "groups": groups,
         }
@@ -5689,11 +5702,17 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     @app.get("/api/security/image-duplicates/export.xlsx")
     def image_duplicates_export_xlsx(
         scan_id: Optional[int] = None,
-        hash_type: str = Query("phash", pattern="^(phash|dhash|ahash)$"),
-        max_distance: int = Query(5, ge=0, le=64),
+        hash_type: str = Query("phash", pattern="^(phash|dhash|ahash|pdq)$"),
+        max_distance: int = Query(5, ge=0, le=256),
     ):
         """XLSX export of near-duplicate image groups."""
         from src.analyzer.image_hash import find_duplicate_groups
+        from src.analyzer.image_pdq import find_pdq_duplicate_groups
+
+        hash_column = "pdq_hash" if hash_type == "pdq" else hash_type
+        effective_max_distance = max_distance
+        if hash_type == "pdq" and max_distance == 5:
+            effective_max_distance = 64
 
         if scan_id is None:
             with db.get_read_cursor() as cur:
@@ -5706,17 +5725,22 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         rows_data: list[list] = []
         if scan_id is not None:
-            all_rows = db.find_similar_images(scan_id, hash_type=hash_type)
-            raw_groups = find_duplicate_groups(
-                all_rows, hash_type=hash_type, max_distance=max_distance
-            )
+            all_rows = db.find_similar_images(scan_id, hash_type=hash_column)
+            if hash_type == "pdq":
+                raw_groups = find_pdq_duplicate_groups(
+                    all_rows, max_distance=effective_max_distance
+                )
+            else:
+                raw_groups = find_duplicate_groups(
+                    all_rows, hash_type=hash_column, max_distance=effective_max_distance
+                )
             for g_idx, members in enumerate(raw_groups, start=1):
                 for m in members:
                     rows_data.append([
                         g_idx,
                         m.get("file_path", ""),
                         m.get("file_size", 0),
-                        m.get(hash_type, ""),
+                        m.get(hash_column, ""),
                     ])
 
         filename = f"image_duplicates_scan{scan_id}_{hash_type}.xlsx"

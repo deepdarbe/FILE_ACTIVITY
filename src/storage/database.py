@@ -1238,8 +1238,8 @@ class Database:
             END;
         """)
 
-        # Perceptual image hashes (issue #144 Phase 2).
-        # Stores pHash, dHash, and aHash for image files.  One row per
+        # Perceptual image hashes (issue #144 Phase 2 + PDQ upgrade).
+        # Stores pHash, dHash, aHash, and PDQ for image files. One row per
         # file_id; idempotent on repeated scans (REPLACE INTO).
         cur.execute("""
             CREATE TABLE IF NOT EXISTS image_hashes (
@@ -1249,6 +1249,7 @@ class Database:
                 phash       CHAR(16),
                 dhash       CHAR(16),
                 ahash       CHAR(16),
+                pdq_hash    CHAR(64),
                 computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -1263,6 +1264,19 @@ class Database:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_image_hash_dhash "
             "ON image_hashes(dhash)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_image_hash_ahash "
+            "ON image_hashes(ahash)"
+        )
+        try:
+            cur.execute("ALTER TABLE image_hashes ADD COLUMN pdq_hash CHAR(64)")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_image_hash_pdq "
+            "ON image_hashes(pdq_hash)"
         )
 
         # ──────────────────────────────────────────────
@@ -4127,7 +4141,8 @@ class Database:
 
         Args:
             rows: List of dicts with keys:
-                ``file_id``, ``scan_id``, ``phash``, ``dhash``, ``ahash``.
+                ``file_id``, ``scan_id``, ``phash``, ``dhash``, ``ahash``,
+                ``pdq_hash``.
 
         Returns:
             Number of rows written.
@@ -4142,8 +4157,8 @@ class Database:
                 cur.executemany(
                     """
                     INSERT OR REPLACE INTO image_hashes
-                        (file_id, scan_id, phash, dhash, ahash, computed_at)
-                    VALUES (?, ?, ?, ?, ?, datetime('now','localtime'))
+                        (file_id, scan_id, phash, dhash, ahash, pdq_hash, computed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now','localtime'))
                     """,
                     [
                         (
@@ -4152,6 +4167,7 @@ class Database:
                             r.get("phash"),
                             r.get("dhash"),
                             r.get("ahash"),
+                            r.get("pdq_hash"),
                         )
                         for r in batch
                     ],
@@ -4176,23 +4192,23 @@ class Database:
 
         Args:
             scan_id: The scan to query.
-            hash_type: ``"phash"``, ``"dhash"``, or ``"ahash"``.
+            hash_type: ``"phash"``, ``"dhash"``, ``"ahash"``, or ``"pdq_hash"``.
             hash_value: Hex hash to measure distance from, or None to
                 return all rows.
             max_distance: Hamming distance threshold (inclusive).
 
         Returns:
             List of dicts: ``file_id``, ``scan_id``, ``file_path``,
-            ``file_size``, ``phash``, ``dhash``, ``ahash``,
+            ``file_size``, ``phash``, ``dhash``, ``ahash``, ``pdq_hash``,
             ``computed_at``.
         """
-        if hash_type not in ("phash", "dhash", "ahash"):
+        if hash_type not in ("phash", "dhash", "ahash", "pdq_hash"):
             hash_type = "phash"
 
         with self.get_cursor() as cur:
             cur.execute(
                 f"""
-                SELECT ih.file_id, ih.scan_id, ih.phash, ih.dhash, ih.ahash,
+                SELECT ih.file_id, ih.scan_id, ih.phash, ih.dhash, ih.ahash, ih.pdq_hash,
                        ih.computed_at, sf.file_path, sf.file_size
                 FROM image_hashes ih
                 JOIN scanned_files sf ON sf.id = ih.file_id

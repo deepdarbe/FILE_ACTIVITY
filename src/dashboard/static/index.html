@@ -1497,7 +1497,7 @@ body.sidebar-open { overflow: hidden; }
         <div>
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">Raporlar &raquo; Gorsel Duplikasyonlar</div>
             <h2>Gorsel Duplikasyonlar</h2>
-            <div class="desc">Ayni gorselin farkli isim / boyutla yuklenmis kopyalarini bul — pHash / dHash / aHash ile algilama (issue #144 Phase 2)</div>
+            <div class="desc">Ayni gorselin farkli isim / boyutla yuklenmis kopyalarini bul — pHash / dHash / aHash / PDQ ile algilama (issue #144 Phase 2)</div>
         </div>
         <div class="actions">
             <select id="imgdup-source" onchange="loadImageDuplicates()" style="width:200px">
@@ -1507,6 +1507,7 @@ body.sidebar-open { overflow: hidden; }
                 <option value="phash" selected>pHash</option>
                 <option value="dhash">dHash</option>
                 <option value="ahash">aHash</option>
+                <option value="pdq">PDQ</option>
             </select>
             <label style="font-size:12px;color:var(--text-muted)">
                 Esik:
