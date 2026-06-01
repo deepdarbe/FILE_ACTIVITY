@@ -3,7 +3,7 @@
 # SQLite3 is built-in - no external DB dependency!
 
 # CLI
-click>=8.1.0
+click>=8.4.1
 
 # Web Framework
 fastapi>=0.136.3
