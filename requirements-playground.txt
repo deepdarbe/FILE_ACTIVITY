@@ -11,5 +11,5 @@
 # the playground doesn't add a second DuckDB pin.
 
 streamlit>=1.30
-plotly>=5.20
+plotly>=6.7.0
 pandas>=2.0
