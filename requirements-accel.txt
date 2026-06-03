@@ -54,6 +54,10 @@ python-magic-bin>=0.4.14; sys_platform == "win32"
 # Enable in config.yaml: scanner.compute_image_hashes: true
 imagehash>=4.3,<5
 
+# Optional PDQ perceptual hashing upgrade (roadmap ADOPT near-dup)
+# Scanner/API gracefully no-op when pdqhash is absent.
+pdqhash>=0.2
+
 # ──────────────────────────────────────────────────────────────────────
 # Event-driven file watcher (issue #14)
 #
@@ -81,7 +85,7 @@ watchdog>=6.0.0,<7
 # python-stdnum is LGPL-2.1+ — used as an unmodified library via dynamic
 # import, which carries no copyleft obligation on this project's own code.
 python-stdnum>=2.2
-phonenumbers>=8.13
+phonenumbers>=9.0.31
 
 # ──────────────────────────────────────────────────────────────────────
 # Text near-duplicate detection (roadmap ADOPT)

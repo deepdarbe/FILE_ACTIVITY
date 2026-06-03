@@ -1477,8 +1477,9 @@ class FileScanner:
         """Perceptual-hash post-scan phase (issue #144 Phase 2).
 
         Streams image files from the completed scan, computes pHash /
-        dHash / aHash via :class:`~src.analyzer.image_hash.ImageHasher`,
-        and upserts rows to ``image_hashes`` in 500-row chunks.
+        dHash / aHash via :class:`~src.analyzer.image_hash.ImageHasher`
+        and optional PDQ via :class:`~src.analyzer.image_pdq.ImagePdqHasher`,
+        then upserts rows to ``image_hashes`` in 500-row chunks.
 
         Image extensions eligible: jpg, jpeg, png, gif, bmp, tiff,
         tif, webp.
@@ -1494,8 +1495,11 @@ class FileScanner:
             }
         """
         from src.analyzer.image_hash import ImageHasher, IMAGE_EXTENSIONS
+        from src.analyzer.image_pdq import ImagePdqHasher
 
         hasher = ImageHasher(self._full_config)
+        pdq_hasher = ImagePdqHasher(self._full_config)
+        pdq_available = pdq_hasher.available
         if not hasher.available:
             return {
                 "scan_id": scan_id,
@@ -1532,6 +1536,7 @@ class FileScanner:
                 # Either too large or unreadable.
                 skipped += 1
                 continue
+            pdq_result = pdq_hasher.compute(file_path) if pdq_available else None
 
             chunk.append(
                 {
@@ -1540,6 +1545,7 @@ class FileScanner:
                     "phash": result.get("phash"),
                     "dhash": result.get("dhash"),
                     "ahash": result.get("ahash"),
+                    "pdq_hash": (pdq_result or {}).get("pdq_hash"),
                 }
             )
             hashed += 1
