@@ -47,113 +47,47 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `b76c4a0`, 2026-05-25)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `62fc1f2`, 2026-05-30)
 
-The 2026-05-24/25 session shipped **8 PRs** (#241–#246, #252, #253) + 2 docs
-PRs (#244, #254) + a 4-area "advanced tech" research pass, on top of the
-2026-05-22 22-PR wave (kept below for history). Current state:
+The 2026-05-26 → 2026-05-30 session shipped **7 feature/fix PRs** (#256–#258, #260, #262, #263) + the squash-merge memory note (#259) + 5 Dependabot bumps (#247–#251), closing the **Near-dup ADOPT** roadmap entry (text MinHash + image PDQ) and the chronic customer-reported triage loop (parquet config + owner read + on-box CSV/Adlandırma hangs). Also stood up the operator-side **diagnostics bundle** so the next round of triage is one zip, not a paste loop.
 
-**▶ NEXT SESSION — start here:** the customer's reported bugs are all
-CODE-FIXED & merged; resume from the PENDING list below. Highest-value
-remaining *code* task = the **durable `migrate_config` missing-key fix** for
-`scanner.parquet_staging` (PENDING item 1) so the #8/#9 lock source
-auto-disables on `update.cmd` without the operator hand-editing config; then
-MinHash+PDQ near-dup. `git log --oneline -15` confirms the real tip.
+**▶ NEXT SESSION — start here:** No urgent customer-reported bug is open in code. The remaining work is roadmap follow-through:
+1. **Customer on-box smoke for #262 + #263** (the only thing actually pending — see PENDING below).
+2. **EPIC #225 R-5c..R-6** — P-PAGE / S-SHAPE / A-AUDIT / R-6 audit-backlog. Each ~1-2 hr, small focused PRs.
+3. **Parquet-reports** (ADOPT, deferred — was deemed optional this session after #252 made reads lock-resilient).
+4. PILOT tier (ETW FileIO via ctypes, Tantivy).
+5. **EPIC #114** storage Phase 3-5 (Elasticsearch — keep deferred per `docs/architecture/storage-decision-2026-04-28.md` until customer crosses 500 GB / 200 M-row).
+
+`git log --oneline -15` confirms the real tip.
 
 ### Where we are
-- **master = `b76c4a0`**. Per-PR CI: 7/8 green; the only red is
-  `Pytest (Linux, Docker)` — the documented non-blocking flake (dies in ~20s
-  during docker build, `continue-on-error: true`). Do NOT chase it.
-- **All this session's PRs are merged** (#241–#246, #252, #253 — below).
-  Only #203 stays open (do NOT merge as-is — D2 DuckDB removal conflicts
-  with keep-DuckDB).
+- **master = `62fc1f2`**. Per-PR CI: 7-8/8 green (varies). Two known non-blocking reds: `Pytest (Linux, Docker)` (chronic 17-21s docker-build/pip flake, `continue-on-error: true`) and occasionally `CodeQL` umbrella (inherits a master-side Dependabot advisory — distinct from `Analyze (python)`/`Analyze (javascript)` which actually scan and pass). **Do NOT chase either.**
+- **All this session's PRs are merged** (#256–#260, #262, #263 + Dependabots #247–#251). Only **#203** stays open (do NOT merge as-is — D2 DuckDB removal conflicts with the analytics/Parquet plan + the keep-DuckDB decision).
 
-### What shipped THIS session (#241–#243)
-- **#241** — AI Insights **"İncele"** rerouted to the #222 Excel drilldown
-  overlay (loading state + server pagination + sort + Konuma-Git column; #222
-  had upgraded the *Overview* drilldown, never Insights). + **PII page** wired
-  to `/api/compliance/pii/findings` + Rule-8 banner (was a stub that wiped the
-  page). + `scripts/onenote_export.py` (Markdown→OneNote via Graph). Customer
-  confirmed İncele works.
-- **#242** — **PII checksum validators** (`src/compliance/pii/validators.py`):
-  credit_card→Luhn, iban→mod-97, tckn→TC-kimlik (python-stdnum), phone→
-  libphonenumber. Post-filter in `PiiEngine.scan_file`; no-ops without the
-  optional deps (requirements-accel.txt). + fixed `iban_tr` regex (4→5 groups;
-  the old form never matched a real 26-char TR IBAN).
-- **#243** — **orphan-SID report on by default** via a `config_migrations.yaml`
-  rule (false→true). update.cmd flips preserved configs; no-op vs shipped
-  config. Domain-joined → SIDs resolve via pywin32 LookupAccountSid, no LDAP.
-
-### Also merged THIS session (#245 #246 #252 #253)
-- **#252** — **#8/#9 fix**: duplicate/owner report reads moved to
-  `get_read_cursor` (no writer-lock contention → no mid-scan 500) +
-  `loadDuplicates`/`loadNaming` surface errors instead of an infinite spinner.
-- **#253** — **#1 owner fix**: SizeEnricher resolves owner (LookupAccountSid)
-  in the post-walk pass when `read_owner` is on, so MFT path-only scans stop
-  showing "(Bilinmiyor)". Windows-only resolution; verify on the box.
-- **#245** — **SQLite FTS5** trigram file search (new "Dosya Arama" page +
-  `/api/files/search`, index rebuilt at scan-complete; zero new dep).
-- **#246** — **USN signals**: low-latency blocking read + encryption/
-  truncation burst rules (activates the Anomaly page when the watcher runs).
-
-### What shipped this wave (the 22 PRs)
-- **Perf / caching**: #224 (mit_naming), #227 (report_full + report_status),
-  #228 (mit_naming_files), #231 (drilldown XLSX filter-aware), #239
-  (report_export + mit_naming_export), #232 (pre-warm cache at scan complete
-  → first dashboard click is instant, not a 3-30s cold-cache wait).
-- **Perf / DB**: #230 — three composite indexes `(scan_id, extension)`,
-  `(scan_id, owner)`, `(scan_id, file_size)`. Removes temp-B-tree GROUP/ORDER
-  on the hot reports; cold compute ~30s → ~3s on the 2.89M-row DB. They
-  auto-build on next `update.cmd` restart (one-time 2-5 min).
-- **Refactor (EPIC #225)**: #233 R-1 `src/dashboard/_endpoint_helpers.py`
-  (`cached_report_endpoint` + `PaginationParams`); #234 R-2 migrated
-  types/sizes/status/mit_naming to the helper; #235 R-3
-  `src/storage/_summary_compat.py::normalize_summary` wired into
-  `db.get_scan_summary` (kills the dict-vs-list shape-mismatch bug class
-  #198/#223); #236 R-4 stripped the dual-shape branch from report_frequency.
-- **CI guards (6 → 9)**: #237 added **R-CACHE** (Rule 1) + **A-AWAIT** (Rule 5);
-  #238 added **C-CURSOR** (Rule 6). Each has an allowlist with justifications
-  in `scripts/ci_guards.py`. Self-tests in `tests/test_ci_guards.py` (23 tests).
-- **UX**: #222 — AI Insights drilldown is now a dense Excel-style table
-  (sort / multi-select / folder column / Tablo↔Kart toggle). Closed issue #221.
-- **Diagnostics**: #229 — `scripts/bench_api.py` (HTTP p50/p95/p99 + cache-hit)
-  and `scripts/explain_audit.py` (EXPLAIN QUERY PLAN red-flag finder).
-- **Dependabot**: 10 merged (#204-#211, #9, #10) incl. major bumps pillow 12
-  and elasticsearch 9 — both sub-agent-audited as SAFE before merge.
+### What shipped THIS session (#256–#260, #262, #263)
+- **#256** — **`migrate_config set_if_missing`**: the durable fix to last session's PENDING item 1. The migrator now INSERTS absent safe-default keys (not just flips them when current matches old_default). Closes the loop so `scanner.parquet_staging.enabled → false` (#8/#9 lock root) and `scanner.read_owner → true` (#1 owner Bilinmiyor) auto-write on `update.cmd` for any preserved config that predates those keys.
+- **#257** — **`fa.cmd diag` + dashboard "Tanılama Paketi" button + opt-in GitHub upload**. One zip with version, environment (incl. Windows domain-join — gates LookupAccountSid owner resolution), redacted config + key-flags, log tail, per-source scan state, **owner-resolved/unresolved ratio**, PII count, WAL size, checkpointer health. Reuses `telemetry.github` repo/token for `--upload` (one token, not two). Runs even when the writer can't connect (`get_read_cursor` only, `no_db_commands` includes `diag`). Turns the recurring "paste version + config + log" triage loop into one artifact.
+- **#258** — **Owner drill-down empty fix** for `DOMAIN\user` owners: backslash in a single-quoted `onclick` JS string was swallowed (`'\g'` → `'g'`) so the drill-down queried a corrupted owner and came back empty. Escape backslash + quote for the JS-string context. + **`?format=csv` streaming export** on the drilldown (was the documented `#225 R-2` fix; XLSX stays Excel-friendly capped at 100k, CSV streams every row). + `/api/users/overview` returns `source_id` so the drill-down targets the right scan.
+- **#259** — **CLAUDE.md memory** for the squash rule: "always squash, never plain merge commit, for every PR; proactively tell the operator which method is correct + why before merging — don't make them ask." Operator preference, 2026-05-26.
+- **#260** — **Text near-dup MinHash+LSH** (engine + dashboard). `TextNearDuplicateEngine` mirrors `ContentDuplicateEngine`: word k-shingles → `MinHash(num_perm)` → `MinHashLSH(threshold)` candidate pairs → Jaccard-verified Union-Find → persisted groups. Opt-in (`text_near_duplicates.enabled: false`) + on-demand only (reading content is expensive). Optional `datasketch` dep, graceful no-op. New "Benzer Metin" page + Rule-8 banner.
+- **#262** — **On-box smoke fixes** (customer 2026-05-27): (a) CSV drilldown export was hung on a 1.36M-row owner because the paged runner used OFFSET (page 13 = re-scan + skip 1.2M rows) → replaced with single SELECT + `cursor.fetchmany(5000)` stream for owner/type/size; 1.36M rows now stream in seconds. (b) Adlandırma Uyumu (Tablo tab) hung at "Yukleniyor..." because `renderMitNamingEntityList` fetched files for all 10 violating codes in parallel (10 cold table-iterations crushed threadpool) → sort by count desc, fetch top 3 first, "Diger N kurali da yukle" button for the rest.
+- **#263** — **PDQ image near-dup** (Copilot-implemented from issue #261). Opt-in 4th hash path alongside pHash/dHash/aHash; idempotent ALTER TABLE adds `image_hashes.pdq_hash`, `hash_type=pdq` route on the existing endpoint + selector option in the UI. Mirrors `image_hash.py` pattern exactly. **Closes the Near-dup ADOPT roadmap entry** (text + image both shipped).
 
 ### What's PENDING (pick up here)
-1. **#8/#9 + #1 — CODE-FIXED this session (#252/#253); verify on the box.**
-   Stuck Kopya/Adlandırma: reads are now lock-resilient + errors surface
-   (#252). Root lock source is `scanner.parquet_staging` (DuckDB ingest
-   contention, #174) confirmed in the customer log — **operator must set it
-   `false`** (the #243-style migration didn't reach this box: the key is
-   absent / non-canonical, so a **durable `migrate_config` missing-key set**
-   is the remaining TODO). Owner "(Bilinmiyor)" fixed by #253 — needs a
-   Windows rescan with `read_owner: true`.
-2. **Advanced-tech research roadmap (this session — ADOPT/PILOT/SKIP):**
-   - **Analytics@scale (→#8/#9):** ADOPT **Parquet export (pyarrow) at
-     scan-complete + DuckDB/Polars query the Parquet** (cold GROUP BY ~30s→<1s,
-     **WAL-safe**). ❌ **REJECT "persistent DuckDB ATTACH"** — it IS the
-     4×-fixed WAL-leak anti-pattern (pinned by `test_analytics_per_query.py`).
-     chDB=SKIP (no Windows wheel).
-   - **Windows monitoring (→#2):** USN signals ✓ shipped (#246). PILOT ETW
-     FileIO via raw ctypes; WATCH FSRM (Server-SKU only); SKIP MiniFilter.
-   - **Near-dup:** ADOPT MinHash+LSH (`datasketch`) + PDQ (`pdqhash`) — NEXT.
-   - **Search:** SQLite FTS5 ✓ shipped (#245); Tantivy=PILOT; DuckDB-FTS=WATCH.
-   - **PR order:** FTS5 ✓ #245 → USN ✓ #246 → Parquet-reports (optional now
-     that #252 made reads lock-resilient) → MinHash+PDQ (remaining ADOPTs).
-3. **Customer activation guide** given for config-gated features (PII /
-   wrong-ext+`python-magic-bin` / image-hash / AD) = their config.yaml +
-   `pip install -r requirements-accel.txt` + rescan. **puremagic REJECTED for
-   wrong-ext** (can't detect executables → would miss the disguise case).
-4. **EPIC #225 leftovers** (R-5c P-PAGE / R-5d S-SHAPE / R-5e A-AUDIT / R-6),
-   **#203** decision, **#114** storage Phase 3-5 — all still deferred.
+1. **Customer on-box smoke for #262 + #263** — the only customer-side TODO from this session:
+   - **CSV İndir** on a >1M-row owner drilldown → completes in seconds (was hung pre-#262).
+   - **Adlandırma** Tablo tab loads top-3 codes' files quickly; "Diger N kurali" button appears.
+   - **Görsel Duplikasyonlar** → PDQ option in the hash-type selector works (needs `pip install -r requirements-accel.txt` for `pdqhash`).
+   - All gated on `update.cmd` to pull master `62fc1f2`.
+2. **EPIC #225 R-5c..R-6** (still leftover from the 2026-05-25 wave): R-5c P-PAGE guard, R-5d S-SHAPE guard, R-5e A-AUDIT guard, R-6 audit-backlog flush. Each ~1-2 hr, small focused PRs.
+3. **Advanced-tech research roadmap** — Near-dup ADOPT now **CLOSED ✓** (text #260 + PDQ #263); remaining open items:
+   - **Parquet-reports** (ADOPT, deferred): pyarrow at scan-complete + DuckDB/Polars query Parquet — cold GROUP BY ~30s → <1s, WAL-safe. Optional now that #252 made reads lock-resilient.
+   - **PILOT tier**: ETW FileIO via raw ctypes (Windows monitoring); Tantivy search.
+   - **WATCH/SKIP**: FSRM, MiniFilter, chDB, DuckDB-FTS.
+4. **#114** storage Phase 3-5 (Elasticsearch backend, deliberately deferred); **#203** decision; **#29** EPIC roadmap (pinned, never closed).
 
-### The 8 endpoint-conventions rules now have CI teeth
-`docs/standards/endpoint-conventions.md`. Auto-enforced: Rule 1 (R-CACHE),
-Rule 5 (A-AWAIT), Rule 6 (C-CURSOR), Rule 7 (D-CHAIN). Manual/pending:
-Rules 2/3/4/8. New report endpoints MUST use `cached_report_endpoint`;
-new `async def` MUST await; reads use `get_read_cursor`, writes `get_cursor`.
+### The 8 endpoint-conventions rules — same as last session
+`docs/standards/endpoint-conventions.md`. Auto-enforced: Rule 1 (R-CACHE), Rule 5 (A-AWAIT), Rule 6 (C-CURSOR), Rule 7 (D-CHAIN). Manual/pending: Rules 2/3/4/8. New report endpoints MUST use `cached_report_endpoint`; new `async def` MUST await; reads use `get_read_cursor`, writes `get_cursor`.
 
 ---
 
