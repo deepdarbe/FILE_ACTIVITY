@@ -430,3 +430,76 @@ def test_a_audit_ignores_non_route_functions(fake_api_py):
 def test_a_audit_runs_against_real_api_py():
     """Live api.py must pass A-AUDIT with the documented allowlists."""
     assert g.check_a_audit() is True
+
+
+# ---------------------------------------------------------------------------
+# S-SHAPE — no raw summary_json access in api.py (Rule 3)
+# ---------------------------------------------------------------------------
+
+
+def test_s_shape_passes_on_canonical_access(fake_api_py):
+    """Reading via db.get_scan_summary then indexing is fine — that path
+    already routed through normalize_summary."""
+    fake_api_py.write_text(
+        "def read_summary():\n"
+        "    summary = db.get_scan_summary(scan_id)\n"
+        "    return summary.get('age_buckets')\n"
+    )
+    assert g.check_s_shape() is True
+
+
+def test_s_shape_fails_on_row_subscript(fake_api_py):
+    fake_api_py.write_text(
+        "def bad_read(row):\n"
+        "    return row['summary_json']\n"
+    )
+    assert g.check_s_shape() is False
+
+
+def test_s_shape_fails_on_row_get(fake_api_py):
+    fake_api_py.write_text(
+        "def bad_read(row):\n"
+        "    return row.get('summary_json')\n"
+    )
+    assert g.check_s_shape() is False
+
+
+def test_s_shape_fails_on_json_loads(fake_api_py):
+    fake_api_py.write_text(
+        "import json\n"
+        "def bad_read(row):\n"
+        "    return json.loads(row['summary_json'])\n"
+    )
+    assert g.check_s_shape() is False
+
+
+def test_s_shape_fails_on_partial_summary_json(fake_api_py):
+    fake_api_py.write_text(
+        "import json\n"
+        "def bad_read(row):\n"
+        "    return json.loads(row['partial_summary_json'])\n"
+    )
+    assert g.check_s_shape() is False
+
+
+def test_s_shape_respects_noqa_marker(fake_api_py):
+    """The per-line override marker exempts a documented exception."""
+    fake_api_py.write_text(
+        "def needed_raw(row):\n"
+        "    return row['summary_json']  # noqa: S-SHAPE — backup tooling needs the raw blob\n"
+    )
+    assert g.check_s_shape() is True
+
+
+def test_s_shape_ignores_comment_lines(fake_api_py):
+    """Commented-out example code shouldn't trip the guard."""
+    fake_api_py.write_text(
+        "# Old code: summary = json.loads(row['summary_json'])\n"
+        "# Use db.get_scan_summary(scan_id) instead.\n"
+    )
+    assert g.check_s_shape() is True
+
+
+def test_s_shape_runs_against_real_api_py():
+    """Live api.py must pass S-SHAPE — R-3/R-4 cleanup confirmed."""
+    assert g.check_s_shape() is True

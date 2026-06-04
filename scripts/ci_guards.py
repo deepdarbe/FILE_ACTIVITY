@@ -982,6 +982,70 @@ def check_a_audit() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# S-SHAPE — readers go through db.get_scan_summary (Rule 3), no raw bypass
+# ---------------------------------------------------------------------------
+
+
+# Line-level regex patterns flagging api.py code that reaches into the
+# raw ``summary_json`` column directly — the bug shape behind PR #198 /
+# #223. The canonical reader is ``db.get_scan_summary(scan_id)`` which
+# routes through ``src/storage/_summary_compat.normalize_summary`` so
+# every consumer sees the canonical list-shape of ``age_buckets`` /
+# ``size_buckets`` regardless of which writer produced the row.
+_S_SHAPE_PATTERNS = (
+    r'\[\s*[\"\']summary_json[\"\']\s*\]',
+    r'\.get\(\s*[\"\']summary_json[\"\']',
+    r'json\.loads\([^)]*summary_json',
+    r'\[\s*[\"\']partial_summary_json[\"\']\s*\]',
+    r'json\.loads\([^)]*partial_summary_json',
+)
+
+
+def check_s_shape() -> bool:
+    """Flag raw ``summary_json`` / ``partial_summary_json`` access in api.py.
+
+    Rule 3: read the canonical shape via ``db.get_scan_summary(...)``.
+    Direct ``row["summary_json"]`` or ``json.loads(row["summary_json"])``
+    bypasses ``normalize_summary`` (PR #198/#223 bug class). To override
+    locally for a documented exemption, append ``# noqa: S-SHAPE`` to the
+    line; the guard skips noqa'd lines.
+    """
+    import re
+
+    if not _API_PY.exists():
+        _err("S-SHAPE", f"{_API_PY} not found")
+        return False
+    src = _API_PY.read_text(encoding="utf-8")
+    patterns = [re.compile(p) for p in _S_SHAPE_PATTERNS]
+
+    offenders: list[tuple[int, str]] = []
+    for i, line in enumerate(src.splitlines(), start=1):
+        # Comment-only lines (e.g. docstrings, # ... notes) are not code.
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        if "noqa: S-SHAPE" in line:
+            continue
+        for pat in patterns:
+            if pat.search(line):
+                offenders.append((i, line.strip()))
+                break
+
+    if offenders:
+        for ln, text in offenders:
+            _err(
+                "S-SHAPE",
+                f"api.py:{ln} raw summary_json access bypasses "
+                "normalize_summary. Use db.get_scan_summary(scan_id) "
+                "(Rule 3). Append `# noqa: S-SHAPE` to override with a "
+                f"documented exemption. (line: {text!r})",
+            )
+        return False
+    _ok("S-SHAPE", "no raw summary_json access in api.py")
+    return True
+
+
 CHECKS = {
     "yaml-dup": check_yaml_duplicates,
     "yaml-schema": check_yaml_schema,
@@ -994,6 +1058,7 @@ CHECKS = {
     "c-cursor": check_c_cursor,
     "p-page": check_p_page,
     "a-audit": check_a_audit,
+    "s-shape": check_s_shape,
 }
 
 
