@@ -354,3 +354,79 @@ def test_p_page_ignores_non_route_functions(fake_api_py):
 def test_p_page_runs_against_real_api_py():
     """Live api.py must pass P-PAGE with the documented allowlists."""
     assert g.check_p_page() is True
+
+
+# ---------------------------------------------------------------------------
+# A-AUDIT — mutating route handlers emit an audit event (Rule 4)
+# ---------------------------------------------------------------------------
+
+
+def test_a_audit_passes_when_audit_called(fake_api_py):
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def good_post():\n"
+        "    db.insert_audit_event_simple('x', {})\n"
+        "    return {}\n"
+    )
+    assert g.check_a_audit() is True
+
+
+def test_a_audit_fails_when_audit_missing(fake_api_py):
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def bad_post():\n"
+        "    return {}\n"
+    )
+    assert g.check_a_audit() is False
+
+
+def test_a_audit_fails_for_delete_without_audit(fake_api_py):
+    fake_api_py.write_text(
+        "@app.delete('/api/x')\n"
+        "def bad_delete():\n"
+        "    return {}\n"
+    )
+    assert g.check_a_audit() is False
+
+
+def test_a_audit_fails_for_patch_without_audit(fake_api_py):
+    fake_api_py.write_text(
+        "@app.patch('/api/x')\n"
+        "def bad_patch():\n"
+        "    return {}\n"
+    )
+    assert g.check_a_audit() is False
+
+
+def test_a_audit_ignores_get_handlers(fake_api_py):
+    """GET handlers are not mutating; no audit expected."""
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def read_only():\n"
+        "    return {}\n"
+    )
+    assert g.check_a_audit() is True
+
+
+def test_a_audit_passes_when_allowlisted(fake_api_py, monkeypatch):
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def grandfathered():\n"
+        "    return {}\n"
+    )
+    monkeypatch.setattr(g, "A_AUDIT_ALLOWLIST", {"grandfathered"})
+    assert g.check_a_audit() is True
+
+
+def test_a_audit_ignores_non_route_functions(fake_api_py):
+    """Helper functions that happen to lack an audit call don't count."""
+    fake_api_py.write_text(
+        "def helper():\n"
+        "    return 1\n"
+    )
+    assert g.check_a_audit() is True
+
+
+def test_a_audit_runs_against_real_api_py():
+    """Live api.py must pass A-AUDIT with the documented allowlists."""
+    assert g.check_a_audit() is True

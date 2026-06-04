@@ -841,6 +841,147 @@ def check_p_page() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# A-AUDIT — POST/PUT/DELETE/PATCH route handlers emit an audit event, Rule 4
+# ---------------------------------------------------------------------------
+
+
+# Mutating route handlers grandfathered without an audit emission as of EPIC
+# #225 R-5e introduction. R-6 (audit-backlog flush) triages each: add the
+# emission OR keep allowlisted with a justification comment. New endpoints
+# must NOT be added here without reviewer sign-off and an R-6-style follow-up.
+A_AUDIT_ALLOWLIST: set[str] = {
+    # api.py line numbers as of master c5cf885 / EPIC #225 R-5e introduction.
+    # R-6 (audit-backlog flush) will triage each: add insert_audit_event_simple
+    # OR keep allowlisted with a per-name justification comment. Analytics-
+    # compute and self-test POSTs are the typical justified exemptions.
+    "acl_snapshot",                    # 5437
+    "approvals_approve",               # 7051
+    "approvals_execute",               # 7088
+    "approvals_reject",                # 7071
+    "archive_by_insight",              # 4180
+    "archive_dry_run",                 # 1574
+    "archive_selective",               # 3810
+    "audit_export",                    # 2417 — export-only, no mutation
+    "bulk_restore",                    # 4382
+    "chargeback_add_center",           # 7140
+    "chargeback_add_owner",            # 7186
+    "chargeback_remove_center",        # 7179
+    "chargeback_remove_owner",         # 7199
+    "chargeback_update_center",        # 7160
+    "content_duplicates_compute",      # 3318 — analytics compute
+    "create_snapshot",                 # 6216
+    "db_optimize",                     # 4969 — maintenance op
+    "drilldown_archive",               # 2080
+    "duplicates_delete",               # 3529
+    "duplicates_quarantine",           # 3484
+    "duplicates_quarantine_preview",   # 3468 — dry-run
+    "insights_recompute",              # 2471 — analytics compute
+    "legal_holds_add",                 # 6852
+    "legal_holds_release",             # 6869
+    "notifications_send_to",           # 4641
+    "notifications_test",              # 4605 — self-test
+    "notify_users_run_now",            # 1742
+    "open_folder",                     # 4479 — local-only helper, no DB write
+    "orphan_sid_reassign",             # 5506
+    "overview_recompute",              # 2919 — analytics compute
+    "pii_scan",                        # 6410 — analytics compute
+    "quarantine_purge",                # 3653
+    "quarantine_restore",              # 3701
+    "ransomware_test",                 # 5321 — self-test
+    "restore_by_operation",            # 4310
+    "restore_file",                    # 1634
+    "restore_snapshot",                # 6281
+    "retention_policy_apply",          # 6731
+    "retention_policy_create",         # 6707
+    "retention_policy_remove",         # 6724
+    "run_archive",                     # 1519
+    "run_scan",                        # 1005
+    "start_export",                    # 5187 — export-only
+    "syslog_test",                     # 6080 — self-test
+    "test_source",                     # 987 — connectivity test
+    "text_near_dup_compute",           # 3396 — analytics compute
+}
+
+MUTATING_HTTP_VERBS = frozenset({"post", "put", "delete", "patch"})
+AUDIT_FUNC_NAMES = frozenset({"insert_audit_event_simple", "insert_audit_event"})
+
+
+def check_a_audit() -> bool:
+    """Flag mutating route handlers that don't call insert_audit_event_simple.
+
+    Per Rule 4: every POST/PUT/DELETE/PATCH endpoint records what changed
+    via ``db.insert_audit_event_simple(...)`` so the tamper-evident audit
+    chain (#38) has a row for every server-side mutation. Compute-only
+    "analytics" POSTs are the usual exemption; they sit in the allowlist
+    with a justification.
+    """
+    import ast
+
+    if not _API_PY.exists():
+        _err("A-AUDIT", f"{_API_PY} not found")
+        return False
+    src = _API_PY.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        _err("A-AUDIT", f"api.py syntax error: {e}")
+        return False
+
+    def is_mutating_handler(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """True iff fn has an @app.<post|put|delete|patch>(...) decorator
+        whose target is the `app` binding (the FastAPI app)."""
+        for dec in fn.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if isinstance(target, ast.Attribute) and target.attr in MUTATING_HTTP_VERBS:
+                if isinstance(target.value, ast.Name) and target.value.id == "app":
+                    return True
+        return False
+
+    def calls_audit(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """True iff fn body contains a call to an audit-emission function."""
+        for n in ast.walk(fn):
+            if not isinstance(n, ast.Call):
+                continue
+            func = n.func
+            if isinstance(func, ast.Attribute) and func.attr in AUDIT_FUNC_NAMES:
+                return True
+            if isinstance(func, ast.Name) and func.id in AUDIT_FUNC_NAMES:
+                return True
+        return False
+
+    offenders: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not is_mutating_handler(node):
+            continue
+        if calls_audit(node):
+            continue
+        if node.name in A_AUDIT_ALLOWLIST:
+            continue
+        offenders.append((node.name, node.lineno))
+
+    if offenders:
+        for name, ln in offenders:
+            _err(
+                "A-AUDIT",
+                f"api.py:{ln} mutating handler {name!r} does not call "
+                "db.insert_audit_event_simple(...). Per Rule 4, every "
+                "POST/PUT/DELETE/PATCH must emit an audit event. Add the "
+                f"emission, or add {name!r} to A_AUDIT_ALLOWLIST in "
+                "scripts/ci_guards.py with a justification (compute-only "
+                "analytics POSTs are the common exemption).",
+            )
+        return False
+    _ok(
+        "A-AUDIT",
+        f"all mutating route handlers emit audit events "
+        f"(allowlisted: {len(A_AUDIT_ALLOWLIST)})",
+    )
+    return True
+
+
 CHECKS = {
     "yaml-dup": check_yaml_duplicates,
     "yaml-schema": check_yaml_schema,
@@ -852,6 +993,7 @@ CHECKS = {
     "a-await": check_a_await,
     "c-cursor": check_c_cursor,
     "p-page": check_p_page,
+    "a-audit": check_a_audit,
 }
 
 
