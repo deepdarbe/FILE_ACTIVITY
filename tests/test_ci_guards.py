@@ -279,3 +279,78 @@ def test_c_cursor_ignores_non_route_functions(fake_api_py):
 def test_c_cursor_runs_against_real_api_py():
     """Live api.py must pass C-CURSOR with the documented allowlists."""
     assert g.check_c_cursor() is True
+
+
+# ---------------------------------------------------------------------------
+# P-PAGE — paginated endpoints use PaginationParams (Depends)
+# ---------------------------------------------------------------------------
+
+
+def test_p_page_passes_with_pagination_params(fake_api_py):
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def good_endpoint(p: PaginationParams = Depends()):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is True
+
+
+def test_p_page_fails_with_hand_rolled(fake_api_py):
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def bad_endpoint(page: int = 1, limit: int = 50):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is False
+
+
+def test_p_page_fails_with_page_size_drift(fake_api_py):
+    """page+page_size is *closer* to canonical but still hand-rolled."""
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def drifted(page: int = 1, page_size: int = 50):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is False
+
+
+def test_p_page_fails_with_offset_limit(fake_api_py):
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def offset_style(offset: int = 0, limit: int = 50):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is False
+
+
+def test_p_page_passes_when_allowlisted(fake_api_py, monkeypatch):
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def grandfathered(page: int = 1, limit: int = 50):\n"
+        "    return {}\n"
+    )
+    monkeypatch.setattr(g, "P_PAGE_ALLOWLIST", {"grandfathered"})
+    assert g.check_p_page() is True
+
+
+def test_p_page_ignores_non_paginated_handlers(fake_api_py):
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def no_pagination(source_id: int):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is True
+
+
+def test_p_page_ignores_non_route_functions(fake_api_py):
+    """Helper functions with page/limit args are not endpoints."""
+    fake_api_py.write_text(
+        "def helper(page: int, limit: int):\n"
+        "    return page * limit\n"
+    )
+    assert g.check_p_page() is True
+
+
+def test_p_page_runs_against_real_api_py():
+    """Live api.py must pass P-PAGE with the documented allowlists."""
+    assert g.check_p_page() is True

@@ -702,6 +702,145 @@ def check_c_cursor() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# P-PAGE — paginated endpoints use PaginationParams (Depends), Rule 2
+# ---------------------------------------------------------------------------
+
+
+# Route handlers grandfathered with hand-rolled pagination as of EPIC #225
+# R-5c. Each name maps to api.py line number for traceability. Migrate to
+# ``p: PaginationParams = Depends()`` opportunistically; new endpoints
+# must NOT be added here without reviewer sign-off and a follow-up issue.
+P_PAGE_ALLOWLIST: set[str] = {
+    # api.py line numbers as of master 62fc1f2 / EPIC #225 R-5c introduction.
+    "archive_search",                  # 1596
+    "drilldown_frequency",             # 1814
+    "drilldown_type",                  # 1830
+    "drilldown_size",                  # 1845
+    "drilldown_owner",                 # 1861
+    "audit_events",                    # 2389
+    "audit_chain",                     # 2411
+    "mit_naming_files",                # 2524
+    "insight_files",                   # 2826
+    "duplicate_report",                # 3246
+    "content_duplicates_report",       # 3339
+    "text_near_dup_report",            # 3428
+    "quarantine_list",                 # 3585
+    "operations_history",              # 3733
+    "top_creators",                    # 4173
+    "get_operations",                  # 4299
+    "browse_archived",                 # 4411
+    "archive_history",                 # 4424
+    "operation_files",                 # 4438
+    "notifications_log",               # 4674
+    "acl_paths_for_trustee",           # 5415
+    "orphan_sid_files",                # 5491
+    "acl_trustee_paths_export_xlsx",   # 5931
+    "list_extension_anomalies",        # 5962
+    "pii_findings",                    # 6430
+    "legal_holds_history",             # 6847
+    "approvals_history",               # 7045
+}
+
+PAGINATION_PARAM_NAMES = frozenset({"page", "page_size", "limit", "offset"})
+
+
+def check_p_page() -> bool:
+    """Flag route handlers with hand-rolled pagination params.
+
+    Per Rule 2: any endpoint that accepts ``page`` / ``page_size`` /
+    ``limit`` / ``offset`` must take them via
+    ``p: PaginationParams = Depends()`` from
+    ``src/dashboard/_endpoint_helpers.py`` so the (page, limit) /
+    (page, page_size) / (offset, limit) drift documented in the
+    2026-05-22 audit cannot recur. Grandfathered offenders stay in
+    P_PAGE_ALLOWLIST until they migrate.
+    """
+    import ast
+
+    if not _API_PY.exists():
+        _err("P-PAGE", f"{_API_PY} not found")
+        return False
+    src = _API_PY.read_text(encoding="utf-8")
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        _err("P-PAGE", f"api.py syntax error: {e}")
+        return False
+
+    def is_route_handler(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """True iff fn has an @app.<method>(...) HTTP-verb decorator."""
+        for dec in fn.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if isinstance(target, ast.Attribute) and target.attr in {
+                "get", "post", "put", "delete", "patch",
+            }:
+                # Only flag @app.<method>; ignore @<router>.<method> dialects
+                # unless they're literally named `app`. The repo's FastAPI app
+                # is bound to `app`.
+                if isinstance(target.value, ast.Name) and target.value.id == "app":
+                    return True
+        return False
+
+    def args_iter(fn) -> list[ast.arg]:
+        return list(fn.args.args) + list(fn.args.kwonlyargs) + list(fn.args.posonlyargs)
+
+    def has_pagination_param(fn) -> bool:
+        return any(a.arg in PAGINATION_PARAM_NAMES for a in args_iter(fn))
+
+    def uses_pagination_params_helper(fn) -> bool:
+        """True iff any arg is annotated as PaginationParams (with or without
+        a wrapper like Optional[...]).
+        """
+        for arg in args_iter(fn):
+            ann = arg.annotation
+            if ann is None:
+                continue
+            if isinstance(ann, ast.Name) and ann.id == "PaginationParams":
+                return True
+            if isinstance(ann, ast.Attribute) and ann.attr == "PaginationParams":
+                return True
+            # Conservative: dig one level into Optional[...] / Annotated[...].
+            if isinstance(ann, ast.Subscript):
+                inner = ann.slice
+                if isinstance(inner, ast.Name) and inner.id == "PaginationParams":
+                    return True
+        return False
+
+    offenders: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not is_route_handler(node):
+            continue
+        if not has_pagination_param(node):
+            continue
+        if uses_pagination_params_helper(node):
+            continue
+        if node.name in P_PAGE_ALLOWLIST:
+            continue
+        offenders.append((node.name, node.lineno))
+
+    if offenders:
+        for name, ln in offenders:
+            _err(
+                "P-PAGE",
+                f"api.py:{ln} route handler {name!r} has hand-rolled "
+                "pagination (page/page_size/limit/offset). Use "
+                "`p: PaginationParams = Depends()` from "
+                "src/dashboard/_endpoint_helpers.py (Rule 2). To "
+                f"grandfather, add {name!r} to P_PAGE_ALLOWLIST in "
+                "scripts/ci_guards.py with a follow-up issue reference.",
+            )
+        return False
+    _ok(
+        "P-PAGE",
+        f"all paginated route handlers use PaginationParams "
+        f"(allowlisted: {len(P_PAGE_ALLOWLIST)})",
+    )
+    return True
+
+
 CHECKS = {
     "yaml-dup": check_yaml_duplicates,
     "yaml-schema": check_yaml_schema,
@@ -712,6 +851,7 @@ CHECKS = {
     "r-cache": check_r_cache,
     "a-await": check_a_await,
     "c-cursor": check_c_cursor,
+    "p-page": check_p_page,
 }
 
 
