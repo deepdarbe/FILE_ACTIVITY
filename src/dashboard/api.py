@@ -2995,7 +2995,10 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not row:
             return None, None
         scan_id_local = row.get("id")
-        blob = row.get("partial_summary_json")
+        # noqa: S-SHAPE - this IS the partial-v2 canonical reader: the
+        # v1->v2 migration + (source_id, updated_at) cache live right here,
+        # so routing through db.get_scan_partial_summary would lose both.
+        blob = row.get("partial_summary_json")  # noqa: S-SHAPE
         updated_at = row.get("partial_updated_at")
         if not blob:
             # No partial snapshot yet — return an empty v2 envelope so
@@ -3062,7 +3065,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(404, "Scan not found")
         if not row:
             raise HTTPException(404, "Scan not found")
-        blob = row.get("partial_summary_json")
+        # noqa: S-SHAPE - per-scan partial-v2 canonical reader (v1->v2
+        # migration lives here); see the source-level reader above.
+        blob = row.get("partial_summary_json")  # noqa: S-SHAPE
         if not blob:
             from src.analyzer.partial_summary_v2 import _empty_v2_payload
             empty = _empty_v2_payload()

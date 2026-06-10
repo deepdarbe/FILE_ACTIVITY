@@ -351,6 +351,40 @@ def test_p_page_ignores_non_route_functions(fake_api_py):
     assert g.check_p_page() is True
 
 
+def test_p_page_fails_partial_migration(fake_api_py):
+    """Helper added but legacy page/limit args left behind — FastAPI would
+    bind BOTH from the query string, recreating the Rule-2 drift. Flag.
+    (2026-06-04 review repro R4.)"""
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def partial(p: PaginationParams = Depends(), page: int = 1, limit: int = 50):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is False
+
+
+def test_p_page_passes_annotated_pagination_params(fake_api_py):
+    """PEP 593 Annotated[PaginationParams, Depends()] is the canonical
+    FastAPI form — Subscript slice is a Tuple, which the original
+    implementation missed (2026-06-04 review repro R3)."""
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def modern(page: Annotated[PaginationParams, Depends()]):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is True
+
+
+def test_p_page_passes_optional_pagination_params(fake_api_py):
+    """Optional[PaginationParams] (Subscript -> Name) keeps working."""
+    fake_api_py.write_text(
+        "@app.get('/api/x')\n"
+        "def opt(limit: Optional[PaginationParams] = Depends()):\n"
+        "    return {}\n"
+    )
+    assert g.check_p_page() is True
+
+
 def test_p_page_runs_against_real_api_py():
     """Live api.py must pass P-PAGE with the documented allowlists."""
     assert g.check_p_page() is True
@@ -427,6 +461,34 @@ def test_a_audit_ignores_non_route_functions(fake_api_py):
     assert g.check_a_audit() is True
 
 
+def test_a_audit_fails_audit_only_in_dead_nested_def(fake_api_py):
+    """An audit call inside a nested helper proves nothing — the helper
+    may never be invoked. Own-body semantics match A-AWAIT/C-CURSOR.
+    (2026-06-04 review repro R2.)"""
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def evil():\n"
+        "    def _unused():\n"
+        "        db.insert_audit_event_simple('x', {})\n"
+        "    return {}\n"
+    )
+    assert g.check_a_audit() is False
+
+
+def test_a_audit_passes_audit_inside_branch(fake_api_py):
+    """Branches (try/if/with) are part of the own body — they count."""
+    fake_api_py.write_text(
+        "@app.post('/api/x')\n"
+        "def ok():\n"
+        "    try:\n"
+        "        db.insert_audit_event_simple('x', {})\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return {}\n"
+    )
+    assert g.check_a_audit() is True
+
+
 def test_a_audit_runs_against_real_api_py():
     """Live api.py must pass A-AUDIT with the documented allowlists."""
     assert g.check_a_audit() is True
@@ -498,6 +560,36 @@ def test_s_shape_ignores_comment_lines(fake_api_py):
         "# Use db.get_scan_summary(scan_id) instead.\n"
     )
     assert g.check_s_shape() is True
+
+
+def test_s_shape_fails_on_partial_get(fake_api_py):
+    """Regression for the on-ship bypass: row.get('partial_summary_json')
+    was not covered by the original pattern set even though api.py used
+    exactly this shape at 2998/3065. (2026-06-04 review repro R1.)"""
+    fake_api_py.write_text(
+        "def bad_read(row):\n"
+        "    return row.get('partial_summary_json')\n"
+    )
+    assert g.check_s_shape() is False
+
+
+def test_s_shape_noqa_case_insensitive(fake_api_py):
+    """flake8/ruff-style lower-case noqa works too."""
+    fake_api_py.write_text(
+        "def needed_raw(row):\n"
+        "    return row['summary_json']  # noqa: s-shape - documented\n"
+    )
+    assert g.check_s_shape() is True
+
+
+def test_s_shape_noqa_in_string_does_not_silence(fake_api_py):
+    """A noqa marker inside a string literal (no # comment) must NOT
+    exempt the line."""
+    fake_api_py.write_text(
+        "def sneaky(row):\n"
+        "    return str(row['summary_json']) + 'noqa: S-SHAPE'\n"
+    )
+    assert g.check_s_shape() is False
 
 
 def test_s_shape_runs_against_real_api_py():
