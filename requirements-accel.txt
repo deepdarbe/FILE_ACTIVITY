@@ -96,4 +96,4 @@ phonenumbers>=9.0.31
 # graceful no-op (the text_near_duplicates feature stays off). Gated by
 # text_near_duplicates.enabled, triggered on-demand from the dashboard.
 # See src/analyzer/text_minhash.py.
-datasketch>=1.5
+datasketch>=1.10.0
