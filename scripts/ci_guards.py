@@ -785,52 +785,65 @@ def check_p_page() -> bool:
     def args_iter(fn) -> list[ast.arg]:
         return list(fn.args.args) + list(fn.args.kwonlyargs) + list(fn.args.posonlyargs)
 
-    def has_pagination_param(fn) -> bool:
-        return any(a.arg in PAGINATION_PARAM_NAMES for a in args_iter(fn))
+    def ann_is_pagination_params(ann) -> bool:
+        """True iff the annotation resolves to PaginationParams.
 
-    def uses_pagination_params_helper(fn) -> bool:
-        """True iff any arg is annotated as PaginationParams (with or without
-        a wrapper like Optional[...]).
+        Handles every spelling in active use or recommended by FastAPI:
+        bare ``PaginationParams``, dotted ``helpers.PaginationParams``,
+        ``Optional[PaginationParams]`` (Subscript→Name), PEP 593
+        ``Annotated[PaginationParams, Depends()]`` (Subscript→Tuple),
+        and PEP 604 ``PaginationParams | None`` (BinOp) — recursively,
+        so nested wrappers compose.
         """
-        for arg in args_iter(fn):
-            ann = arg.annotation
-            if ann is None:
-                continue
-            if isinstance(ann, ast.Name) and ann.id == "PaginationParams":
-                return True
-            if isinstance(ann, ast.Attribute) and ann.attr == "PaginationParams":
-                return True
-            # Conservative: dig one level into Optional[...] / Annotated[...].
-            if isinstance(ann, ast.Subscript):
-                inner = ann.slice
-                if isinstance(inner, ast.Name) and inner.id == "PaginationParams":
-                    return True
+        if ann is None:
+            return False
+        if isinstance(ann, ast.Name):
+            return ann.id == "PaginationParams"
+        if isinstance(ann, ast.Attribute):
+            return ann.attr == "PaginationParams"
+        if isinstance(ann, ast.Subscript):
+            inner = ann.slice
+            if isinstance(inner, ast.Tuple):
+                return any(ann_is_pagination_params(el) for el in inner.elts)
+            return ann_is_pagination_params(inner)
+        if isinstance(ann, ast.BinOp):
+            return (ann_is_pagination_params(ann.left)
+                    or ann_is_pagination_params(ann.right))
         return False
 
-    offenders: list[tuple[str, int]] = []
+    # Per-ARG check (not per-function): a pagination-named arg is fine
+    # only when ITS OWN annotation is the helper. This also catches the
+    # partial-migration trap — `p: PaginationParams = Depends()` added
+    # while a legacy `page: int = 1` lingers in the signature would have
+    # FastAPI bind both from the query string, recreating the drift.
+    offenders: list[tuple[str, int, list[str]]] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if not is_route_handler(node):
             continue
-        if not has_pagination_param(node):
-            continue
-        if uses_pagination_params_helper(node):
+        hand_rolled = [
+            a.arg for a in args_iter(node)
+            if a.arg in PAGINATION_PARAM_NAMES
+            and not ann_is_pagination_params(a.annotation)
+        ]
+        if not hand_rolled:
             continue
         if node.name in P_PAGE_ALLOWLIST:
             continue
-        offenders.append((node.name, node.lineno))
+        offenders.append((node.name, node.lineno, hand_rolled))
 
     if offenders:
-        for name, ln in offenders:
+        for name, ln, params in offenders:
             _err(
                 "P-PAGE",
                 f"api.py:{ln} route handler {name!r} has hand-rolled "
-                "pagination (page/page_size/limit/offset). Use "
+                f"pagination param(s) {params}. Use "
                 "`p: PaginationParams = Depends()` from "
-                "src/dashboard/_endpoint_helpers.py (Rule 2). To "
-                f"grandfather, add {name!r} to P_PAGE_ALLOWLIST in "
-                "scripts/ci_guards.py with a follow-up issue reference.",
+                "src/dashboard/_endpoint_helpers.py (Rule 2) and remove "
+                "the legacy query params. To grandfather, add "
+                f"{name!r} to P_PAGE_ALLOWLIST in scripts/ci_guards.py "
+                "with a follow-up issue reference.",
             )
         return False
     _ok(
@@ -903,7 +916,9 @@ A_AUDIT_ALLOWLIST: set[str] = {
     "text_near_dup_compute",           # 3396 — analytics compute
 }
 
-MUTATING_HTTP_VERBS = frozenset({"post", "put", "delete", "patch"})
+# Same canonical fact as C-CURSOR's _HTTP_WRITE_METHODS — alias, don't fork,
+# so a future verb policy change lands in exactly one place.
+MUTATING_HTTP_VERBS = frozenset(_HTTP_WRITE_METHODS)
 AUDIT_FUNC_NAMES = frozenset({"insert_audit_event_simple", "insert_audit_event"})
 
 
@@ -939,14 +954,37 @@ def check_a_audit() -> bool:
         return False
 
     def calls_audit(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        """True iff fn body contains a call to an audit-emission function."""
-        for n in ast.walk(fn):
-            if not isinstance(n, ast.Call):
-                continue
-            func = n.func
-            if isinstance(func, ast.Attribute) and func.attr in AUDIT_FUNC_NAMES:
-                return True
-            if isinstance(func, ast.Name) and func.id in AUDIT_FUNC_NAMES:
+        """True iff fn's OWN body calls an audit-emission function.
+
+        Deliberately does NOT descend into nested function definitions —
+        same own-body semantics as A-AWAIT and C-CURSOR. An audit call
+        sitting inside a nested helper proves nothing: the helper may
+        never be invoked (dead code), so only a call reachable in the
+        handler's own statement tree counts. Branches (if/try/with/for)
+        DO count — only nested def/async-def boundaries stop the scan.
+        """
+        class AuditFinder(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.found = False
+
+            def visit_Call(self, node: ast.Call) -> None:
+                func = node.func
+                if isinstance(func, ast.Attribute) and func.attr in AUDIT_FUNC_NAMES:
+                    self.found = True
+                elif isinstance(func, ast.Name) and func.id in AUDIT_FUNC_NAMES:
+                    self.found = True
+                self.generic_visit(node)
+
+            def visit_FunctionDef(self, node) -> None:
+                pass  # don't descend into nested defs
+
+            def visit_AsyncFunctionDef(self, node) -> None:
+                pass
+
+        finder = AuditFinder()
+        for stmt in fn.body:
+            finder.visit(stmt)
+            if finder.found:
                 return True
         return False
 
@@ -998,6 +1036,9 @@ _S_SHAPE_PATTERNS = (
     r'\.get\(\s*[\"\']summary_json[\"\']',
     r'json\.loads\([^)]*summary_json',
     r'\[\s*[\"\']partial_summary_json[\"\']\s*\]',
+    # The .get form was missing at R-5d ship time — api.py:2998/3065 used
+    # exactly this shape and slipped through (2026-06-04 review repro).
+    r'\.get\(\s*[\"\']partial_summary_json[\"\']',
     r'json\.loads\([^)]*partial_summary_json',
 )
 
@@ -1025,7 +1066,10 @@ def check_s_shape() -> bool:
         stripped = line.lstrip()
         if stripped.startswith("#"):
             continue
-        if "noqa: S-SHAPE" in line:
+        # noqa must live in a trailing comment (not a string literal) and
+        # is case-insensitive, matching the flake8/ruff convention.
+        hash_idx = line.find("#")
+        if hash_idx != -1 and "noqa: s-shape" in line[hash_idx:].lower():
             continue
         for pat in patterns:
             if pat.search(line):
