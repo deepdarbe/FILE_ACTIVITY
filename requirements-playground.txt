@@ -10,6 +10,9 @@
 # DuckDB (already in requirements.txt) is reused via read-only ATTACH;
 # the playground doesn't add a second DuckDB pin.
 
-streamlit>=1.30
+# plotly 6 emits base64-encoded typed arrays in figure JSON; Streamlit
+# renders that format only from 1.42 — older Streamlit shows blank
+# charts. Keep this floor in sync with the plotly major (audit 2026-06-10).
+streamlit>=1.42
 plotly>=6.7.0
 pandas>=2.0

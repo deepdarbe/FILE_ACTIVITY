@@ -20,8 +20,9 @@ contract and the read-only pool. The followup audit lives in
   `.github/workflows/ci.yml` and `scripts/ci_guards.py`.
 - **No parallel agents on the same file.** Wave-of-agents on `index.html` produced
   the JS regression. One agent per file per PR.
-- **`scripts/ci_guards.py` (D-YAML / S-YAML / LOADERS / HTML-BUDGET / D-CHAIN /
-  SVC-PARITY)** runs on every PR. Adds belong here, not in ad-hoc PR diffs.
+- **`scripts/ci_guards.py` (12 mechanical guards: D-YAML / S-YAML / LOADERS /
+  HTML-BUDGET / D-CHAIN / SVC-PARITY / R-CACHE / A-AWAIT / C-CURSOR / P-PAGE /
+  A-AUDIT / S-SHAPE)** runs on every PR. Adds belong here, not in ad-hoc PR diffs.
 - **Customer interactions still benefit from the #194 log format** even though
   the week is over: `Customer msg / What tested / Outcome ✅⏳❌ / Action / Next`.
 
@@ -53,7 +54,7 @@ The 2026-05-26 → 2026-05-30 session shipped **7 feature/fix PRs** (#256–#258
 
 **▶ NEXT SESSION — start here:** No urgent customer-reported bug is open in code. The remaining work is roadmap follow-through:
 1. **Customer on-box smoke for #262 + #263** (the only thing actually pending — see PENDING below).
-2. **EPIC #225 R-5c..R-6** — P-PAGE / S-SHAPE / A-AUDIT / R-6 audit-backlog. Each ~1-2 hr, small focused PRs.
+2. **EPIC #225 R-6 audit-backlog flush** — the ONLY #225 leftover (R-5 series closed 2026-06: P-PAGE #270, A-AUDIT #271, S-SHAPE #272, edge-case hardening #273). Triage the 46 A_AUDIT_ALLOWLIST entries: add `insert_audit_event_simple` to real mutations (compliance-critical ones first: legal_holds, retention_policy, restore_*, quarantine_purge, chargeback, approvals), keep analytics/self-test/export entries with justifications. Waves of 5-10 endpoints per PR.
 3. **Parquet-reports** (ADOPT, deferred — was deemed optional this session after #252 made reads lock-resilient).
 4. PILOT tier (ETW FileIO via ctypes, Tantivy).
 5. **EPIC #114** storage Phase 3-5 (Elasticsearch — keep deferred per `docs/architecture/storage-decision-2026-04-28.md` until customer crosses 500 GB / 200 M-row).
@@ -79,15 +80,15 @@ The 2026-05-26 → 2026-05-30 session shipped **7 feature/fix PRs** (#256–#258
    - **Adlandırma** Tablo tab loads top-3 codes' files quickly; "Diger N kurali" button appears.
    - **Görsel Duplikasyonlar** → PDQ option in the hash-type selector works (needs `pip install -r requirements-accel.txt` for `pdqhash`).
    - All gated on `update.cmd` to pull master `62fc1f2`.
-2. **EPIC #225 R-5c..R-6** (still leftover from the 2026-05-25 wave): R-5c P-PAGE guard, R-5d S-SHAPE guard, R-5e A-AUDIT guard, R-6 audit-backlog flush. Each ~1-2 hr, small focused PRs.
+2. **EPIC #225 — only R-6 (audit-backlog flush) remains.** The R-5 guard series shipped 2026-06: #270 P-PAGE, #271 A-AUDIT, #272 S-SHAPE, then #273 hardened all three after a max-effort review live-repro'd 4 edge-case gaps (`.get('partial_summary_json')` bypass, dead-nested-def audit false-pass, Annotated[PaginationParams] false-positive, partial-migration false-negative).
 3. **Advanced-tech research roadmap** — Near-dup ADOPT now **CLOSED ✓** (text #260 + PDQ #263); remaining open items:
    - **Parquet-reports** (ADOPT, deferred): pyarrow at scan-complete + DuckDB/Polars query Parquet — cold GROUP BY ~30s → <1s, WAL-safe. Optional now that #252 made reads lock-resilient.
    - **PILOT tier**: ETW FileIO via raw ctypes (Windows monitoring); Tantivy search.
    - **WATCH/SKIP**: FSRM, MiniFilter, chDB, DuckDB-FTS.
 4. **#114** storage Phase 3-5 (Elasticsearch backend, deliberately deferred); **#203** decision; **#29** EPIC roadmap (pinned, never closed).
 
-### The 8 endpoint-conventions rules — same as last session
-`docs/standards/endpoint-conventions.md`. Auto-enforced: Rule 1 (R-CACHE), Rule 5 (A-AWAIT), Rule 6 (C-CURSOR), Rule 7 (D-CHAIN). Manual/pending: Rules 2/3/4/8. New report endpoints MUST use `cached_report_endpoint`; new `async def` MUST await; reads use `get_read_cursor`, writes `get_cursor`.
+### The 8 endpoint-conventions rules — 7 of 8 now auto-enforced
+`docs/standards/endpoint-conventions.md`. Auto-enforced: Rule 1 (R-CACHE), Rule 2 (P-PAGE), Rule 3 (S-SHAPE), Rule 4 (A-AUDIT, allowlist pending R-6 flush), Rule 5 (A-AWAIT), Rule 6 (C-CURSOR), Rule 7 (D-CHAIN). Manual: Rule 8 only (config-gated features surface their gate in the UI). New report endpoints MUST use `cached_report_endpoint`; pagination via `p: PaginationParams = Depends()` (Annotated form also recognised); new `async def` MUST await; reads use `get_read_cursor`, writes `get_cursor`; mutating endpoints emit audit events; summary reads go through `db.get_scan_summary` (S-SHAPE noqa needs a trailing comment, case-insensitive).
 
 ---
 
@@ -244,9 +245,9 @@ Code-tracking issues:
 Dependabot queue: **all 10 merged 2026-05-22** (#204-#211, #9, #10). pillow→12
 and elasticsearch→9 were sub-agent-audited SAFE before merge. Queue is empty.
 
-- **#225** — Endpoint-conventions refactor EPIC. R-1..R-4 + R-5a/b shipped;
-  R-5c (`P-PAGE`), R-5d (`S-SHAPE`), R-5e (`A-AUDIT`), R-6 (audit backlog)
-  still open. One PR each.
+- **#225** — Endpoint-conventions refactor EPIC. R-1..R-5 ALL shipped
+  (R-5c #270 / R-5e #271 / R-5d #272 + hardening #273). Only **R-6**
+  (audit-backlog flush of the 46 A_AUDIT_ALLOWLIST entries) remains.
 - **#203** — user's own April-30 bundle, still open. Do NOT merge as-is (D2
   DuckDB removal conflicts with keep-DuckDB + #231/#232). Triage comment posted.
 
@@ -326,7 +327,8 @@ ls -la C:\FileActivity\data\file_activity.db-wal
 python scripts/bench_storage.py --db C:\FileActivity\data\file_activity.db
 # Settles "is DuckDB worth it?" empirically. Tested 10k synthetic rows → DuckDB 9-37x slower.
 
-# Run every CI guard locally before pushing (D-YAML / S-YAML / LOADERS / HTML-BUDGET / D-CHAIN / SVC-PARITY):
+# Run every CI guard locally before pushing (12 guards: D-YAML / S-YAML / LOADERS /
+# HTML-BUDGET / D-CHAIN / SVC-PARITY / R-CACHE / A-AWAIT / C-CURSOR / P-PAGE / A-AUDIT / S-SHAPE):
 python scripts/ci_guards.py
 
 # After a customer reports a problem, ALWAYS get:
