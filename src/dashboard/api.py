@@ -7277,18 +7277,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(409, str(e))
         except ApprovalError as e:
             raise HTTPException(400, str(e))
-        try:
-            db.insert_audit_event_simple(
-                source_id=None, event_type="approval_approved",
-                username=approved_by, file_path=None,
-                details=(
-                    f"approval_id={approval_id};"
-                    f"operation_type={getattr(req, 'operation_type', None)};"
-                    f"requested_by={getattr(req, 'requested_by', None)}"
-                ),
-            )
-        except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for approval_approved: %s", e)
+        # Audit: ApprovalRegistry.approve() already emits 'approval_approved'
+        # (with the same actor + approval_id/operation_type/requested_by) via
+        # its engine-internal _audit. A second endpoint-level emission would
+        # write a duplicate row with the identical event_type. Allowlisted
+        # instead — the A-AUDIT guard can't see the engine call.
         return {"ok": True, "approval": _approval_to_json(req)}
 
     @app.post("/api/approvals/{approval_id}/reject")
@@ -7306,19 +7299,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(409, str(e))
         except ApprovalError as e:
             raise HTTPException(400, str(e))
-        try:
-            db.insert_audit_event_simple(
-                source_id=None, event_type="approval_rejected",
-                username=rejected_by, file_path=None,
-                details=(
-                    f"approval_id={approval_id};"
-                    f"operation_type={getattr(req, 'operation_type', None)};"
-                    f"requested_by={getattr(req, 'requested_by', None)};"
-                    f"reason={reason}"
-                ),
-            )
-        except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for approval_rejected: %s", e)
+        # Audit: ApprovalRegistry.reject() already emits 'approval_rejected'
+        # (same actor + details incl. reason) via its engine-internal _audit.
+        # Allowlisted to avoid a duplicate-event_type row.
         return {"ok": True, "approval": _approval_to_json(req)}
 
     @app.post("/api/approvals/{approval_id}/execute")
@@ -7354,18 +7337,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise
         except ApprovalError as e:
             raise HTTPException(400, str(e))
-        try:
-            db.insert_audit_event_simple(
-                source_id=None, event_type="approval_executed",
-                username=(getattr(req, "approved_by", None) or "admin"),
-                file_path=None,
-                details=(
-                    f"approval_id={approval_id};"
-                    f"operation_type={getattr(req, 'operation_type', None)}"
-                ),
-            )
-        except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for approval_executed: %s", e)
+        # Audit: ApprovalRegistry.execute() already emits 'approval_executed'
+        # (and 'approval_execute_failed' on the error path) via its
+        # engine-internal _audit. Allowlisted to avoid a duplicate row.
         return {"ok": True, "result": result}
 
     # ─────────────────────────────────────────────────────────────────────

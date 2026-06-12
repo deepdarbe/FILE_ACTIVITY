@@ -868,6 +868,9 @@ A_AUDIT_ALLOWLIST: set[str] = {
     # R-6 (audit-backlog flush) will triage each: add insert_audit_event_simple
     # OR keep allowlisted with a per-name justification comment. Analytics-
     # compute and self-test POSTs are the typical justified exemptions.
+    "approvals_approve",               # 7251 — audited by ApprovalRegistry._audit (approval_approved)
+    "approvals_execute",               # 7324 — audited by ApprovalRegistry._audit (approval_executed)
+    "approvals_reject",                # 7294 — audited by ApprovalRegistry._audit (approval_rejected)
     "archive_dry_run",                 # 1574
     "audit_export",                    # 2417 — export-only, no mutation
     "chargeback_add_center",           # 7140
