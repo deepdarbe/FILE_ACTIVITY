@@ -19,9 +19,14 @@ Enterprise file share analysis tool that detects risky/stale/duplicate files, ar
 **Requirements:** Python 3.10+ on target (check with `python --version`).
 
 ```powershell
-# PowerShell (Run as Admin):
-powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
+# PowerShell (Run as Admin) — canonical one-liner, handles both install AND update:
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/install.ps1 | iex"
 ```
+
+`deploy/install.ps1` is a thin entry point: it forces TLS 1.2, fetches
+`deploy/setup-source.ps1` for the requested branch, and invokes it with
+parameter binding. The heavy lifter (Python install, venv, deps, launcher
+generation, optional service install) stays in `setup-source.ps1`.
 
 The leading TLS 1.2 assignment is required on Windows Server 2012/2016 where
 PowerShell 5.1 still defaults to TLS 1.0/1.1 (GitHub rejects both since 2018).
@@ -32,6 +37,30 @@ Python venv, installs all dependencies (including DuckDB analytics),
 configures firewall, and offers to start the dashboard. Re-run the same
 command any time to update — data, logs, reports, and `config.yaml` are
 preserved.
+
+#### Testing a PR branch
+
+To test an unmerged PR branch (e.g. `claude/some-pr`), use the scriptblock form
+so `-Branch` threads through parameter binding (plain `irm | iex` can't take
+arguments):
+
+```powershell
+# PowerShell (Run as Admin):
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/install.ps1))) -Branch claude/some-pr"
+```
+
+The generated `C:\FileActivity\update.cmd` also remembers which branch you
+installed from, so subsequent updates stay on that branch.
+
+#### Legacy one-liner (still supported)
+
+The original form that points directly at `setup-source.ps1` keeps working
+unchanged for at least one release for back-compat with existing operator
+runbooks:
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
+```
 
 To update later: `C:\FileActivity\update.cmd`
 
