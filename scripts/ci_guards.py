@@ -890,8 +890,6 @@ A_AUDIT_ALLOWLIST: set[str] = {
     "duplicates_quarantine",           # 3484
     "duplicates_quarantine_preview",   # 3468 — dry-run
     "insights_recompute",              # 2471 — analytics compute
-    "legal_holds_add",                 # 6852
-    "legal_holds_release",             # 6869
     "notifications_send_to",           # 4641
     "notifications_test",              # 4605 — self-test
     "notify_users_run_now",            # 1742
@@ -899,15 +897,7 @@ A_AUDIT_ALLOWLIST: set[str] = {
     "orphan_sid_reassign",             # 5506
     "overview_recompute",              # 2919 — analytics compute
     "pii_scan",                        # 6410 — analytics compute
-    "quarantine_purge",                # 3653
-    "quarantine_restore",              # 3701
     "ransomware_test",                 # 5321 — self-test
-    "restore_by_operation",            # 4310
-    "restore_file",                    # 1634
-    "restore_snapshot",                # 6281
-    "retention_policy_apply",          # 6731
-    "retention_policy_create",         # 6707
-    "retention_policy_remove",         # 6724
     "run_archive",                     # 1519
     "run_scan",                        # 1005
     "start_export",                    # 5187 — export-only
