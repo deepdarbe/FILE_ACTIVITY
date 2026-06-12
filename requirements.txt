@@ -33,7 +33,19 @@ duckdb>=1.5.2
 # sqlite_scanner extension. 10-50x faster than per-batch executemany on
 # 100k+ row scans. Missing package -> ParquetStager.available=False and
 # the scanner silently falls back to bulk_insert_scanned_files.
-pyarrow>=14.0
+#
+# Floor >=23.0.1 — clears three advisories that the old >=14.0 range
+# still allowed a resolver to pick:
+#   * GHSA-5wvp-7f3h-6wmm (CRITICAL, <14.0.1) — arbitrary code execution
+#     reading a malicious Parquet/IPC file via read_table.
+#   * PYSEC-2024-161 (<17.0.0).
+#   * GHSA-rgxp-2hwp-jwgg / PYSEC-2026-113 (15.0.0–23.0.0) — use-after-free
+#     reading an IPC file with pre-buffering; fixed in 23.0.1.
+# We only ever read .parquet files WE wrote to data/staging/ (crash-recovery
+# re-ingest in staging.py), never untrusted Arrow IPC, so practical
+# exploitability is low — but the floor must not ALLOW a vulnerable resolve.
+# 23.x is API-compatible with our read_table/write_table usage.
+pyarrow>=23.0.1
 
 # Active Directory lookup (optional): pure-Python LDAP client.
 # When installed and active_directory.enabled=true, dashboard resolves
