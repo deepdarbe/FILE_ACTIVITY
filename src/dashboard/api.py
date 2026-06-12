@@ -79,13 +79,27 @@ def _phase_progress_pct(phase: str, file_count: int) -> int:
     return 0
 
 
-def open_folder_impl(body: dict, client_host: str, popen=None):
+def open_folder_impl(
+    body: dict,
+    client_host: str,
+    popen=None,
+    *,
+    authed: bool = True,
+    allowed_roots: list[str] | None = None,
+):
     """Run the open-folder decision logic.
 
     Pure-ish helper shared by the HTTP endpoint and the unit tests. Returns
     the JSON-serialisable response dict on success, or raises HTTPException
     for invalid input / missing paths. ``popen`` lets tests inject a stub in
     place of ``subprocess.Popen``.
+
+    Issue #278 (M1) — same scope gate as ``list_dir_impl``: an
+    UNAUTHENTICATED localhost caller (``authed=False``) may only natively
+    open a path inside the configured ``allowed_roots`` (or an ancestor of
+    one); anything else is refused with 403 so a tokenless same-host process
+    cannot pop Explorer at arbitrary server locations. ``authed`` defaults
+    True so existing direct-helper unit tests are unaffected.
     """
     if popen is None:
         import subprocess
@@ -96,11 +110,33 @@ def open_folder_impl(body: dict, client_host: str, popen=None):
         raise HTTPException(400, "path gerekli")
 
     # Guvenlik: normalize + gercek yol cozumleme (symlink/junction eskape koruma)
+    # NOTE (CodeQL py/path-injection, #278): accepted sink. Reachable only by
+    # localhost callers (the remote branch below never spawns Explorer); an
+    # UNAUTHENTICATED localhost caller is confined to configured source roots by
+    # the #278 scope gate immediately after this line, and an authenticated
+    # admin opening any path is the intended feature. realpath must run FIRST so
+    # symlink/junction targets can't escape the scope check below.
     folder = os.path.realpath(os.path.normpath(folder))
+
+    is_local = client_host in _LOCAL_CLIENT_HOSTS
+
+    # #278 scope gate (local, tokenless callers only) — evaluated before the
+    # existence check so an out-of-scope path returns 403 whether or not it
+    # exists (no existence oracle). Remote clients never reach the native-open
+    # path below anyway; authenticated admins are unrestricted.
+    if is_local and not authed and not _path_within_source_scope(
+        folder, allowed_roots or []
+    ):
+        raise HTTPException(
+            403,
+            "Bu konum kaynak kok dizinlerinin disinda. Yetkilendirme "
+            "olmadan Explorer yalnizca yapilandirilmis kaynaklar icin "
+            "acilabilir.",
+        )
+
     if not (os.path.isdir(folder) or os.path.isfile(folder)):
         raise HTTPException(404, f"Dizin bulunamadi: {folder}")
 
-    is_local = client_host in _LOCAL_CLIENT_HOSTS
     if not is_local:
         return {
             "success": False,
@@ -140,6 +176,58 @@ def open_folder_impl(body: dict, client_host: str, popen=None):
 #     so the UI can boot the browser without knowing the platform.
 
 LIST_DIR_MAX_ENTRIES = 5000
+
+
+def _normalize_source_roots(raw_roots) -> list[str]:
+    """Realpath/normpath a list of source-root strings, dropping blanks.
+
+    Shared by the ``list_dir`` / ``open_folder`` scope check (#278) and the
+    explorer-open endpoint. Trailing separators are stripped so the prefix
+    comparisons below (``target == root`` / ``startswith(root + sep)``) are
+    exact rather than substring-y.
+    """
+    out: list[str] = []
+    for root in raw_roots or []:
+        root = (root or "").strip()
+        if not root:
+            continue
+        try:
+            out.append(os.path.realpath(os.path.normpath(root)).rstrip("\\/"))
+        except Exception:
+            continue
+    return out
+
+
+def _path_within_source_scope(resolved: str, allowed_roots: list[str]) -> bool:
+    """Issue #278 (M1): is ``resolved`` reachable for an UNAUTHENTICATED
+    localhost folder-picker call?
+
+    Allowed when the path is EITHER inside a configured source root (browse
+    an existing source) OR an *ancestor* of one (navigate *down to* it —
+    "source roots + their parents" from the issue). Everything else
+    (``C:\\Users``, arbitrary system dirs) is refused — that is what closes
+    the whole-filesystem enumeration surface for a tokenless same-host
+    caller.
+
+    With no configured roots (first-run, ``sources: []``) nothing matches,
+    so an unauthenticated caller cannot browse concrete paths at all: they
+    type the UNC path manually (the 403 message says exactly that) or export
+    the bearer token. An *authenticated* admin bypasses this scope at the
+    call site, preserving the full picker.
+    """
+    if not allowed_roots:
+        return False
+    target = (resolved or "").rstrip("\\/")
+    for root in allowed_roots:
+        if target == root:
+            return True
+        # target inside root → normal "browse this source" case.
+        if target.startswith(root + os.sep):
+            return True
+        # target is an ancestor of root → "navigate down to the source".
+        if root.startswith(target + os.sep):
+            return True
+    return False
 
 
 def _list_dir_logical_roots() -> list[dict]:
@@ -202,12 +290,24 @@ def list_dir_impl(
     client_host: str,
     show_hidden: bool = False,
     max_entries: int = LIST_DIR_MAX_ENTRIES,
+    *,
+    authed: bool = True,
+    allowed_roots: list[str] | None = None,
 ):
     """Pure helper backing the /api/system/list-dir endpoint.
 
     Returns ``{path, parent, entries}``; raises HTTPException(403) for a
     remote client and HTTPException(404) for a path that doesn't exist
     or isn't a directory.
+
+    Issue #278 (M1) — scope gate. When ``authed`` is False (the request
+    is an UNAUTHENTICATED localhost caller riding ``allow_unauth_localhost``)
+    concrete paths are restricted to the configured ``allowed_roots`` and
+    their ancestor chain via :func:`_path_within_source_scope`, so a
+    tokenless same-host process can no longer enumerate the whole
+    filesystem (``C:\\Users``, every drive). The route handler passes the
+    real auth result; ``authed`` defaults True so direct unit-test calls
+    of this helper keep the pre-#278 full-listing behaviour.
     """
     if client_host not in _LOCAL_CLIENT_HOSTS:
         raise HTTPException(
@@ -218,6 +318,9 @@ def list_dir_impl(
 
     # Empty path -> logical roots (drives on Windows, "/" on POSIX). We
     # surface ``parent=None`` so the UI hides the "up one level" affordance.
+    # The root list reveals only which drives are mounted (not their
+    # contents), so it stays available to the unauth picker as the
+    # navigation entry point.
     if not path:
         return {
             "path": "",
@@ -226,11 +329,32 @@ def list_dir_impl(
         }
 
     # Path resolution: normpath to collapse ``..``, then realpath to defeat
-    # symlink/junction escape attempts. We don't bind to a specific allow-
-    # list of roots because the operator legitimately needs to pick any
-    # local or mounted UNC path; the localhost-only check above is what
-    # keeps remote clients from walking the filesystem.
+    # symlink/junction escape attempts.
+    # NOTE (CodeQL py/path-injection, #278): accepted sink. list_dir is
+    # localhost-only (a remote client is rejected with 403 above); an
+    # UNAUTHENTICATED localhost caller is scoped to configured source roots by
+    # the #278 gate right after this line, and an authenticated admin is
+    # intentionally unrestricted. realpath must run before the scope check so
+    # symlinks can't escape it.
     resolved = os.path.realpath(os.path.normpath(path))
+
+    # #278 scope gate for unauthenticated localhost callers — evaluated
+    # BEFORE the existence check so an out-of-scope path returns 403 whether
+    # or not it exists (no filesystem-existence oracle). An authenticated
+    # admin (valid bearer token) is unrestricted: picking any local/UNC path
+    # is a legitimate admin action and a hard jail would break first-run UNC
+    # picking. A tokenless caller is confined to configured source roots and
+    # their parents.
+    if not authed and not _path_within_source_scope(
+        resolved, allowed_roots or []
+    ):
+        raise HTTPException(
+            403,
+            "Bu konum kaynak kok dizinlerinin disinda. Yetkilendirme "
+            "olmadan yalnizca yapilandirilmis kaynaklar taranabilir; "
+            "yolu manuel girin veya yonetici jetonu ile baglanin.",
+        )
+
     if not os.path.isdir(resolved):
         raise HTTPException(404, f"Yol bulunamadi: {resolved}")
 
@@ -4118,18 +4242,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # Build the allowed-roots set from sources.unc_path. Each candidate
         # path must be inside one of these roots (after realpath). This
         # prevents traversal like ../../etc/passwd and blocks arbitrary
-        # local-disk browsing on the server.
-        allowed_roots: list[str] = []
-        for s in db.get_sources():
-            root = (s.unc_path or "").strip()
-            if not root:
-                continue
-            try:
-                allowed_roots.append(
-                    os.path.realpath(os.path.normpath(root)).rstrip("\\/")
-                )
-            except Exception:
-                continue
+        # local-disk browsing on the server. (Shared helper with the #278
+        # list-dir/open-folder scope gate.)
+        allowed_roots = _normalize_source_roots(
+            (s.unc_path or "") for s in db.get_sources()
+        )
         if not allowed_roots:
             raise HTTPException(
                 400,
@@ -4598,13 +4715,42 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             headers={"Content-Disposition": f"attachment; filename={filename}"},
         )
 
+    def _picker_authed(request: Request) -> bool:
+        """Issue #278 (M1): did this request present a VALID bearer token?
+
+        We must distinguish a genuinely authenticated admin from a caller
+        that merely rode the ``allow_unauth_localhost`` bypass, so we ask
+        ``DashboardAuth.has_valid_token`` (which ignores the bypass and is
+        side-effect-free). If the gate is off entirely (``enabled=false``,
+        legacy mode) the operator has opted out of auth, so treat every
+        caller as authed — no restriction beyond the pre-#278 behaviour.
+        """
+        gate = getattr(app.state, "dashboard_auth", None)
+        if gate is None or not getattr(gate, "enabled", True):
+            return True
+        return bool(gate.has_valid_token(request))
+
+    def _picker_allowed_roots() -> list[str]:
+        """Realpath'd configured source roots for the #278 scope gate."""
+        try:
+            return _normalize_source_roots(
+                (s.unc_path or "") for s in db.get_sources()
+            )
+        except Exception:  # pragma: no cover - defensive; empty = deny-all
+            return []
+
     @app.post("/api/system/open-folder")
     async def open_folder(request: Request):
         """Dizini Windows Explorer'da ac (yalnizca yerel istemci icin)."""
         from src.security.dashboard_auth import resolve_effective_client_host
         body = await request.json()
         client_host = resolve_effective_client_host(request)
-        return open_folder_impl(body, client_host)
+        return open_folder_impl(
+            body,
+            client_host,
+            authed=_picker_authed(request),
+            allowed_roots=_picker_allowed_roots(),
+        )
 
     @app.get("/api/system/list-dir")
     def list_dir(
@@ -4621,10 +4767,20 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         Uses ``resolve_effective_client_host`` (honours X-Forwarded-For
         when peer is loopback) so a reverse proxy on the same host
         cannot turn every LAN request into a fake "localhost" call.
+
+        Issue #278 (M1): an unauthenticated localhost caller is scoped to
+        configured source roots (+ their parents); an authenticated admin
+        gets the full picker.
         """
         from src.security.dashboard_auth import resolve_effective_client_host
         client_host = resolve_effective_client_host(request)
-        return list_dir_impl(path, client_host, show_hidden=show_hidden)
+        return list_dir_impl(
+            path,
+            client_host,
+            show_hidden=show_hidden,
+            authed=_picker_authed(request),
+            allowed_roots=_picker_allowed_roots(),
+        )
 
     @app.get("/api/system/health")
     def health():

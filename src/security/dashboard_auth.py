@@ -140,6 +140,20 @@ class DashboardAuth:
         if self.allow_unauth_localhost and client_host in _LOCAL_HOSTS:
             return True
 
+        return self.has_valid_token(request)
+
+    def has_valid_token(self, request: Any) -> bool:
+        """Return True iff ``request`` carries a VALID bearer token.
+
+        Unlike :meth:`check`, this ignores ``allow_unauth_localhost`` and
+        ``enabled`` entirely — it answers only "did the caller prove the
+        credential?". Issue #278 uses it to distinguish a genuinely
+        authenticated admin from a request that merely rode the localhost
+        bypass, so the folder picker can grant the full filesystem view to
+        the former while scoping the latter to configured source roots.
+        Side-effect-free, so it is safe to call from concurrent threadpool
+        handlers (no shared-state mutation).
+        """
         headers = getattr(request, "headers", None)
         if headers is None:
             return False
