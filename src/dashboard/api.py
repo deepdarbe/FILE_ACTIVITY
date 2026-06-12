@@ -3919,6 +3919,20 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             trigger_detail="duplicate_cleanup",
             dry_run=effective_dry_run,
         )
+        try:
+            db.insert_audit_event_simple(
+                source_id=source_id, event_type="archive_selective_run",
+                username="duplicate_cleanup", file_path=None,
+                details=(
+                    f"matched={len(files)};"
+                    f"archived={result.get('archived')};"
+                    f"failed={result.get('failed')};"
+                    f"total_size={result.get('total_size')};"
+                    f"dry_run={effective_dry_run}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for archive_selective_run: %s", e)
         return result
 
     # --- ENTITY-LIST BULK ACTIONS (issue #80) ---
@@ -4307,11 +4321,28 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 # For confirm, use collected files
                 from src.archiver.archive_engine import ArchiveEngine
                 engine = ArchiveEngine(db, config)
-                return engine.archive_files(
+                result = engine.archive_files(
                     files, src.archive_dest, src.unc_path, src.id,
                     archived_by=f"ai_insight:{insight_type}",
                     trigger_type='ai_insight', trigger_detail=insight_type
                 )
+                try:
+                    db.insert_audit_event_simple(
+                        source_id=src.id, event_type="archive_by_insight_run",
+                        username="ai_insight", file_path=None,
+                        details=(
+                            f"insight_type={insight_type};"
+                            f"matched={len(files)};"
+                            f"archived={result.get('archived')};"
+                            f"failed={result.get('failed')};"
+                            f"total_size={result.get('total_size')}"
+                        ),
+                    )
+                except Exception as e:  # pragma: no cover - audit is best-effort
+                    logger.warning(
+                        "audit emit failed for archive_by_insight_run: %s", e
+                    )
+                return result
             else:
                 raise HTTPException(400, f"Gecersiz insight type: {insight_type}")
 
@@ -4337,11 +4368,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # Confirmed - execute archive
         from src.archiver.archive_engine import ArchiveEngine
         engine = ArchiveEngine(db, config)
-        return engine.archive_files(
+        result = engine.archive_files(
             files, src.archive_dest, src.unc_path, src.id,
             archived_by=f"ai_insight:{insight_type}",
             trigger_type='ai_insight', trigger_detail=insight_type
         )
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="archive_by_insight_run",
+                username="ai_insight", file_path=None,
+                details=(
+                    f"insight_type={insight_type};"
+                    f"matched={len(files)};"
+                    f"archived={result.get('archived')};"
+                    f"failed={result.get('failed')};"
+                    f"total_size={result.get('total_size')}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for archive_by_insight_run: %s", e)
+        return result
 
     # --- ARCHIVE OPERATIONS API ---
 
@@ -4469,6 +4515,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             source_id = first.get("source_id") if first else None
             result = engine.bulk_restore(archive_ids, source_id)
             result["total_size_formatted"] = format_size(result.get("total_size", 0))
+            try:
+                db.insert_audit_event_simple(
+                    source_id=source_id, event_type="bulk_restored",
+                    username="admin", file_path=None,
+                    details=(
+                        f"requested={len(archive_ids)};"
+                        f"restored={result.get('restored')};"
+                        f"failed={result.get('failed')};"
+                        f"total_size={result.get('total_size')}"
+                    ),
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for bulk_restored: %s", e)
             return result
 
     @app.get("/api/archive/browse")
@@ -5523,6 +5582,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         result = await asyncio.get_event_loop().run_in_executor(None, _do_snapshot)
         result["source_id"] = src.id
         result["scan_id"] = scan_id
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="acl_snapshot_created",
+                username="admin", file_path=None,
+                details=(
+                    f"scan_id={scan_id};scanned={result.get('scanned')};"
+                    f"written={result.get('written')};"
+                    f"errors={result.get('errors')}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for acl_snapshot_created: %s", e)
         return result
 
     # ─────────────────────────────────────────────────────────────────
@@ -5582,7 +5653,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if (not req.dry_run) and not analyzer.is_supported():
             raise HTTPException(501, "Live reassignment requires Windows + pywin32")
         try:
-            return analyzer.reassign_owner(
+            result = analyzer.reassign_owner(
                 req.source_id, req.sid, req.new_owner,
                 dry_run=req.dry_run, max_files=req.max_files,
             )
@@ -5590,6 +5661,23 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(501, str(e)) from e
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        # Audit only the live reassignment; dry-run is a preview no-op.
+        if not result.get("dry_run", True):
+            try:
+                db.insert_audit_event_simple(
+                    source_id=req.source_id,
+                    event_type="orphan_sid_reassigned", username="admin",
+                    file_path=None,
+                    details=(
+                        f"old_sid={req.sid};new_owner={req.new_owner};"
+                        f"scanned={result.get('scanned')};"
+                        f"changed={result.get('changed')};"
+                        f"errors={result.get('errors')}"
+                    ),
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for orphan_sid_reassigned: %s", e)
+        return result
 
     @app.get("/api/security/orphan-sids/{source_id}/export.csv")
     def orphan_sid_export_csv(source_id: int):
@@ -7189,6 +7277,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(409, str(e))
         except ApprovalError as e:
             raise HTTPException(400, str(e))
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="approval_approved",
+                username=approved_by, file_path=None,
+                details=(
+                    f"approval_id={approval_id};"
+                    f"operation_type={getattr(req, 'operation_type', None)};"
+                    f"requested_by={getattr(req, 'requested_by', None)}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for approval_approved: %s", e)
         return {"ok": True, "approval": _approval_to_json(req)}
 
     @app.post("/api/approvals/{approval_id}/reject")
@@ -7206,6 +7306,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(409, str(e))
         except ApprovalError as e:
             raise HTTPException(400, str(e))
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="approval_rejected",
+                username=rejected_by, file_path=None,
+                details=(
+                    f"approval_id={approval_id};"
+                    f"operation_type={getattr(req, 'operation_type', None)};"
+                    f"requested_by={getattr(req, 'requested_by', None)};"
+                    f"reason={reason}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for approval_rejected: %s", e)
         return {"ok": True, "approval": _approval_to_json(req)}
 
     @app.post("/api/approvals/{approval_id}/execute")
@@ -7241,6 +7354,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise
         except ApprovalError as e:
             raise HTTPException(400, str(e))
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="approval_executed",
+                username=(getattr(req, "approved_by", None) or "admin"),
+                file_path=None,
+                details=(
+                    f"approval_id={approval_id};"
+                    f"operation_type={getattr(req, 'operation_type', None)}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for approval_executed: %s", e)
         return {"ok": True, "result": result}
 
     # ─────────────────────────────────────────────────────────────────────
