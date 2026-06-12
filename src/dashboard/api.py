@@ -1639,24 +1639,24 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             if result.get("success"):
                 try:
                     db.insert_audit_event_simple(
-                        source_id=None, event_type="restore.file", username="admin",
+                        source_id=None, event_type="file_restored", username="admin",
                         file_path=result.get("original_path"),
                         details=f"archive_id={data.archive_id}",
                     )
                 except Exception as e:  # pragma: no cover - audit is best-effort
-                    logger.warning("audit emit failed for restore.file: %s", e)
+                    logger.warning("audit emit failed for file_restored: %s", e)
             return result
         elif data.original_path:
             result = engine.restore_by_path(data.original_path)
             if result.get("success"):
                 try:
                     db.insert_audit_event_simple(
-                        source_id=None, event_type="restore.file", username="admin",
+                        source_id=None, event_type="file_restored", username="admin",
                         file_path=result.get("original_path") or data.original_path,
                         details=f"original_path={data.original_path}",
                     )
                 except Exception as e:  # pragma: no cover - audit is best-effort
-                    logger.warning("audit emit failed for restore.file: %s", e)
+                    logger.warning("audit emit failed for file_restored: %s", e)
             return result
         raise HTTPException(400, "archive_id veya original_path gerekli")
 
@@ -3702,7 +3702,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             if result.status == "purged":
                 try:
                     db.insert_audit_event_simple(
-                        source_id=None, event_type="quarantine.purge",
+                        source_id=None, event_type="quarantine_purged",
                         username=purged_by,
                         file_path=result.original_path,
                         details=(
@@ -3711,7 +3711,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                         ),
                     )
                 except Exception as e:  # pragma: no cover - audit is best-effort
-                    logger.warning("audit emit failed for quarantine.purge: %s", e)
+                    logger.warning("audit emit failed for quarantine_purged: %s", e)
             return result.to_dict()
         if result.status == "skipped_not_found":
             raise HTTPException(404, result.reason or "not found")
@@ -3751,7 +3751,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if result.status == "restored":
             try:
                 db.insert_audit_event_simple(
-                    source_id=None, event_type="quarantine.restore",
+                    source_id=None, event_type="quarantine_restored",
                     username=restored_by,
                     file_path=result.original_path,
                     details=(
@@ -3760,7 +3760,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     ),
                 )
             except Exception as e:  # pragma: no cover - audit is best-effort
-                logger.warning("audit emit failed for quarantine.restore: %s", e)
+                logger.warning("audit emit failed for quarantine_restored: %s", e)
             return result.to_dict()
         if result.status == "skipped_not_found":
             raise HTTPException(404, result.reason or "not found")
@@ -4421,7 +4421,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         try:
             db.insert_audit_event_simple(
                 source_id=operation.get("source_id"),
-                event_type="restore.by-operation", username="admin",
+                event_type="operation_restored", username="admin",
                 file_path=None,
                 details=(
                     f"op_id={op_id};restore_op_id={restore_op_id};"
@@ -4430,7 +4430,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 ),
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for restore.by-operation: %s", e)
+            logger.warning("audit emit failed for operation_restored: %s", e)
 
         return {
             "restored": restored,
@@ -6390,12 +6390,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         result = _do_snapshot_restore({"snapshot_id": snapshot_id})
         try:
             db.insert_audit_event_simple(
-                source_id=None, event_type="restore.snapshot", username="admin",
+                source_id=None, event_type="snapshot_restored", username="admin",
                 file_path=None,
                 details=f"snapshot_id={snapshot_id}",
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for restore.snapshot: %s", e)
+            logger.warning("audit emit failed for snapshot_restored: %s", e)
         return result
 
     @app.get("/api/system/backups/export")
@@ -6793,7 +6793,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(400, str(e))
         try:
             db.insert_audit_event_simple(
-                source_id=None, event_type="retention-policy.create",
+                source_id=None, event_type="retention_policy_created",
                 username="admin", file_path=None,
                 details=(
                     f"policy_id={pid};name={data.name};"
@@ -6802,7 +6802,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 ),
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for retention-policy.create: %s", e)
+            logger.warning("audit emit failed for retention_policy_created: %s", e)
         return {"id": pid, "name": data.name}
 
     @app.delete("/api/compliance/retention/policies/{name}")
@@ -6812,12 +6812,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(404, f"Policy not found: {name}")
         try:
             db.insert_audit_event_simple(
-                source_id=None, event_type="retention-policy.remove",
+                source_id=None, event_type="retention_policy_removed",
                 username="admin", file_path=None,
                 details=f"name={name}",
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for retention-policy.remove: %s", e)
+            logger.warning("audit emit failed for retention_policy_removed: %s", e)
         return {"removed": True, "name": name}
 
     @app.post("/api/compliance/retention/apply/{policy_name}")
@@ -6837,7 +6837,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(503, str(e))
         try:
             db.insert_audit_event_simple(
-                source_id=None, event_type="retention-policy.apply",
+                source_id=None, event_type="retention_policy_applied",
                 username="admin", file_path=None,
                 details=(
                     f"policy={policy_name};dry_run={bool(dry_run)};"
@@ -6846,7 +6846,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 ),
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for retention-policy.apply: %s", e)
+            logger.warning("audit emit failed for retention_policy_applied: %s", e)
         return result
 
     @app.get("/api/compliance/retention/attestation")
@@ -6970,7 +6970,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             raise HTTPException(400, str(e))
         try:
             db.insert_audit_event_simple(
-                source_id=None, event_type="legal-hold.add",
+                source_id=None, event_type="legal_hold_added",
                 username=created_by, file_path=pattern,
                 details=(
                     f"hold_id={hold_id};case_ref={case_ref or '-'};"
@@ -6978,7 +6978,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 ),
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for legal-hold.add: %s", e)
+            logger.warning("audit emit failed for legal_hold_added: %s", e)
         return {"id": hold_id, "ok": True}
 
     @app.post("/api/compliance/legal-holds/{hold_id}/release")
@@ -6994,12 +6994,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return {"ok": False, "reason": "not_found_or_already_released"}
         try:
             db.insert_audit_event_simple(
-                source_id=None, event_type="legal-hold.release",
+                source_id=None, event_type="legal_hold_released",
                 username=released_by, file_path=None,
                 details=f"hold_id={hold_id}",
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
-            logger.warning("audit emit failed for legal-hold.release: %s", e)
+            logger.warning("audit emit failed for legal_hold_released: %s", e)
         return {"ok": True}
 
     @app.get("/api/compliance/legal-holds/check")
