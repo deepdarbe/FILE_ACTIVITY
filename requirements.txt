@@ -53,7 +53,15 @@ pyarrow>=23.0.1
 # Missing package -> ADLookup.available=False and feature silently disabled.
 ldap3>=2.9.1
 
-# Optional: cryptography>=41.0 for WORM signing (issue #38)
-# When installed AND audit.signing_key_path points at an Ed25519 private
-# key, AuditExporter writes a detached <file>.sig signature next to each
-# JSONL export. Missing package -> signing silently skipped.
+# Ed25519 signing for the tamper-evident audit chain.
+#  * WORM signing (issue #38): when audit.signing_key_path points at an
+#    Ed25519 private key, AuditExporter writes a detached <file>.sig next
+#    to each JSONL export.
+#  * Signed Tree Head export (2026-06-12, Trillian/Rekor pattern): the STH
+#    checkpoint {tree_size, root_hash, timestamp, signature, public_key}
+#    is Ed25519-signed so external auditors verify the chain with our
+#    published public key (src/storage/audit_sth.py, scripts/audit_sth.py).
+# Both code paths import cryptography lazily and degrade/skip cleanly if it
+# is somehow absent; the test-suite uses importorskip. Pinned as a real dep
+# since both features are first-class compliance tooling now.
+cryptography>=41.0

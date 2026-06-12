@@ -18,6 +18,14 @@ node_modules/
 *.exe
 temp_netwrix/
 
+# Signing keys — the audit STH / WORM Ed25519 PRIVATE key must NEVER be
+# committed (see src/storage/audit_sth.py). Belt-and-suspenders on top of
+# the data/ ignore above, in case an operator points the key path elsewhere.
+*.pem
+*.key
+sth_signing_key*
+sth-*.json
+
 # Benchmark history (issue #70). Local-only — each developer / CI host
 # accumulates its own run-over-run record so regressions are visible
 # against the same hardware. Not committed.
