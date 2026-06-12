@@ -9,8 +9,14 @@
 
     EXE release'i GEREKTIRMEZ. Tek gereksinim: hedef sunucuda Python 3.10+
 
-    Kullanim (Yonetici PowerShell):
-    powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
+    Kullanim (Yonetici PowerShell). Onerilen yeni form thin entry-point
+    'deploy/install.ps1' uzerinden gecer (kisadir, -Branch parametresi alir):
+
+      powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/install.ps1 | iex"
+
+    Eski form (geriye-uyumlu, en az bir release boyunca calismaya devam edecek):
+
+      powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/deepdarbe/FILE_ACTIVITY/master/deploy/setup-source.ps1 | iex"
 
     Bastaki TLS 1.2 atamasi, eski PowerShell 5.1 (Windows Server 2012/2016)
     varsayili TLS 1.0/1.1 kullandigi icin GitHub'a HTTPS isteginin calismasini
@@ -20,10 +26,22 @@
     Ayni komut guncelleme icin de kullanilabilir: mevcut data\, config\,
     logs\ ve reports\ dizinleri korunur, sadece kaynak kod yenilenir.
 
+    PR/branch test etmek icin install.ps1'i -Branch parametresi ile scriptblock
+    olarak cagirin (bkz. deploy/install.ps1).
+
+.PARAMETER Branch
+    Indirilecek git branch'i. Varsayilan: master. PR test ederken farkli bir
+    branch (orn. claude/some-pr) verilebilir. install.ps1 bu parametreyi
+    -Branch parameter binding ile aktarir.
+
 .NOTES
     Veri korumali guncelleme: data/, logs/, reports/, config/config.yaml
     Yeniden yazilir: src/, main.py, requirements.txt, deploy/, scripts/
 #>
+
+param(
+    [string]$Branch = "master"
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -31,7 +49,6 @@ $ErrorActionPreference = "Stop"
 $InstallDir   = "C:\FileActivity"
 $RepoOwner    = "deepdarbe"
 $RepoName     = "FILE_ACTIVITY"
-$Branch       = "master"
 $RepoZipUrl   = "https://github.com/$RepoOwner/$RepoName/archive/refs/heads/$Branch.zip"
 $DashPort     = 8085
 $PythonVersion = "3.11.9"
@@ -321,7 +338,7 @@ pause
 "@
 Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 
-# Update launcher: ayni script'i tekrar cagirir (guncelleme)
+# Update launcher: thin install.ps1 entry-point'unu tekrar cagirir.
 # Eski PowerShell'lerde TLS 1.2'yi onceden set etmek zorunlu (irm basarisiz olmasin)
 # Issue #77: update'ten ONCE SQLite snapshot al — guncelleme bozulursa
 # operator hizlica geri donebilir. Snapshot basarisiz olsa bile update
@@ -330,16 +347,19 @@ Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 # zaten alinmissa yeniden alma — 3M dosyali bir DB'de VACUUM INTO yerine
 # online-backup'a gectik ama yine de 2-3 GB'lik yazma var, gereksiz
 # yere her update'te tekrarlamak operator'i bekletiyordu.
+#
+# Branch'i koru: install.ps1 -Branch parametresi alir, scriptblock-Create
+# pattern ile thread eder (eski temp-file dance gerekmez).
 $updateCmd = @"
 @echo off
-echo FILE ACTIVITY guncelleniyor (master branch)...
+echo FILE ACTIVITY guncelleniyor ($Branch branch)...
 echo  - Pre-update SQLite snapshot kontrol ediliyor (son 30dk icindeyse atlanir)...
 cd /d "$InstallDir"
 "$InstallDir\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update" --skip-if-recent-minutes 30
 if errorlevel 1 (
     echo  [!] Snapshot basarisiz - update yine de devam ediyor
 )
-powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/setup-source.ps1 | iex"
+powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/install.ps1))) -Branch $Branch"
 "@
 Set-Content "$InstallDir\update.cmd" $updateCmd
 
