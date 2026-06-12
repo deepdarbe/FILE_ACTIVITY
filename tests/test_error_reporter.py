@@ -157,3 +157,65 @@ def test_rate_limit_blocks_after_n(monkeypatch):
     assert len(rejected) == 1
     # And the throttled call must not have hit the network.
     assert counter["n"] == 10
+
+
+# --------------------------------------------------------------------- 6
+def test_value_level_secret_scrubbed_under_offlist_key(monkeypatch):
+    """#279: a PAT / URL-creds under a key NOT matched by SECRET_KEY_PATTERN
+    is masked by VALUE shape before the report leaves the box."""
+    monkeypatch.setenv("FAKE_TELEMETRY_TOKEN", "tkn")
+    reporter = ErrorReporter(_enabled_config(), "1.0.0")
+    exc = _raise_exc(lambda: (_ for _ in ()).throw(ValueError("nope")))
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = req.data.decode("utf-8")
+        return _fake_response({"number": 99})
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        reporter.capture(
+            exc,
+            {
+                # 'notes' / 'repo_url' are NOT in SECRET_KEY_PATTERN, so the
+                # key-name pass leaves them — the value scrub must catch them.
+                "notes": "deploy PAT ghp_0123456789abcdefABCDEF0123456789abcdef",
+                "repo_url": "https://ci:supersecretpass123@git.example.com/x",
+            },
+        )
+
+    body = json.loads(captured["body"])["body"]
+    assert "ghp_0123456789abcdefABCDEF0123456789abcdef" not in body
+    assert "supersecretpass123" not in body
+    assert "***REDACTED***" in body
+
+
+# --------------------------------------------------------------------- 7
+def test_value_level_scrub_not_gated_by_redact_paths(monkeypatch):
+    """The secret-value scrub must run even when redact_paths is off — a
+    secret is not a path, so the path-privacy flag must not gate it."""
+    monkeypatch.setenv("FAKE_TELEMETRY_TOKEN", "tkn")
+    config = {
+        "telemetry": {
+            "enabled": True,
+            "github": {"repo": "o/r", "token_env": "FAKE_TELEMETRY_TOKEN"},
+            "privacy": {"redact_paths": False},  # paths NOT redacted
+        }
+    }
+    reporter = ErrorReporter(config, "1.0.0")
+    exc = _raise_exc(lambda: (_ for _ in ()).throw(ValueError("x")))
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = req.data.decode("utf-8")
+        return _fake_response({"number": 7})
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        reporter.capture(
+            exc, {"misc": "tok gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"}
+        )
+
+    body = json.loads(captured["body"])["body"]
+    assert "gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab" not in body
+    assert "***REDACTED***" in body

@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from src.utils.secret_scrub import scrub_secret_values
+
 SECRET_KEY_PATTERN = re.compile(
     r"(password|token|api[_-]?key|secret|signing[_-]?key)", re.I
 )
@@ -191,11 +193,17 @@ class ErrorReporter:
         if isinstance(value, tuple):
             return tuple(self._redact_secrets(v) for v in value)
         if isinstance(value, str):
-            return self._redact_paths(value)
+            # Compose the (operator-gated) path scrub with the value-level
+            # secret scrub (#279): a secret under an off-list key — or a PAT
+            # inside a URL value — is masked by shape regardless of key name
+            # and regardless of the redact_paths privacy flag.
+            return scrub_secret_values(self._redact_paths(value))
         return value
 
     def _sanitize_text(self, text: str) -> str:
-        return self._redact_paths(text)
+        # Traceback + exception message: scrub secret shapes (#279) on top of
+        # the gated path redaction. Secrets must never reach an issue body.
+        return scrub_secret_values(self._redact_paths(text))
 
     def _redact_paths(self, text: str) -> str:
         if not isinstance(text, str) or not text:

@@ -38,9 +38,22 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+# Value-level secret scrub shared with the auto error-reporter (issue #279).
+# ``collect_diag`` is a stdlib-only standalone script under scripts/, but the
+# repo root is on sys.path above, so the src import resolves both when run via
+# fa.cmd and from the dashboard endpoint.
+from src.utils.secret_scrub import scrub_secret_values  # noqa: E402
+
 # --------------------------------------------------------------------------
 # Redaction — secrets are ALWAYS masked, regardless of --no-redact (which only
 # governs whether sample owner names / full paths are included).
+#
+# Two layers, composed: (1) key-name masking — if the KEY looks sensitive the
+# whole value is dropped; (2) value-level scrub — for every surviving STRING
+# value, mask high-signal secret SHAPES (PAT / PEM / URL-creds / ...) no matter
+# the key name, via the shared ``scrub_secret_values`` helper. Layer 2 closes
+# issue #279: a credential under an off-list key (free-text notes, a token in a
+# URL value) no longer reaches an uploaded GitHub issue in clear.
 # --------------------------------------------------------------------------
 _SENSITIVE_KEY_HINTS = (
     "password", "passwd", "secret", "token", "api_key", "apikey",
@@ -51,7 +64,7 @@ _REDACTED = "***REDACTED***"
 
 
 def _redact_config(obj: Any) -> Any:
-    """Recursively mask values whose key looks like a secret."""
+    """Recursively mask secrets: by key name AND by value shape (#279)."""
     if isinstance(obj, dict):
         out = {}
         for key, value in obj.items():
@@ -62,6 +75,9 @@ def _redact_config(obj: Any) -> Any:
         return out
     if isinstance(obj, list):
         return [_redact_config(v) for v in obj]
+    if isinstance(obj, str):
+        # Off-list key, but the value itself may carry a secret shape.
+        return scrub_secret_values(obj)
     return obj
 
 
@@ -561,7 +577,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                   "$FILEACTIVITY_TELEMETRY_TOKEN (or --repo/--token)",
                   file=sys.stderr)
             return 0
+        # Path scrub is operator-gated (redact_paths); the secret-value scrub
+        # is ALWAYS applied on the upload path (#279) — it also catches a token
+        # that surfaced in the log tail, which the per-config scrub never sees.
         body = _scrub_paths(markdown) if scrub else markdown
+        body = scrub_secret_values(body)
         try:
             url = upload_to_github(body, repo, token, label=label)
             print(f"[OK] Posted GitHub issue: {url}")

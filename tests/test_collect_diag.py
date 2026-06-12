@@ -84,6 +84,59 @@ def test_redaction_masks_secret_like_keys():
 
 
 # ---------------------------------------------------------------------------
+# value-level redaction (#279) — secret SHAPES masked regardless of key name
+# ---------------------------------------------------------------------------
+def test_redaction_masks_pat_under_non_secret_key():
+    # 'notes' is NOT in _SENSITIVE_KEY_HINTS, so pre-#279 this PAT survived.
+    src = {"notes": "ops left ghp_0123456789abcdefABCDEF0123456789abcdef here"}
+    out = cd._redact_config(src)
+    assert "ghp_0123456789abcdefABCDEF0123456789abcdef" not in out["notes"]
+    assert cd._REDACTED in out["notes"]
+
+
+def test_redaction_masks_credentials_in_url_value():
+    src = {"endpoint": "https://svc:s3cretPATvalue1234@api.example.com/v1"}
+    out = cd._redact_config(src)
+    assert "svc:s3cretPATvalue1234" not in out["endpoint"]
+    assert "s3cretPATvalue1234" not in out["endpoint"]
+    assert cd._REDACTED in out["endpoint"]
+    # URL framing stays readable
+    assert "@api.example.com/v1" in out["endpoint"]
+
+
+def test_redaction_masks_pem_block_in_value():
+    src = {
+        "tls": {
+            "cert_inline": (
+                "-----BEGIN RSA PRIVATE KEY-----\n"
+                "MIIEpAIBAAKCAQEAbody...\n"
+                "-----END RSA PRIVATE KEY-----"
+            )
+        }
+    }
+    out = cd._redact_config(src)
+    assert "BEGIN RSA PRIVATE KEY" not in out["tls"]["cert_inline"]
+    assert cd._REDACTED in out["tls"]["cert_inline"]
+
+
+def test_redaction_does_not_overmask_hex_hash_under_non_secret_key():
+    # A SHA-256 digest under a non-secret key must NOT be mangled — the
+    # value scrub is conservative (false-positive guard).
+    digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    src = {"baseline_checksum": digest, "rev": "v1.9.0-rc1+30fd8a9"}
+    out = cd._redact_config(src)
+    assert out["baseline_checksum"] == digest
+    assert out["rev"] == "v1.9.0-rc1+30fd8a9"
+
+
+def test_redaction_in_list_values():
+    src = {"args": ["--token", "ghp_0123456789abcdefABCDEF0123456789abcdef"]}
+    out = cd._redact_config(src)
+    assert "ghp_0123456789abcdefABCDEF0123456789abcdef" not in out["args"]
+    assert cd._REDACTED in out["args"]
+
+
+# ---------------------------------------------------------------------------
 # collect() structure + owner resolution
 # ---------------------------------------------------------------------------
 def test_collect_structure_and_flags(tmp_path):
