@@ -51,7 +51,6 @@ from src.storage.audit_sth import (  # noqa: E402
 # Safe default key path when audit.sth.private_key_path is unset. Lives
 # beside the data dir, never inside the repo, so it is never committed.
 _DEFAULT_KEY_PATH = "data/audit/sth_signing_key.pem"
-_DEFAULT_STH_DIR = "data/audit"
 
 
 def _sth_config(config: dict) -> dict:
@@ -125,6 +124,9 @@ def cmd_genkey(args) -> int:
     try:
         os.chmod(key_path, 0o600)
     except OSError:
+        # Best-effort key-perm hardening; non-fatal where chmod is a no-op
+        # (e.g. Windows / NTFS without POSIX perms). The key is already
+        # written; tightening its mode is defence-in-depth, not required.
         pass
 
     print(f"[OK] Private signing key written: {key_path}  (mode 0600)")
@@ -147,6 +149,8 @@ def cmd_emit(args) -> int:
         try:
             db.close()
         except Exception:
+            # Best-effort cleanup close; a failure here must not mask the
+            # real error/result the caller is about to surface.
             pass
         print(f"[ERROR] Signing key not found: {key_path}\n"
               f"        Run `--genkey` first (one-time), or point "
@@ -160,6 +164,8 @@ def cmd_emit(args) -> int:
         try:
             db.close()
         except Exception:
+            # Best-effort cleanup close; a failure here must not mask the
+            # real error/result the caller is about to surface.
             pass
 
     out_dir = _resolve_out_dir(config, args.out, db_path)
@@ -220,6 +226,8 @@ def cmd_verify(args) -> int:
             try:
                 db.close()
             except Exception:
+                # Best-effort cleanup close; a failure here must not mask the
+                # real error/result the caller is about to surface.
                 pass
         size_match = recomputed["tree_size"] == sth_signed.get("tree_size")
         root_match = recomputed["root_hash"] == sth_signed.get("root_hash")
