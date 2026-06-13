@@ -6769,11 +6769,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         app.state.retention_engine = engine
         return engine
 
+    # #292 — track in-flight background PII scans per source so the UI button
+    # can't launch duplicates. Module-ish closure state, same pattern as the
+    # scanner's _scan_threads.
+    _pii_scan_threads: dict = {}
+
     @app.post("/api/compliance/pii/scan/{source_id}")
     async def pii_scan(source_id: int,
                        max_files: Optional[int] = None,
-                       overwrite_existing: bool = False):
-        """Run PiiEngine.scan_source against the latest scan of source_id."""
+                       overwrite_existing: bool = False,
+                       background: bool = False):
+        """Run PiiEngine.scan_source against the latest scan of source_id.
+
+        #292 — ``background=true`` spawns a daemon thread and returns
+        immediately (``{"status": "started"}``). A full content scan on a
+        multi-million-file share runs for minutes/hours; blocking the HTTP
+        request would hang the dashboard's "PII Tara" button. scan_source
+        writes findings incrementally, so the PII page surfaces them growing
+        on refresh. Default (``false``) keeps the original blocking behaviour
+        used by the API and the test-suite.
+        """
         engine = _get_pii_engine()
         src = _get_source(db, source_id)
         import asyncio
@@ -6784,6 +6799,24 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 max_files=max_files,
                 overwrite_existing=overwrite_existing,
             )
+
+        if background:
+            existing = _pii_scan_threads.get(src.id)
+            if existing is not None and existing.is_alive():
+                return {"status": "already_running", "source_id": src.id}
+
+            def _bg():
+                try:
+                    _run()
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.warning(
+                        "background PII scan failed for source %s: %s", src.id, e
+                    )
+
+            t = threading.Thread(target=_bg, daemon=True)
+            _pii_scan_threads[src.id] = t
+            t.start()
+            return {"status": "started", "source_id": src.id}
 
         result = await asyncio.get_event_loop().run_in_executor(None, _run)
         result["source_id"] = src.id

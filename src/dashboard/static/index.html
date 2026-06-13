@@ -1241,6 +1241,7 @@ body.sidebar-open { overflow: hidden; }
             <select id="pii-pattern-filter" onchange="loadPii()" style="width:160px">
                 <option value="">Tum pattern'ler</option>
             </select>
+            <button class="btn" id="pii-scan-btn" onclick="runPiiScan()" style="display:none">PII Tara</button>
             <button class="btn btn-outline" onclick="openPiiSubjectModal()">Subject Export (GDPR)</button>
         </div>
     </div>
@@ -7294,11 +7295,16 @@ async function loadPii() {
     const listEl = document.getElementById('pii-list-container');
     if (!listEl) return;
     const banner = document.getElementById('pii-disabled-banner');
+    const scanBtn = document.getElementById('pii-scan-btn');
 
-    // Rule 8: surface the exact config key when the feature is off.
+    // Rule 8: surface the exact config key when the feature is off, and only
+    // expose the "PII Tara" trigger when the feature is actually enabled
+    // (the scan endpoint would refuse otherwise). #292
     try {
         const cfg = await api('/compliance/config', { silent: true });
-        if (banner) banner.style.display = (cfg && cfg.pii && cfg.pii.enabled) ? 'none' : 'block';
+        const enabled = !!(cfg && cfg.pii && cfg.pii.enabled);
+        if (banner) banner.style.display = enabled ? 'none' : 'block';
+        if (scanBtn) scanBtn.style.display = enabled ? '' : 'none';
     } catch (e) { /* banner stays hidden if the flag fetch fails */ }
 
     const sourceId = document.getElementById('pii-source')?.value || '';
@@ -7336,6 +7342,27 @@ async function loadPii() {
                 <tbody>${body}</tbody>
             </table>
         </div>`);
+}
+
+// #292 — kick off a PII content scan from the dashboard. Previously the page
+// told operators to "run a scan first" but offered no way to; the scan was
+// API-only. Runs in the background (large shares take minutes/hours) and
+// surfaces findings incrementally on refresh.
+async function runPiiScan() {
+    const sid = document.getElementById('pii-source')?.value || '';
+    if (!sid) { notify('Once bir kaynak secin — PII taramasi kaynak bazlidir', 'warning'); return; }
+    if (!confirm('PII taramasi dosya iceriklerini okur ve buyuk paylasimlarda uzun surebilir.\nArka planda baslatilsin mi? Bulgular islendikce listede gorunur.')) return;
+    try {
+        const r = await api(`/compliance/pii/scan/${encodeURIComponent(sid)}?background=true`, { method: 'POST' });
+        if (r && r.status === 'already_running') {
+            notify('Bu kaynak icin PII taramasi zaten calisiyor', 'info');
+        } else {
+            notify('PII taramasi arka planda baslatildi — bulgular islendikce gorunecek', 'success');
+        }
+        setTimeout(loadPii, 6000);
+    } catch (e) {
+        notify('PII taramasi baslatilamadi: ' + (e.message || 'hata'), 'error');
+    }
 }
 
 function loadRetention() {
