@@ -48,54 +48,72 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `74a41ea`, 2026-06-13)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `adf74e9`, 2026-06-13)
 
-The 2026-06-12 session was a **security + compliance hardening wave**: 9 PRs merged
-(#275 install.ps1, #277 CVE floors, #280+#276 R-6 audit waves, #281 STH export,
-#282 secret-scrub, #270–#274 the R-5 guard series + docs, plus Dependabots
-#264–#268). Driven by an OSV dependency scan + a defensive source-code audit +
-a competitive-research punch list (Trillian/Rekor STH was its #1 item, now shipped).
-Built mostly by **4 parallel worktree-isolated agents** + GitHub Copilot — the
-worktree isolation finally killed the shared-checkout branch races.
+The 2026-06-13 session was a **short follow-up** that cleared the two top
+NEXT-SESSION items left by the 2026-06-12 security+compliance wave: **#283 merged**
+(the held M1 list-dir auth PR → closes #278) and **R-6 wave 3 merged** (#285 →
+A_AUDIT_ALLOWLIST 31→23). The prior 2026-06-12 wave was a security + compliance
+hardening wave (9 PRs: #275 install.ps1, #277 CVE floors, #280+#276 R-6 audit
+waves, #281 STH export, #282 secret-scrub, #270–#274 the R-5 guard series + docs,
+plus Dependabots #264–#268), driven by an OSV scan + a defensive source audit +
+a competitive-research punch list.
 
 **▶ NEXT SESSION — start here:**
-1. **#283 (M1 list-dir auth) is OPEN + HELD** — the operator paused it. It closes
-   issue #278 (unauth-localhost full-FS enumeration via the dir-picker) by scoping
-   unauth callers to source roots. CI's `CodeQL` flags **5 HIGH "path-injection"**
-   alerts on it — VERIFIED as the **pre-existing** `realpath(user_path)` picker
-   sinks (api.py:99/233, on master too), re-attributed to the PR only because it
-   changed the function signatures. The PR REDUCES risk; CodeQL can't see the new
-   `_path_within_source_scope` guard. **Operator must choose**: (a) merge with a
-   `# codeql[py/path-injection]` suppression + justification (recommended), (b)
-   harden further, or (c) keep holding. Do NOT merge without that call.
-2. **R-6 wave 3** — `A_AUDIT_ALLOWLIST` is now **31** (was 46; waves 1+2 drained 15).
-   Remaining real-mutation candidates: `chargeback_*` (5), `drilldown_archive`,
-   `run_archive`, `run_scan`. The rest are justified analytics-compute/self-test/
-   export exemptions (the 3 `approvals_*` are allowlisted-by-design — the
-   ApprovalRegistry already audits them; don't double-emit).
-3. **pytest dev-dep** GHSA-6w46-j5rx-g56g (MODERATE, local tmpdir) needs `>=9.0.3`
-   — a major bump from the `<9` cap; deferred, do it as its own CI-validated PR.
-4. **Research punch-list 2–5** (deep-research report, 2026-06-12): #2 Lynis-style
+1. **pytest dev-dep** GHSA-6w46-j5rx-g56g (MODERATE, local tmpdir) needs `>=9.0.3`
+   — a major bump from the `<9` cap; do it as its own CI-validated PR. (This is the
+   "1 moderate" Dependabot warning that prints on every push.)
+2. **Research punch-list 2–5** (deep-research report, 2026-06-12): #2 Lynis-style
    hardening-index score, #3 Treemap "Wasted %" column, #4 Presidio PII
    context-boosting, #5 Sleuth Kit mactime timeline. All net-new features.
+3. **Customer on-box smoke** still owed from the 2026-06-12 wave (#262 CSV +
+   Adlandırma, #263 PDQ option) — gated on `update.cmd` pulling current master.
+4. **R-6 "later pass" candidates** (optional): the 23-entry allowlist is all
+   justified, but `create_snapshot`, `duplicates_delete`, `duplicates_quarantine`,
+   `notify_users_run_now`, `notifications_send_to` are real-ish actions that could
+   be triaged next (verify whether the engine already audits them before emitting).
 5. **Parquet-reports** (ADOPT, deferred); **PILOT** (ETW/Tantivy); **#114** ES
    (deferred until 500 GB / 200 M-row).
 
 `git log --oneline -15` confirms the real tip.
 
 ### Where we are
-- **master = `74a41ea`**. ci_guards **12/12**; A-AUDIT allowlist = **31**. Per-PR CI:
-  the usual non-blocking `Pytest (Linux, Docker)` flake (`continue-on-error`) — do
-  NOT chase. NOTE: `CodeQL` now genuinely scans on PRs (it flagged real issues on
-  #281 — fixed — and the pre-existing path sinks on #283). Read CodeQL annotations;
-  don't blanket-dismiss them as the old umbrella flake.
-- **Open PRs: #283** (held, see above) and **#203** (old D2/DuckDB bundle, do NOT
-  merge as-is). Everything else from this wave is merged.
-- **Security posture after this wave**: dependency floors clean vs OSV except the
-  deferred dev-only pytest; source audit found **no reachable Critical/High** (M1/M2
-  were the two Mediums — M2 shipped #282, M1 is #283 held).
+- **master = `adf74e9`**. ci_guards **12/12**; A-AUDIT allowlist = **23**. Per-PR CI:
+  the usual non-blocking `Pytest (Linux, Docker)` flake (`continue-on-error`, the
+  Docker image's `apt-get install` times out before pytest runs) — do NOT chase.
+  NOTE: `CodeQL` now genuinely scans on PRs (it flagged real issues on #281 —
+  fixed). Read CodeQL annotations; don't blanket-dismiss them as the old umbrella
+  flake. **CodeQL triage tip**: to prove an alert is pre-existing vs PR-introduced,
+  use the per-alert `/code-scanning/alerts/{n}/instances` endpoint, NOT the
+  `?ref=refs/heads/master` filter (the ref filter matches `most_recent_instance`,
+  which moves to the PR ref and hides master-side alerts).
+- **Open PRs: #203 only** (old D2/DuckDB bundle, do NOT merge as-is). #283 and #285
+  merged this session.
+- **Security posture**: dependency floors clean vs OSV except the deferred dev-only
+  pytest; source audit found **no reachable Critical/High**. Both Mediums shipped
+  (M2 = #282 secret-scrub, M1 = #283 list-dir auth). The 5 HIGH CodeQL
+  `py/path-injection` alerts on the picker `realpath` sinks were dismissed
+  `won't fix` (localhost-gated + #278 scope guard + symlink-escape-required;
+  PR #283 strictly reduces exposure).
 
-### What shipped THIS session (2026-06-12 → 13)
+### What shipped 2026-06-13 (this short follow-up session)
+- **#283** — **M1 list-dir auth** (closes #278). The held PR from the prior wave:
+  scopes the folder-picker (`list-dir`/`open-folder`) so an UNAUTHENTICATED
+  localhost caller is confined to configured source roots + their parents
+  (`_path_within_source_scope`); authenticated admins keep the full picker
+  (`DashboardAuth.has_valid_token` tells a real token from the localhost bypass).
+  Rebased on master; the 5 pre-existing CodeQL `py/path-injection` HIGH alerts on
+  the `realpath` sinks were dismissed `won't fix` with justification (proven
+  pre-existing via the alert-instances endpoint), then squash-merged.
+- **#285** — **R-6 wave 3**: 8 mutating endpoints now emit
+  `insert_audit_event_simple` on the success path (status-guarded so no-op paths
+  write no fake row): `run_scan` (scan_started), `run_archive` (archive_run),
+  `drilldown_archive`, `chargeback_add/update/remove_center`,
+  `chargeback_add/remove_owner`. Chargeback config is global → `source_id=None`.
+  Allowlist **31→23**. Remaining 23 are all justified (approvals_* double-emit
+  guard, analytics-compute, self-test, export, dry-run, no-DB-write).
+
+### What shipped 2026-06-12 (the prior security+compliance wave)
 - **#270/#271/#272** — R-5 guard series: **P-PAGE** (Rule 2), **A-AUDIT** (Rule 4),
   **S-SHAPE** (Rule 3) added to `scripts/ci_guards.py` (now 12 guards). **#273**
   hardened all three after a max-effort review live-repro'd 4 edge-case gaps
@@ -134,15 +152,15 @@ worktree isolation finally killed the shared-checkout branch races.
   5→6 (audited SAFE — playground px.* usage untouched by the 6.x breaks).
 
 ### What's PENDING (pick up here)
-1. **#283 decision** (see NEXT SESSION #1) — the one held PR.
+1. **pytest 9 bump** + **research punch-list 2–5** (see NEXT SESSION #1/#2).
 2. **Customer on-box smoke** still owed from the prior wave (#262 CSV + Adlandırma,
    #263 PDQ option) — gated on `update.cmd` pulling current master.
-3. **R-6 wave 3** + **pytest 9 bump** + **research punch-list 2–5** (above).
-4. **Hardening issues #278 (→#283) / #279 (shipped #282)**; **#114**, **#203**, **#29**.
+3. **R-6 "later pass"** allowlist triage (NEXT SESSION #4) — optional.
+4. **#114**, **#203**, **#29**. (Hardening #278/#279 both shipped: #283 + #282.)
 
 ### The 8 endpoint-conventions rules — 7 of 8 auto-enforced (12 guards live)
 `docs/standards/endpoint-conventions.md`. Auto: Rule 1 (R-CACHE), 2 (P-PAGE),
-3 (S-SHAPE), 4 (A-AUDIT, allowlist now 31 + draining via R-6), 5 (A-AWAIT),
+3 (S-SHAPE), 4 (A-AUDIT, allowlist now 23 after R-6 waves 1–3), 5 (A-AWAIT),
 6 (C-CURSOR), 7 (D-CHAIN). Manual: Rule 8. New report endpoints use
 `cached_report_endpoint`; pagination via `p: PaginationParams = Depends()`
 (`Annotated` recognised); `async def` MUST await; reads `get_read_cursor`, writes
@@ -305,8 +323,11 @@ Dependabot queue: **all 10 merged 2026-05-22** (#204-#211, #9, #10). pillow→12
 and elasticsearch→9 were sub-agent-audited SAFE before merge. Queue is empty.
 
 - **#225** — Endpoint-conventions refactor EPIC. R-1..R-5 ALL shipped
-  (R-5c #270 / R-5e #271 / R-5d #272 + hardening #273). Only **R-6**
-  (audit-backlog flush of the 46 A_AUDIT_ALLOWLIST entries) remains.
+  (R-5c #270 / R-5e #271 / R-5d #272 + hardening #273). **R-6 substantially done**:
+  audit-backlog flush drained `A_AUDIT_ALLOWLIST` 46→23 across waves 1 (#276),
+  2 (#280), 3 (#285). The remaining 23 are all justified; only an optional
+  "later pass" of a few real-ish actions (create_snapshot, duplicates_*,
+  notify_*) is left.
 - **#203** — user's own April-30 bundle, still open. Do NOT merge as-is (D2
   DuckDB removal conflicts with keep-DuckDB + #231/#232). Triage comment posted.
 
