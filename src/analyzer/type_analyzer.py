@@ -26,6 +26,13 @@ class TypeAnalyzer:
             r["avg_size_formatted"] = format_size(r["avg_size"])
             r["min_size_formatted"] = format_size(r["min_size"])
             r["max_size_formatted"] = format_size(r["max_size"])
+            # Treemap "wasted %": stale (1yr+ unaccessed) bytes as a share of
+            # this extension's total. Guard div-by-zero for zero-size types.
+            stale = r.get("stale_size") or 0
+            total = r.get("total_size") or 0
+            r["stale_size"] = stale
+            r["stale_size_formatted"] = format_size(stale)
+            r["wasted_pct"] = round(stale / total * 100, 1) if total else 0.0
 
         logger.info("Dosya türü analizi tamamlandı: %d uzantı", len(results))
         return results

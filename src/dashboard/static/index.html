@@ -832,6 +832,7 @@ body.sidebar-open { overflow: hidden; }
                 <option value="extension">Dosya Turu</option>
                 <option value="age">Yas (Erisim)</option>
                 <option value="size">Boyut</option>
+                <option value="wasted">Israf % (eski)</option>
             </select>
             <label style="margin-left:12px">Boyut:</label>
             <select id="treemap-size" onchange="renderTreemap()" style="width:130px">
@@ -4247,6 +4248,10 @@ async function loadTreemap() {
                     count: d.count || 0,
                     size: d.size_bytes || 0,
                     avg: d.count ? Math.round((d.size_bytes || 0) / d.count) : 0,
+                    // Partial summary has no per-dir stale breakdown; wasted %
+                    // populates on the full post-scan load.
+                    wastedPct: 0,
+                    stale: 0,
                 })),
             };
             treemapZoomPath = null;
@@ -4285,6 +4290,8 @@ function buildTreeFromTypes(types, summary) {
         count: t.file_count,
         size: t.total_size || 0,
         avg: t.avg_size || 0,
+        wastedPct: t.wasted_pct || 0,
+        stale: t.stale_size || 0,
     }));
     return { name: 'Root', children };
 }
@@ -4329,7 +4336,9 @@ function renderTreemap() {
         ? d3.scaleOrdinal(d3.schemeTableau10)
         : colorMode === 'age'
             ? d3.scaleSequential(d3.interpolateYlOrRd).domain([0, root.leaves().length])
-            : d3.scaleSequential(d3.interpolateBlues).domain([0, d3.max(root.leaves(), d => d.value)]);
+            : colorMode === 'wasted'
+                ? d3.scaleSequential(d3.interpolateReds).domain([0, 100])
+                : d3.scaleSequential(d3.interpolateBlues).domain([0, d3.max(root.leaves(), d => d.value)]);
 
     const tooltip = document.getElementById('treemap-tooltip');
 
@@ -4338,7 +4347,7 @@ function renderTreemap() {
     leaf.append('rect')
         .attr('width', d => Math.max(0, d.x1 - d.x0))
         .attr('height', d => Math.max(0, d.y1 - d.y0))
-        .attr('fill', (d, i) => colorMode === 'extension' ? colorScale(d.data.extension || d.data.name) : colorMode === 'size' ? colorScale(d.value) : colorScale(i))
+        .attr('fill', (d, i) => colorMode === 'extension' ? colorScale(d.data.extension || d.data.name) : colorMode === 'size' ? colorScale(d.value) : colorMode === 'wasted' ? colorScale(d.data.wastedPct || 0) : colorScale(i))
         .attr('rx', 2).attr('opacity', 0.85)
         .style('cursor', 'pointer')
         .on('mousemove', (event, d) => {
@@ -4348,7 +4357,8 @@ function renderTreemap() {
             tooltip.innerHTML = `<div class="tt-name">${escapeHtml(d.data.name)}</div>
                 <div class="tt-row"><span>Dosya Sayisi</span><span>${formatNum(d.data.count)}</span></div>
                 <div class="tt-row"><span>Toplam Boyut</span><span>${formatSize(d.data.size)}</span></div>
-                <div class="tt-row"><span>Ortalama</span><span>${formatSize(d.data.avg)}</span></div>`;
+                <div class="tt-row"><span>Ortalama</span><span>${formatSize(d.data.avg)}</span></div>
+                <div class="tt-row"><span>Bosa Giden (eski)</span><span>%${(d.data.wastedPct || 0).toFixed(1)} (${formatSize(d.data.stale || 0)})</span></div>`;
         })
         .on('mouseleave', () => { tooltip.style.display = 'none'; });
 
