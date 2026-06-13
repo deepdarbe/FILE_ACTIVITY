@@ -48,37 +48,37 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `adf74e9`, 2026-06-13)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `0cd4441`, 2026-06-13)
 
-The 2026-06-13 session was a **short follow-up** that cleared the two top
-NEXT-SESSION items left by the 2026-06-12 security+compliance wave: **#283 merged**
-(the held M1 list-dir auth PR → closes #278) and **R-6 wave 3 merged** (#285 →
-A_AUDIT_ALLOWLIST 31→23). The prior 2026-06-12 wave was a security + compliance
-hardening wave (9 PRs: #275 install.ps1, #277 CVE floors, #280+#276 R-6 audit
-waves, #281 STH export, #282 secret-scrub, #270–#274 the R-5 guard series + docs,
-plus Dependabots #264–#268), driven by an OSV scan + a defensive source audit +
-a competitive-research punch list.
+The 2026-06-13 session was a **follow-up wave** that cleared the top four
+NEXT-SESSION items left by the 2026-06-12 security+compliance wave — 5 PRs:
+**#283** (held M1 list-dir auth → closes #278), **#285** (R-6 wave 3,
+A_AUDIT_ALLOWLIST 31→23), **#286** (handoff refresh), **#287** (pytest floor
+≥9.0.3 → last open advisory cleared), **#288** (treemap "Wasted %", punch-list
+#3). The prior 2026-06-12 wave was a security + compliance hardening wave (9
+PRs: #275 install.ps1, #277 CVE floors, #280+#276 R-6 audit waves, #281 STH
+export, #282 secret-scrub, #270–#274 the R-5 guard series + docs, plus
+Dependabots #264–#268), driven by an OSV scan + a defensive source audit + a
+competitive-research punch list.
 
 **▶ NEXT SESSION — start here:**
-1. **pytest dev-dep** GHSA-6w46-j5rx-g56g (MODERATE, local tmpdir) needs `>=9.0.3`
-   — a major bump from the `<9` cap; do it as its own CI-validated PR. (This is the
-   "1 moderate" Dependabot warning that prints on every push.)
-2. **Research punch-list 2–5** (deep-research report, 2026-06-12): #2 Lynis-style
-   hardening-index score, #3 Treemap "Wasted %" column, #4 Presidio PII
-   context-boosting, #5 Sleuth Kit mactime timeline. All net-new features.
-3. **Customer on-box smoke** still owed from the 2026-06-12 wave (#262 CSV +
+1. **Research punch-list 2/4/5** (deep-research report, 2026-06-12; #3 shipped
+   in #288): #2 Lynis-style hardening-index score, #4 Presidio PII
+   context-boosting, #5 Sleuth Kit mactime timeline. All net-new features —
+   each wants its own design pass.
+2. **Customer on-box smoke** still owed from the 2026-06-12 wave (#262 CSV +
    Adlandırma, #263 PDQ option) — gated on `update.cmd` pulling current master.
-4. **R-6 "later pass" candidates** (optional): the 23-entry allowlist is all
+3. **R-6 "later pass" candidates** (optional): the 23-entry allowlist is all
    justified, but `create_snapshot`, `duplicates_delete`, `duplicates_quarantine`,
    `notify_users_run_now`, `notifications_send_to` are real-ish actions that could
    be triaged next (verify whether the engine already audits them before emitting).
-5. **Parquet-reports** (ADOPT, deferred); **PILOT** (ETW/Tantivy); **#114** ES
+4. **Parquet-reports** (ADOPT, deferred); **PILOT** (ETW/Tantivy); **#114** ES
    (deferred until 500 GB / 200 M-row).
 
 `git log --oneline -15` confirms the real tip.
 
 ### Where we are
-- **master = `adf74e9`**. ci_guards **12/12**; A-AUDIT allowlist = **23**. Per-PR CI:
+- **master = `0cd4441`**. ci_guards **12/12**; A-AUDIT allowlist = **23**. Per-PR CI:
   the usual non-blocking `Pytest (Linux, Docker)` flake (`continue-on-error`, the
   Docker image's `apt-get install` times out before pytest runs) — do NOT chase.
   NOTE: `CodeQL` now genuinely scans on PRs (it flagged real issues on #281 —
@@ -87,16 +87,30 @@ a competitive-research punch list.
   use the per-alert `/code-scanning/alerts/{n}/instances` endpoint, NOT the
   `?ref=refs/heads/master` filter (the ref filter matches `most_recent_instance`,
   which moves to the PR ref and hides master-side alerts).
-- **Open PRs: #203 only** (old D2/DuckDB bundle, do NOT merge as-is). #283 and #285
-  merged this session.
-- **Security posture**: dependency floors clean vs OSV except the deferred dev-only
-  pytest; source audit found **no reachable Critical/High**. Both Mediums shipped
+- **Open PRs: #203 only** (old D2/DuckDB bundle, do NOT merge as-is). #283/#285/
+  #286/#287/#288 merged this session.
+- **Security posture**: dependency floors **fully clean vs OSV** — the last open
+  advisory (dev-only pytest GHSA-6w46-j5rx-g56g) was cleared by #287
+  (`pytest>=9.0.3,<10`); Dependabot auto-closes it on its next master rescan.
+  Source audit found **no reachable Critical/High**. Both Mediums shipped
   (M2 = #282 secret-scrub, M1 = #283 list-dir auth). The 5 HIGH CodeQL
   `py/path-injection` alerts on the picker `realpath` sinks were dismissed
   `won't fix` (localhost-gated + #278 scope guard + symlink-escape-required;
   PR #283 strictly reduces exposure).
 
-### What shipped 2026-06-13 (this short follow-up session)
+### What shipped 2026-06-13 (this follow-up session)
+- **#287** — **pytest floor bump** `>=8.0,<9` → `>=9.0.3,<10` (dev-dep only),
+  clearing GHSA-6w46-j5rx-g56g (tmpdir, MODERATE) — the last open advisory.
+  Major bump validated by a differential suite run (8.4.2 vs 9.0.3: identical
+  620 pass / 42 env-only fail, empty diff → no pytest-9 regressions), since CI
+  can't fully vet it (Linux Docker job flakes at build; Windows job runs 2 files).
+- **#288** — **Treemap "Wasted %"** (punch-list #3). Per-extension wasted % =
+  stale (1+ yr unaccessed) byte share, same 365-day cutoff as the Overview
+  stale KPI. `get_type_analysis` adds `stale_size`; `TypeAnalyzer` derives
+  `wasted_pct`. New "Israf % (eski)" red-heatmap colour mode + tooltip row.
+  `tests/test_treemap_wasted_pct.py` (4 cases). "Wasted" def = stale-only by
+  operator choice (vs stale+dupes / configurable).
+- **#286** — handoff doc refresh (this file).
 - **#283** — **M1 list-dir auth** (closes #278). The held PR from the prior wave:
   scopes the folder-picker (`list-dir`/`open-folder`) so an UNAUTHENTICATED
   localhost caller is confined to configured source roots + their parents
@@ -152,11 +166,13 @@ a competitive-research punch list.
   5→6 (audited SAFE — playground px.* usage untouched by the 6.x breaks).
 
 ### What's PENDING (pick up here)
-1. **pytest 9 bump** + **research punch-list 2–5** (see NEXT SESSION #1/#2).
+1. **Research punch-list 2/4/5** (Lynis index / Presidio PII / Sleuth Kit
+   mactime — #3 shipped in #288; see NEXT SESSION #1).
 2. **Customer on-box smoke** still owed from the prior wave (#262 CSV + Adlandırma,
    #263 PDQ option) — gated on `update.cmd` pulling current master.
-3. **R-6 "later pass"** allowlist triage (NEXT SESSION #4) — optional.
-4. **#114**, **#203**, **#29**. (Hardening #278/#279 both shipped: #283 + #282.)
+3. **R-6 "later pass"** allowlist triage (NEXT SESSION #3) — optional.
+4. **#114**, **#203**, **#29**. (Hardening #278/#279 both shipped: #283 + #282;
+   pytest advisory cleared in #287.)
 
 ### The 8 endpoint-conventions rules — 7 of 8 auto-enforced (12 guards live)
 `docs/standards/endpoint-conventions.md`. Auto: Rule 1 (R-CACHE), 2 (P-PAGE),
