@@ -48,47 +48,106 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `62fc1f2`, 2026-05-30)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `74a41ea`, 2026-06-13)
 
-The 2026-05-26 → 2026-05-30 session shipped **7 feature/fix PRs** (#256–#258, #260, #262, #263) + the squash-merge memory note (#259) + 5 Dependabot bumps (#247–#251), closing the **Near-dup ADOPT** roadmap entry (text MinHash + image PDQ) and the chronic customer-reported triage loop (parquet config + owner read + on-box CSV/Adlandırma hangs). Also stood up the operator-side **diagnostics bundle** so the next round of triage is one zip, not a paste loop.
+The 2026-06-12 session was a **security + compliance hardening wave**: 9 PRs merged
+(#275 install.ps1, #277 CVE floors, #280+#276 R-6 audit waves, #281 STH export,
+#282 secret-scrub, #270–#274 the R-5 guard series + docs, plus Dependabots
+#264–#268). Driven by an OSV dependency scan + a defensive source-code audit +
+a competitive-research punch list (Trillian/Rekor STH was its #1 item, now shipped).
+Built mostly by **4 parallel worktree-isolated agents** + GitHub Copilot — the
+worktree isolation finally killed the shared-checkout branch races.
 
-**▶ NEXT SESSION — start here:** No urgent customer-reported bug is open in code. The remaining work is roadmap follow-through:
-1. **Customer on-box smoke for #262 + #263** (the only thing actually pending — see PENDING below).
-2. **EPIC #225 R-6 audit-backlog flush** — the ONLY #225 leftover (R-5 series closed 2026-06: P-PAGE #270, A-AUDIT #271, S-SHAPE #272, edge-case hardening #273). Triage the 46 A_AUDIT_ALLOWLIST entries: add `insert_audit_event_simple` to real mutations (compliance-critical ones first: legal_holds, retention_policy, restore_*, quarantine_purge, chargeback, approvals), keep analytics/self-test/export entries with justifications. Waves of 5-10 endpoints per PR.
-3. **Parquet-reports** (ADOPT, deferred — was deemed optional this session after #252 made reads lock-resilient).
-4. PILOT tier (ETW FileIO via ctypes, Tantivy).
-5. **EPIC #114** storage Phase 3-5 (Elasticsearch — keep deferred per `docs/architecture/storage-decision-2026-04-28.md` until customer crosses 500 GB / 200 M-row).
+**▶ NEXT SESSION — start here:**
+1. **#283 (M1 list-dir auth) is OPEN + HELD** — the operator paused it. It closes
+   issue #278 (unauth-localhost full-FS enumeration via the dir-picker) by scoping
+   unauth callers to source roots. CI's `CodeQL` flags **5 HIGH "path-injection"**
+   alerts on it — VERIFIED as the **pre-existing** `realpath(user_path)` picker
+   sinks (api.py:99/233, on master too), re-attributed to the PR only because it
+   changed the function signatures. The PR REDUCES risk; CodeQL can't see the new
+   `_path_within_source_scope` guard. **Operator must choose**: (a) merge with a
+   `# codeql[py/path-injection]` suppression + justification (recommended), (b)
+   harden further, or (c) keep holding. Do NOT merge without that call.
+2. **R-6 wave 3** — `A_AUDIT_ALLOWLIST` is now **31** (was 46; waves 1+2 drained 15).
+   Remaining real-mutation candidates: `chargeback_*` (5), `drilldown_archive`,
+   `run_archive`, `run_scan`. The rest are justified analytics-compute/self-test/
+   export exemptions (the 3 `approvals_*` are allowlisted-by-design — the
+   ApprovalRegistry already audits them; don't double-emit).
+3. **pytest dev-dep** GHSA-6w46-j5rx-g56g (MODERATE, local tmpdir) needs `>=9.0.3`
+   — a major bump from the `<9` cap; deferred, do it as its own CI-validated PR.
+4. **Research punch-list 2–5** (deep-research report, 2026-06-12): #2 Lynis-style
+   hardening-index score, #3 Treemap "Wasted %" column, #4 Presidio PII
+   context-boosting, #5 Sleuth Kit mactime timeline. All net-new features.
+5. **Parquet-reports** (ADOPT, deferred); **PILOT** (ETW/Tantivy); **#114** ES
+   (deferred until 500 GB / 200 M-row).
 
 `git log --oneline -15` confirms the real tip.
 
 ### Where we are
-- **master = `62fc1f2`**. Per-PR CI: 7-8/8 green (varies). Two known non-blocking reds: `Pytest (Linux, Docker)` (chronic 17-21s docker-build/pip flake, `continue-on-error: true`) and occasionally `CodeQL` umbrella (inherits a master-side Dependabot advisory — distinct from `Analyze (python)`/`Analyze (javascript)` which actually scan and pass). **Do NOT chase either.**
-- **All this session's PRs are merged** (#256–#260, #262, #263 + Dependabots #247–#251). Only **#203** stays open (do NOT merge as-is — D2 DuckDB removal conflicts with the analytics/Parquet plan + the keep-DuckDB decision).
+- **master = `74a41ea`**. ci_guards **12/12**; A-AUDIT allowlist = **31**. Per-PR CI:
+  the usual non-blocking `Pytest (Linux, Docker)` flake (`continue-on-error`) — do
+  NOT chase. NOTE: `CodeQL` now genuinely scans on PRs (it flagged real issues on
+  #281 — fixed — and the pre-existing path sinks on #283). Read CodeQL annotations;
+  don't blanket-dismiss them as the old umbrella flake.
+- **Open PRs: #283** (held, see above) and **#203** (old D2/DuckDB bundle, do NOT
+  merge as-is). Everything else from this wave is merged.
+- **Security posture after this wave**: dependency floors clean vs OSV except the
+  deferred dev-only pytest; source audit found **no reachable Critical/High** (M1/M2
+  were the two Mediums — M2 shipped #282, M1 is #283 held).
 
-### What shipped THIS session (#256–#260, #262, #263)
-- **#256** — **`migrate_config set_if_missing`**: the durable fix to last session's PENDING item 1. The migrator now INSERTS absent safe-default keys (not just flips them when current matches old_default). Closes the loop so `scanner.parquet_staging.enabled → false` (#8/#9 lock root) and `scanner.read_owner → true` (#1 owner Bilinmiyor) auto-write on `update.cmd` for any preserved config that predates those keys.
-- **#257** — **`fa.cmd diag` + dashboard "Tanılama Paketi" button + opt-in GitHub upload**. One zip with version, environment (incl. Windows domain-join — gates LookupAccountSid owner resolution), redacted config + key-flags, log tail, per-source scan state, **owner-resolved/unresolved ratio**, PII count, WAL size, checkpointer health. Reuses `telemetry.github` repo/token for `--upload` (one token, not two). Runs even when the writer can't connect (`get_read_cursor` only, `no_db_commands` includes `diag`). Turns the recurring "paste version + config + log" triage loop into one artifact.
-- **#258** — **Owner drill-down empty fix** for `DOMAIN\user` owners: backslash in a single-quoted `onclick` JS string was swallowed (`'\g'` → `'g'`) so the drill-down queried a corrupted owner and came back empty. Escape backslash + quote for the JS-string context. + **`?format=csv` streaming export** on the drilldown (was the documented `#225 R-2` fix; XLSX stays Excel-friendly capped at 100k, CSV streams every row). + `/api/users/overview` returns `source_id` so the drill-down targets the right scan.
-- **#259** — **CLAUDE.md memory** for the squash rule: "always squash, never plain merge commit, for every PR; proactively tell the operator which method is correct + why before merging — don't make them ask." Operator preference, 2026-05-26.
-- **#260** — **Text near-dup MinHash+LSH** (engine + dashboard). `TextNearDuplicateEngine` mirrors `ContentDuplicateEngine`: word k-shingles → `MinHash(num_perm)` → `MinHashLSH(threshold)` candidate pairs → Jaccard-verified Union-Find → persisted groups. Opt-in (`text_near_duplicates.enabled: false`) + on-demand only (reading content is expensive). Optional `datasketch` dep, graceful no-op. New "Benzer Metin" page + Rule-8 banner.
-- **#262** — **On-box smoke fixes** (customer 2026-05-27): (a) CSV drilldown export was hung on a 1.36M-row owner because the paged runner used OFFSET (page 13 = re-scan + skip 1.2M rows) → replaced with single SELECT + `cursor.fetchmany(5000)` stream for owner/type/size; 1.36M rows now stream in seconds. (b) Adlandırma Uyumu (Tablo tab) hung at "Yukleniyor..." because `renderMitNamingEntityList` fetched files for all 10 violating codes in parallel (10 cold table-iterations crushed threadpool) → sort by count desc, fetch top 3 first, "Diger N kurali da yukle" button for the rest.
-- **#263** — **PDQ image near-dup** (Copilot-implemented from issue #261). Opt-in 4th hash path alongside pHash/dHash/aHash; idempotent ALTER TABLE adds `image_hashes.pdq_hash`, `hash_type=pdq` route on the existing endpoint + selector option in the UI. Mirrors `image_hash.py` pattern exactly. **Closes the Near-dup ADOPT roadmap entry** (text + image both shipped).
+### What shipped THIS session (2026-06-12 → 13)
+- **#270/#271/#272** — R-5 guard series: **P-PAGE** (Rule 2), **A-AUDIT** (Rule 4),
+  **S-SHAPE** (Rule 3) added to `scripts/ci_guards.py` (now 12 guards). **#273**
+  hardened all three after a max-effort review live-repro'd 4 edge-case gaps
+  (`.get('partial_summary_json')` bypass, dead-nested-def audit false-pass,
+  `Annotated[PaginationParams]` false-positive, partial-migration false-negative).
+- **#274** — docs refresh + streamlit floor bump (plotly-6 base64-JSON needs ≥1.42).
+- **#276 / #280** — **R-6 audit-backlog flush waves 1 + 2**: 15 mutating endpoints
+  now emit `insert_audit_event_simple` on the success path (snake_case event_type,
+  status-guarded, try/except so audit failure never rolls back the mutation):
+  legal_holds_*, retention_policy_*, quarantine_*, restore_*, bulk_restore,
+  orphan_sid_reassign, acl_snapshot, archive_selective, archive_by_insight.
+  Allowlist 46→31. **Review catch**: 3 `approvals_*` were NOT drained — the
+  ApprovalRegistry._audit() already emits identical event_types; a second
+  endpoint-level emit would write duplicate compliance-chain rows → kept
+  allowlisted with a per-name justification.
+- **#281** — **Signed Tree Head (STH) export** (Trillian/Rekor/CT pattern,
+  research punch-list #1). `src/storage/audit_sth.py` + `scripts/audit_sth.py`
+  (`--genkey/--emit/--verify [--check-chain]`): publishes a signed
+  `{tree_size, root_hash, timestamp, signature, public_key}` checkpoint so an
+  external auditor verifies the chain hasn't been rewritten with our published
+  Ed25519 pubkey — turns "trust us" into "verify". Offline CLI op, no new endpoint;
+  reads chain only. `cryptography>=41` now a real dep. Opt-in `audit.sth` config.
+- **#282** — **value-level secret scrub** (hardening M2, issue #279). New shared
+  `src/utils/secret_scrub.py`: masks secret SHAPES (PEM / `gh[pousr]_` / Slack /
+  AWS AKIA / `user:pass@` URLs / conservative base64) regardless of key name, in
+  BOTH the diag bundle and the error-reporter. Conservative catch-all (≥40 +
+  mixed-case + digit) so SHA/MD5/UUID aren't over-masked. Composes on top of the
+  existing key-name redaction.
+- **#277** — **CVE floors**: `pyarrow>=23.0.1` (clears CRITICAL ACE
+  GHSA-5wvp-7f3h-6wmm + 2 more) and `streamlit>=1.54.0` (clears MODERATE
+  Windows-NTLM-SSRF GHSA-7p48-42j8-8846). OSV-verified clean.
+- **#275** — thin `deploy/install.ps1` entry point with `-Branch` param +
+  scriptblock-Create so a PR branch can be smoke-tested with one paste; `update.cmd`
+  now calls it and remembers the install branch. Legacy one-liner still works.
+- **Dependabot** #264 datasketch, #265 click, #266 mcp, #267 imagehash, #268 plotly
+  5→6 (audited SAFE — playground px.* usage untouched by the 6.x breaks).
 
 ### What's PENDING (pick up here)
-1. **Customer on-box smoke for #262 + #263** — the only customer-side TODO from this session:
-   - **CSV İndir** on a >1M-row owner drilldown → completes in seconds (was hung pre-#262).
-   - **Adlandırma** Tablo tab loads top-3 codes' files quickly; "Diger N kurali" button appears.
-   - **Görsel Duplikasyonlar** → PDQ option in the hash-type selector works (needs `pip install -r requirements-accel.txt` for `pdqhash`).
-   - All gated on `update.cmd` to pull master `62fc1f2`.
-2. **EPIC #225 — only R-6 (audit-backlog flush) remains.** The R-5 guard series shipped 2026-06: #270 P-PAGE, #271 A-AUDIT, #272 S-SHAPE, then #273 hardened all three after a max-effort review live-repro'd 4 edge-case gaps (`.get('partial_summary_json')` bypass, dead-nested-def audit false-pass, Annotated[PaginationParams] false-positive, partial-migration false-negative).
-3. **Advanced-tech research roadmap** — Near-dup ADOPT now **CLOSED ✓** (text #260 + PDQ #263); remaining open items:
-   - **Parquet-reports** (ADOPT, deferred): pyarrow at scan-complete + DuckDB/Polars query Parquet — cold GROUP BY ~30s → <1s, WAL-safe. Optional now that #252 made reads lock-resilient.
-   - **PILOT tier**: ETW FileIO via raw ctypes (Windows monitoring); Tantivy search.
-   - **WATCH/SKIP**: FSRM, MiniFilter, chDB, DuckDB-FTS.
-4. **#114** storage Phase 3-5 (Elasticsearch backend, deliberately deferred); **#203** decision; **#29** EPIC roadmap (pinned, never closed).
+1. **#283 decision** (see NEXT SESSION #1) — the one held PR.
+2. **Customer on-box smoke** still owed from the prior wave (#262 CSV + Adlandırma,
+   #263 PDQ option) — gated on `update.cmd` pulling current master.
+3. **R-6 wave 3** + **pytest 9 bump** + **research punch-list 2–5** (above).
+4. **Hardening issues #278 (→#283) / #279 (shipped #282)**; **#114**, **#203**, **#29**.
 
-### The 8 endpoint-conventions rules — 7 of 8 now auto-enforced
-`docs/standards/endpoint-conventions.md`. Auto-enforced: Rule 1 (R-CACHE), Rule 2 (P-PAGE), Rule 3 (S-SHAPE), Rule 4 (A-AUDIT, allowlist pending R-6 flush), Rule 5 (A-AWAIT), Rule 6 (C-CURSOR), Rule 7 (D-CHAIN). Manual: Rule 8 only (config-gated features surface their gate in the UI). New report endpoints MUST use `cached_report_endpoint`; pagination via `p: PaginationParams = Depends()` (Annotated form also recognised); new `async def` MUST await; reads use `get_read_cursor`, writes `get_cursor`; mutating endpoints emit audit events; summary reads go through `db.get_scan_summary` (S-SHAPE noqa needs a trailing comment, case-insensitive).
+### The 8 endpoint-conventions rules — 7 of 8 auto-enforced (12 guards live)
+`docs/standards/endpoint-conventions.md`. Auto: Rule 1 (R-CACHE), 2 (P-PAGE),
+3 (S-SHAPE), 4 (A-AUDIT, allowlist now 31 + draining via R-6), 5 (A-AWAIT),
+6 (C-CURSOR), 7 (D-CHAIN). Manual: Rule 8. New report endpoints use
+`cached_report_endpoint`; pagination via `p: PaginationParams = Depends()`
+(`Annotated` recognised); `async def` MUST await; reads `get_read_cursor`, writes
+`get_cursor`; mutating endpoints emit audit events; summary reads via
+`db.get_scan_summary` (S-SHAPE noqa = trailing comment, case-insensitive).
 
 ---
 
