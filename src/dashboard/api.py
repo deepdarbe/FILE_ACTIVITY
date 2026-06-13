@@ -3448,21 +3448,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         aksi halde SQLite yoluna duser.
         """
         from src.utils.size_formatter import format_size
-        result = None
-        if analytics.available:
-            try:
-                scan_id = db.get_latest_scan_id(source_id, include_running=False)
-                if scan_id:
-                    result = analytics.get_duplicate_groups(
-                        scan_id, min_size, page, page_size
-                    )
-            except Exception as e:
-                logger.warning("DuckDB duplicate sorgusu basarisiz, SQLite fallback: %s", e)
-                result = None
-        if result is None:
-            result = db.get_duplicate_groups(
-                source_id, min_size=min_size, page=page, page_size=page_size
-            )
+        # #290 — go straight to the SQLite path. The DuckDB-ATTACH variant of
+        # this GROUP-BY-over-all-rows query is catastrophically slow at scale: on
+        # the customer's 2.9M-row / 31 GB box it ran for >25 min and the worker
+        # was OOM-killed, so the request never returned and the page showed empty.
+        # The SQLite path is now index-assisted (idx_sf_scan_name_size) and reads
+        # its totals from the precomputed scan summary, so it is the correct
+        # primary path here. DuckDB stays available for the other report endpoints.
+        result = db.get_duplicate_groups(
+            source_id, min_size=min_size, page=page, page_size=page_size
+        )
         # Boyut formatlama
         result["total_waste_size_formatted"] = format_size(result.get("total_waste_size", 0))
         for g in result.get("groups", []):

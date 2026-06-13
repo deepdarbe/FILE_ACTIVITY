@@ -605,6 +605,11 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_size ON scanned_files(file_size)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_path ON scanned_files(file_path)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_name_size ON scanned_files(file_name, file_size)")
+        # #290 — duplicate report groups by (file_name, file_size) WITHIN a scan.
+        # idx_sf_name_size lacks scan_id, so the per-scan dup query had to sort
+        # all of the scan's rows; on a 2.9M-row / 31 GB box that took minutes.
+        # Leading scan_id turns the GROUP BY into a streaming index scan.
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_scan_name_size ON scanned_files(scan_id, file_name, file_size)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_owner ON scanned_files(owner)")
         # Composite indexler - KRITIK performans (source_id+scan_id tum sorgularda kullanilir)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sf_source_scan ON scanned_files(source_id, scan_id)")
@@ -3241,31 +3246,48 @@ class Database:
                             "groups": [], "page": page, "page_size": page_size, "total_pages": 1}
                 scan_id = row["id"]
 
-        with self.get_read_cursor() as cur:
-            # Tek CTE ile ozetleri (toplam grup, toplam israf, toplam dosya)
-            # ve sayfalanmis gruplari iki ayri sorguda tek aggregate uzerinden
-            # alir. Onceki kodda ayni GROUP BY uc kere calisiyordu; buyuk
-            # tarama setlerinde bariz yavaslamaya yol aciyordu.
-            cur.execute("""
-                WITH dup AS (
-                    SELECT file_name, file_size, COUNT(*) AS cnt
-                    FROM scanned_files
-                    WHERE scan_id = ? AND file_size > ?
-                    GROUP BY file_name, file_size
-                    HAVING COUNT(*) > 1
-                )
-                SELECT
-                    COUNT(*) AS total_groups,
-                    COALESCE(SUM(cnt), 0) AS total_files,
-                    COALESCE(SUM((cnt - 1) * file_size), 0) AS total_waste
-                FROM dup
-            """, (scan_id, min_size))
-            summary = cur.fetchone()
-            total_groups = summary["total_groups"]
-            waste_row = {"total_waste": summary["total_waste"],
-                         "total_files": summary["total_files"]}
+        # #290 — group/waste TOTALS for the default min_size==0 case come from
+        # the precomputed scan summary, which computes them with the IDENTICAL
+        # definition (file_name+file_size, file_size>0, HAVING COUNT>1). This
+        # skips a full GROUP-BY-over-all-rows pass that took minutes on the
+        # customer's 2.9M-row / 31 GB box. A custom min_size (not used by the
+        # dashboard) still computes the totals live below. Done before the read
+        # cursor opens so we don't nest cursors.
+        total_groups = total_files = total_waste = None
+        if int(min_size) <= 0:
+            summ = self.get_scan_summary(scan_id)
+            if summ is not None and summ.get("duplicate_groups") is not None:
+                total_groups = int(summ.get("duplicate_groups") or 0)
+                total_files = int(summ.get("duplicate_files") or 0)
+                total_waste = int(summ.get("duplicate_waste_size") or 0)
 
-            # Sayfalanmis gruplar (en cok israf eden grup once)
+        with self.get_read_cursor() as cur:
+            if total_groups is None:
+                # No summary yet (or a custom min_size filter): totals live.
+                # Onceki kodda ayni GROUP BY uc kere calisiyordu; buyuk tarama
+                # setlerinde bariz yavaslamaya yol aciyordu.
+                cur.execute("""
+                    WITH dup AS (
+                        SELECT file_name, file_size, COUNT(*) AS cnt
+                        FROM scanned_files
+                        WHERE scan_id = ? AND file_size > ?
+                        GROUP BY file_name, file_size
+                        HAVING COUNT(*) > 1
+                    )
+                    SELECT
+                        COUNT(*) AS total_groups,
+                        COALESCE(SUM(cnt), 0) AS total_files,
+                        COALESCE(SUM((cnt - 1) * file_size), 0) AS total_waste
+                    FROM dup
+                """, (scan_id, min_size))
+                summary = cur.fetchone()
+                total_groups = summary["total_groups"]
+                total_files = summary["total_files"]
+                total_waste = summary["total_waste"]
+
+            # Sayfalanmis gruplar (en cok israf eden grup once) — index-assisted
+            # by idx_sf_scan_name_size so the GROUP BY streams instead of sorting
+            # all of the scan's rows.
             cur.execute("""
                 SELECT file_name, file_size, COUNT(*) as cnt,
                        (COUNT(*) - 1) * file_size as waste_size
@@ -3299,8 +3321,8 @@ class Database:
             total_pages = max(1, -(-total_groups // page_size))
             return {
                 "total_groups": total_groups,
-                "total_waste_size": waste_row["total_waste"],
-                "total_files": waste_row["total_files"],
+                "total_waste_size": total_waste,
+                "total_files": total_files,
                 "groups": groups,
                 "page": page,
                 "page_size": page_size,
