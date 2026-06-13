@@ -10,8 +10,13 @@
 # and don't pull pytest + plugins into the runtime image.
 #
 # ──────────────────────────────────────────────────────────────────────
-# Test runner. Pinned to a recent 8.x; compatible with Python 3.10-3.12.
-pytest>=8.0,<9
+# Test runner. Floor raised to 9.0.3 to clear GHSA-6w46-j5rx-g56g (pytest
+# vulnerable tmpdir handling, MODERATE; fixed in 9.0.3). The `<10` cap keeps
+# the major-version pin convention so an unvetted pytest 10 can't silently
+# break CI. Compatible with Python 3.9+. Suite verified under 9.0.3: a
+# differential run (8.4.2 vs 9.0.3) showed identical pass/fail, i.e. no
+# pytest-9 regressions.
+pytest>=9.0.3,<10
 
 # Optional: handy when iterating locally to print captured stdout on
 # failure with nicer formatting. Not required by the suite itself.
