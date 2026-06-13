@@ -3708,10 +3708,21 @@ class Database:
         # would silently lose summary_json for that scan (audit C1-3).
         now = now_dt.strftime("%Y-%m-%d %H:%M:%S")
         payload = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+        # #291 — back-fill the scan_runs.total_files / total_size COLUMNS from
+        # the authoritative post-enrich totals computed above. complete_scan_run
+        # sets these columns right after the MFT walk, which runs BEFORE the
+        # size-enrich pass, so total_size lands as 0 (sizes still unknown) and is
+        # never updated again. Growth analysis reads MAX(total_size) from these
+        # columns (src/storage/database.py::get_growth_stats + the DuckDB twin),
+        # so without this back-fill the size series is flat-zero even though
+        # summary_json carries the real total. Written in the same retried UPDATE
+        # as summary_json so the column and the JSON can never disagree.
         self._execute_write_with_retry(
             "compute_scan_summary.UPDATE",
-            "UPDATE scan_runs SET summary_json=?, summary_computed_at=? WHERE id=?",
-            (payload, now, scan_id),
+            "UPDATE scan_runs SET summary_json=?, summary_computed_at=?, "
+            "total_files=?, total_size=? WHERE id=?",
+            (payload, now, summary.get("total_files", 0),
+             summary.get("total_size", 0), scan_id),
         )
 
         summary["scan_id"] = scan_id
