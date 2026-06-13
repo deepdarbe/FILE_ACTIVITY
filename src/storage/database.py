@@ -1762,7 +1762,16 @@ class Database:
         return results
 
     def get_type_analysis(self, source_id: int, scan_id: int) -> list:
-        """Dosya turu analizi."""
+        """Dosya turu analizi.
+
+        Includes ``stale_size`` per extension — bytes whose
+        ``last_access_time`` is 1+ year old — so the treemap can surface a
+        per-type "wasted %" (stale data is the archive-candidate proxy). Uses
+        the SAME 365-day cutoff as ``compute_scan_summary`` so the treemap's
+        wasted figure and the Overview "stale" KPI agree.
+        """
+        from datetime import datetime, timedelta
+        stale_cutoff = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
         with self.get_cursor() as cur:
             cur.execute("""
                 SELECT
@@ -1773,12 +1782,15 @@ class Database:
                     MIN(file_size) as min_size,
                     MAX(file_size) as max_size,
                     MIN(creation_time) as oldest,
-                    MAX(creation_time) as newest
+                    MAX(creation_time) as newest,
+                    COALESCE(SUM(CASE WHEN last_access_time IS NOT NULL
+                        AND last_access_time <= ? THEN file_size ELSE 0 END), 0)
+                        as stale_size
                 FROM scanned_files
                 WHERE source_id = ? AND scan_id = ?
                 GROUP BY extension
                 ORDER BY total_size DESC
-            """, (source_id, scan_id))
+            """, (stale_cutoff, source_id, scan_id))
             return cur.fetchall()
 
     def get_size_analysis(self, source_id: int, scan_id: int, buckets: dict) -> list:
