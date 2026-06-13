@@ -1197,6 +1197,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         _scan_results.pop(source_id, None)
         t.start()
 
+        # R-6: audit the scan trigger (the already_running early-return above
+        # is a no-op and is intentionally not audited). Best-effort so an
+        # audit outage never blocks the scan.
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="scan_started",
+                username="dashboard", file_path=None,
+                details=f"source_name={src.name}",
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for scan_started: %s", e)
+
         return {"status": "started", "message": f"Tarama baslatildi: {src.name}"}
 
     @app.post("/api/scan/{source_id}/stop")
@@ -1689,10 +1701,28 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # Plumb the resolved dry_run override into the engine so the
         # API contract is honoured even if the engine's default
         # (config.archiving.dry_run) drifts later.
-        return engine.archive_files(
+        result = engine.archive_files(
             files, src.archive_dest, src.unc_path, src.id, archived_by,
             dry_run=effective_dry_run,
         )
+        # R-6: endpoint-level audit summary (in addition to the engine's
+        # per-file audits), mirroring archive_selective_run (#280).
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="archive_run",
+                username=archived_by, file_path=None,
+                details=(
+                    f"archived_by={archived_by};"
+                    f"matched={len(files)};"
+                    f"archived={result.get('archived')};"
+                    f"failed={result.get('failed')};"
+                    f"total_size={result.get('total_size')};"
+                    f"dry_run={effective_dry_run}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for archive_run: %s", e)
+        return result
 
     @app.post("/api/archive/dry-run")
     def archive_dry_run(data: ArchiveRequest):
@@ -2248,7 +2278,23 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         engine = ArchiveEngine(db, config)
         archived_by = f"drilldown:{data.filter_type}"
-        return engine.archive_files(files, src.archive_dest, src.unc_path, src.id, archived_by)
+        result = engine.archive_files(files, src.archive_dest, src.unc_path, src.id, archived_by)
+        # R-6: endpoint-level audit summary (live archive; no dry_run param).
+        try:
+            db.insert_audit_event_simple(
+                source_id=src.id, event_type="drilldown_archive_run",
+                username=archived_by, file_path=None,
+                details=(
+                    f"filter_type={data.filter_type};"
+                    f"matched={len(files)};"
+                    f"archived={result.get('archived')};"
+                    f"failed={result.get('failed')};"
+                    f"total_size={result.get('total_size')}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for drilldown_archive_run: %s", e)
+        return result
 
     # --- EXPORT API (XLS / PDF) ---
 
@@ -7533,6 +7579,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         except Exception as e:
             # UNIQUE name violation surfaces as IntegrityError on SQLite.
             raise HTTPException(409, f"Eklenemedi: {e}")
+        # R-6: chargeback config is global (no source) -> source_id=None.
+        try:
+            db.insert_audit_event_simple(
+                source_id=None, event_type="chargeback_center_added",
+                username="admin", file_path=None,
+                details=(
+                    f"center_id={cid};name={name};"
+                    f"cost_per_gb_month={body.get('cost_per_gb_month') or 0}"
+                ),
+            )
+        except Exception as e:  # pragma: no cover - audit is best-effort
+            logger.warning("audit emit failed for chargeback_center_added: %s", e)
         return {"id": cid, "ok": True}
 
     @app.put("/api/chargeback/centers/{center_id}")
@@ -7552,6 +7610,17 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             existing = _chargeback_report().get_center(center_id)
             if not existing:
                 raise HTTPException(404, "cost_center bulunamadi")
+        # R-6: only audit a real update (ok=True); a no-op/idempotent path
+        # leaves ok=False and writes no fake audit row.
+        if ok:
+            try:
+                db.insert_audit_event_simple(
+                    source_id=None, event_type="chargeback_center_updated",
+                    username="admin", file_path=None,
+                    details=f"center_id={center_id};changes={fields}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for chargeback_center_updated: %s", e)
         return {"ok": True}
 
     @app.delete("/api/chargeback/centers/{center_id}")
@@ -7559,6 +7628,17 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # Idempotent: deleting an already-deleted center returns ok=True
         # with deleted=False so callers can call this on stale UI state.
         deleted = _chargeback_report().remove_center(center_id)
+        # R-6: only audit when a row was actually deleted (idempotent no-op
+        # path writes no fake audit row).
+        if deleted:
+            try:
+                db.insert_audit_event_simple(
+                    source_id=None, event_type="chargeback_center_removed",
+                    username="admin", file_path=None,
+                    details=f"center_id={center_id}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for chargeback_center_removed: %s", e)
         return {"ok": True, "deleted": deleted}
 
     @app.post("/api/chargeback/centers/{center_id}/owners")
@@ -7572,6 +7652,17 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             added = _chargeback_report().add_owner(center_id, pat)
         except ValueError as e:
             raise HTTPException(404 if "bulunamadi" in str(e) else 400, str(e))
+        # R-6: only audit when a mapping was actually added (already-present
+        # pattern returns added=False -> idempotent no-op, no audit row).
+        if added:
+            try:
+                db.insert_audit_event_simple(
+                    source_id=None, event_type="chargeback_owner_added",
+                    username="admin", file_path=None,
+                    details=f"center_id={center_id};owner_pattern={pat}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for chargeback_owner_added: %s", e)
         return {"ok": True, "added": added, "owner_pattern": pat}
 
     @app.delete("/api/chargeback/centers/{center_id}/owners/{owner_pattern:path}")
@@ -7579,6 +7670,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # ``:path`` lets the pattern contain backslashes / slashes from the
         # owner field (e.g. ``CONTOSO\jdoe``) without double-encoding.
         deleted = _chargeback_report().remove_owner(center_id, owner_pattern)
+        # R-6: only audit a real deletion (idempotent no-op writes no row).
+        if deleted:
+            try:
+                db.insert_audit_event_simple(
+                    source_id=None, event_type="chargeback_owner_removed",
+                    username="admin", file_path=None,
+                    details=f"center_id={center_id};owner_pattern={owner_pattern}",
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for chargeback_owner_removed: %s", e)
         return {"ok": True, "deleted": deleted}
 
     @app.get("/api/chargeback/{source_id}")
