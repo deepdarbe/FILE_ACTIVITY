@@ -873,15 +873,9 @@ A_AUDIT_ALLOWLIST: set[str] = {
     "approvals_reject",                # 7294 — audited by ApprovalRegistry._audit (approval_rejected)
     "archive_dry_run",                 # 1574
     "audit_export",                    # 2417 — export-only, no mutation
-    "chargeback_add_center",           # 7140
-    "chargeback_add_owner",            # 7186
-    "chargeback_remove_center",        # 7179
-    "chargeback_remove_owner",         # 7199
-    "chargeback_update_center",        # 7160
     "content_duplicates_compute",      # 3318 — analytics compute
     "create_snapshot",                 # 6216
     "db_optimize",                     # 4969 — maintenance op
-    "drilldown_archive",               # 2080
     "duplicates_delete",               # 3529
     "duplicates_quarantine",           # 3484
     "duplicates_quarantine_preview",   # 3468 — dry-run
@@ -893,8 +887,6 @@ A_AUDIT_ALLOWLIST: set[str] = {
     "overview_recompute",              # 2919 — analytics compute
     "pii_scan",                        # 6410 — analytics compute
     "ransomware_test",                 # 5321 — self-test
-    "run_archive",                     # 1519
-    "run_scan",                        # 1005
     "start_export",                    # 5187 — export-only
     "syslog_test",                     # 6080 — self-test
     "test_source",                     # 987 — connectivity test
