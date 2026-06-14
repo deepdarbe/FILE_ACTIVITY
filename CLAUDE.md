@@ -48,7 +48,39 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `0cd4441`, 2026-06-13)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `ec2d79c`, 2026-06-14)
+
+The 2026-06-14 session was a **customer empty-page triage**, diagnosed **on the
+prod box via bridge** (`burculogo` — 31 GB DB, 2.9M files, E:\ source). Three
+"page comes up empty" reports → 3 root-caused fixes (PRs #293/#294/#295,
+issues #290/#291/#292 all closed):
+- **#291 Growth empty** → `scan_runs.total_size` COLUMN was 0 (written pre-enrich,
+  never back-filled); growth reads `MAX(total_size)`. Fix: `compute_scan_summary`
+  back-fills the column (#293). On-box: back-filled the 3 existing scans already,
+  so growth works there NOW.
+- **#292 PII empty** → feature off (`compliance.pii.enabled` absent → default
+  false) + **no UI way to launch a scan**. Fix: "PII Tara" button + `background=true`
+  scan mode (#294). On-box: enabled `compliance.pii.enabled: true` in
+  `config\config.yaml` (the ACTIVE config — NOT root `config.yaml`).
+- **#290 Duplicates empty** → endpoint tried DuckDB-ATTACH first; that
+  GROUP-BY-over-2.9M-rows ran **>25 min / OOM-died**, so the request never
+  returned. Fix: route through indexed SQLite + read totals from the summary +
+  new index `idx_sf_scan_name_size` (#295). (Data was fine: 414k dup groups.)
+
+**⚠️ DEPLOY STILL OWED for #290 + #292** — see NEXT SESSION #1. Growth (#291) is
+already live on-box via the back-fill; duplicates (index build at first start) and
+the PII button need the new code on the box.
+
+**BRIDGE GOTCHA (burculogo):** heavy/long bridge-spawned **detached** child procs
+get killed mid-op (NOT OOM — 109 GB RAM free). The dashboard's own process is
+unaffected. Validate heavy things post-deploy, not via bridge probes.
+**RUNTIME GOTCHA:** the dashboard runs as a **manual `python main.py … dashboard`**
+(system Python 3.12, PID held 8085), NOT the NSSM service (Stopped). So plain
+`update.cmd` (service-aware) updates files + starts the *service* → **8085 conflict**
+and the manual python keeps serving OLD code. The manual python must be stopped &
+restarted (or switch to the service) for new code to load.
+
+---
 
 The 2026-06-13 session was a **follow-up wave** that cleared the top four
 NEXT-SESSION items left by the 2026-06-12 security+compliance wave — 5 PRs:
@@ -62,23 +94,32 @@ Dependabots #264–#268), driven by an OSV scan + a defensive source audit + a
 competitive-research punch list.
 
 **▶ NEXT SESSION — start here:**
-1. **Research punch-list 2/4/5** (deep-research report, 2026-06-12; #3 shipped
+1. **Deploy #290/#292 to burculogo + verify all 3 fixes** (owed). Because the
+   dashboard is a manual python (see RUNTIME GOTCHA above), the safe sequence is:
+   stop the manual `python main.py … dashboard` proc(s), run `update.cmd` on the
+   box (RDP — bridge can't reliably drive the 31 GB pre-update snapshot), then
+   restart (service or manual). First start builds `idx_sf_scan_name_size`
+   (~minutes, one-time). Then verify: Growth shows the size series; Kopya page
+   loads (indexed SQLite); PII page shows the "PII Tara" button (config already
+   enabled on-box) — optionally run a bounded PII scan. `config\config.yaml`
+   already has `compliance.pii.enabled: true` (preserved across update).
+2. **Research punch-list 2/4/5** (deep-research report, 2026-06-12; #3 shipped
    in #288): #2 Lynis-style hardening-index score, #4 Presidio PII
    context-boosting, #5 Sleuth Kit mactime timeline. All net-new features —
    each wants its own design pass.
-2. **Customer on-box smoke** still owed from the 2026-06-12 wave (#262 CSV +
+3. **Customer on-box smoke** still owed from the 2026-06-12 wave (#262 CSV +
    Adlandırma, #263 PDQ option) — gated on `update.cmd` pulling current master.
-3. **R-6 "later pass" candidates** (optional): the 23-entry allowlist is all
+4. **R-6 "later pass" candidates** (optional): the 23-entry allowlist is all
    justified, but `create_snapshot`, `duplicates_delete`, `duplicates_quarantine`,
    `notify_users_run_now`, `notifications_send_to` are real-ish actions that could
    be triaged next (verify whether the engine already audits them before emitting).
-4. **Parquet-reports** (ADOPT, deferred); **PILOT** (ETW/Tantivy); **#114** ES
+5. **Parquet-reports** (ADOPT, deferred); **PILOT** (ETW/Tantivy); **#114** ES
    (deferred until 500 GB / 200 M-row).
 
 `git log --oneline -15` confirms the real tip.
 
 ### Where we are
-- **master = `0cd4441`**. ci_guards **12/12**; A-AUDIT allowlist = **23**. Per-PR CI:
+- **master = `ec2d79c`**. ci_guards **12/12**; A-AUDIT allowlist = **23**. Per-PR CI:
   the usual non-blocking `Pytest (Linux, Docker)` flake (`continue-on-error`, the
   Docker image's `apt-get install` times out before pytest runs) — do NOT chase.
   NOTE: `CodeQL` now genuinely scans on PRs (it flagged real issues on #281 —
@@ -87,8 +128,8 @@ competitive-research punch list.
   use the per-alert `/code-scanning/alerts/{n}/instances` endpoint, NOT the
   `?ref=refs/heads/master` filter (the ref filter matches `most_recent_instance`,
   which moves to the PR ref and hides master-side alerts).
-- **Open PRs: #203 only** (old D2/DuckDB bundle, do NOT merge as-is). #283/#285/
-  #286/#287/#288 merged this session.
+- **Open PRs: #203 only** (old D2/DuckDB bundle, do NOT merge as-is). #293/#294/
+  #295 merged 2026-06-14; #283/#285/#286/#287/#288 the day before.
 - **Security posture**: dependency floors **fully clean vs OSV** — the last open
   advisory (dev-only pytest GHSA-6w46-j5rx-g56g) was cleared by #287
   (`pytest>=9.0.3,<10`); Dependabot auto-closes it on its next master rescan.
@@ -97,6 +138,25 @@ competitive-research punch list.
   `py/path-injection` alerts on the picker `realpath` sinks were dismissed
   `won't fix` (localhost-gated + #278 scope guard + symlink-escape-required;
   PR #283 strictly reduces exposure).
+
+### What shipped 2026-06-14 (customer empty-page triage, diagnosed on-box via bridge)
+- **#293** — **growth size series flat-zero** (#291). `compute_scan_summary` now
+  back-fills `scan_runs.total_files`/`total_size` (written pre-enrich = 0, never
+  updated) in the same UPDATE as `summary_json`. On-box: the 3 existing scans were
+  back-filled directly (summary_json had the real 17.8 TB), so growth works there now.
+- **#294** — **PII page unusable from UI** (#292). New "PII Tara" button (shown when
+  `compliance.pii.enabled`) + `pii_scan(background=true)` daemon-thread mode so the
+  multi-hour content scan doesn't block the request; findings appear incrementally.
+  On-box: enabled in `config\config.yaml` (the ACTIVE config).
+- **#295** — **duplicates report empty at scale** (#290). The DuckDB-ATTACH dup
+  query ran >25 min / OOM-died on 2.9M rows. `duplicate_report` now uses indexed
+  SQLite directly (no DuckDB attempt), reads group/waste TOTALS from the precomputed
+  summary (identical definition) for `min_size==0`, and a new
+  `idx_sf_scan_name_size (scan_id, file_name, file_size)` streams the paginated
+  GROUP BY. SQLite proven to terminate (compute_scan_summary runs the same GROUP BY).
+- Diagnosis method: on-box bridge reads (scan_runs columns, summary_json, indexes,
+  config) + a faithful repro calling the real `Database`/`AnalyticsEngine` methods.
+  See [[burculogo-prod-box-bridge]] for the box specs + bridge/runtime gotchas.
 
 ### What shipped 2026-06-13 (this follow-up session)
 - **#287** — **pytest floor bump** `>=8.0,<9` → `>=9.0.3,<10` (dev-dep only),
@@ -166,12 +226,15 @@ competitive-research punch list.
   5→6 (audited SAFE — playground px.* usage untouched by the 6.x breaks).
 
 ### What's PENDING (pick up here)
-1. **Research punch-list 2/4/5** (Lynis index / Presidio PII / Sleuth Kit
-   mactime — #3 shipped in #288; see NEXT SESSION #1).
-2. **Customer on-box smoke** still owed from the prior wave (#262 CSV + Adlandırma,
+1. **Deploy #290/#292 to burculogo + verify the 3 empty-page fixes** (NEXT SESSION
+   #1) — growth (#291) already live on-box via back-fill; duplicates + PII button
+   need the new code. Mind the manual-python RUNTIME GOTCHA.
+2. **Research punch-list 2/4/5** (Lynis index / Presidio PII / Sleuth Kit
+   mactime — #3 shipped in #288; see NEXT SESSION #2).
+3. **Customer on-box smoke** still owed from the prior wave (#262 CSV + Adlandırma,
    #263 PDQ option) — gated on `update.cmd` pulling current master.
-3. **R-6 "later pass"** allowlist triage (NEXT SESSION #3) — optional.
-4. **#114**, **#203**, **#29**. (Hardening #278/#279 both shipped: #283 + #282;
+4. **R-6 "later pass"** allowlist triage (NEXT SESSION #4) — optional.
+5. **#114**, **#203**, **#29**. (Hardening #278/#279 both shipped: #283 + #282;
    pytest advisory cleared in #287.)
 
 ### The 8 endpoint-conventions rules — 7 of 8 auto-enforced (12 guards live)
@@ -226,6 +289,9 @@ to a real architectural issue (long-lived DuckDB ATTACH blocking WAL truncation)
 | WAL stuck at 13+ GB, won't truncate | `src/storage/analytics.py::AnalyticsEngine` | Per-query DuckDB conn (#185/#186) — long-lived ATTACH was the leak |
 | Dashboard menus empty during scan | `src/storage/database.py::get_read_cursor` + `partial_summary_v2` | Read-only pool (#184) + v2 schema (#183) + frontend partial-data (#182) |
 | `BOYUT: 0 B` on every file | `src/scanner/size_enricher.py` | MFT enum is path-only by design; size enrich pass runs after walk (#179) |
+| Büyüme (growth) page empty / size flat-zero | `src/storage/database.py::compute_scan_summary` + `get_growth_stats` | growth reads `MAX(scan_runs.total_size)`; that COLUMN is written pre-enrich (=0). compute_scan_summary back-fills it (#293/#291). Existing scans need a one-time back-fill from `summary_json`. |
+| Kopya dosyalar (duplicates) page empty at scale | `src/dashboard/api.py::duplicate_report` + `get_duplicate_groups` | DuckDB-ATTACH dup query hangs/OOMs on millions of rows; use indexed SQLite (`idx_sf_scan_name_size`) + summary totals (#295/#290). Data is usually fine — it's a timeout. |
+| PII bulgular page empty | `config\config.yaml` `compliance.pii.enabled` + `src/dashboard/api.py::pii_scan` | feature defaults OFF; findings only exist after a manual `pii_scan` (content read). UI trigger = "PII Tara" button, `background=true` (#294/#292). NOTE: app uses `config\config.yaml`, NOT root `config.yaml`. |
 | `update.cmd` fails on locked `bin\nssm.exe` | `deploy/setup-source.ps1` | Service-aware Stop/Start wrapper (#172/#173) |
 | Dashboard menu disappears / `TypeError: null.innerHTML` | `src/dashboard/static/index.html` | Use `_setHtmlSafe(id, html)` helper, never `document.getElementById(...).innerHTML =`. Enforced by `D-CHAIN` (#216). |
 
