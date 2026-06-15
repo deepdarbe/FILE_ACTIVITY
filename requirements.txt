@@ -19,7 +19,7 @@ pyyaml>=6.0.3
 apscheduler>=3.11.2
 
 # Reports
-openpyxl>=3.1.0
+openpyxl>=3.1.5
 reportlab>=4.0.0
 
 # Analytics (optional): DuckDB for columnar aggregate queries over SQLite.
