@@ -48,28 +48,10 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `ec2d79c`, 2026-06-14)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `f9e503d`, 2026-06-27)
 
-The 2026-06-14 session was a **customer empty-page triage**, diagnosed **on the
-prod box via bridge** (`burculogo` — 31 GB DB, 2.9M files, E:\ source). Three
-"page comes up empty" reports → 3 root-caused fixes (PRs #293/#294/#295,
-issues #290/#291/#292 all closed):
-- **#291 Growth empty** → `scan_runs.total_size` COLUMN was 0 (written pre-enrich,
-  never back-filled); growth reads `MAX(total_size)`. Fix: `compute_scan_summary`
-  back-fills the column (#293). On-box: back-filled the 3 existing scans already,
-  so growth works there NOW.
-- **#292 PII empty** → feature off (`compliance.pii.enabled` absent → default
-  false) + **no UI way to launch a scan**. Fix: "PII Tara" button + `background=true`
-  scan mode (#294). On-box: enabled `compliance.pii.enabled: true` in
-  `config\config.yaml` (the ACTIVE config — NOT root `config.yaml`).
-- **#290 Duplicates empty** → endpoint tried DuckDB-ATTACH first; that
-  GROUP-BY-over-2.9M-rows ran **>25 min / OOM-died**, so the request never
-  returned. Fix: route through indexed SQLite + read totals from the summary +
-  new index `idx_sf_scan_name_size` (#295). (Data was fine: 414k dup groups.)
-
-**⚠️ DEPLOY STILL OWED for #290 + #292** — see NEXT SESSION #1. Growth (#291) is
-already live on-box via the back-fill; duplicates (index build at first start) and
-the PII button need the new code on the box.
+The 2026-06-27 session was a **Wave 9 + Wave 10 portal-access wave** — 5 PRs shipping
+Docker/CI infrastructure fixes and a full per-user LDAP auth + data-scoping stack.
 
 **BRIDGE GOTCHA (burculogo):** heavy/long bridge-spawned **detached** child procs
 get killed mid-op (NOT OOM — 109 GB RAM free). The dashboard's own process is
@@ -80,167 +62,88 @@ unaffected. Validate heavy things post-deploy, not via bridge probes.
 and the manual python keeps serving OLD code. The manual python must be stopped &
 restarted (or switch to the service) for new code to load.
 
----
-
-The 2026-06-13 session was a **follow-up wave** that cleared the top four
-NEXT-SESSION items left by the 2026-06-12 security+compliance wave — 5 PRs:
-**#283** (held M1 list-dir auth → closes #278), **#285** (R-6 wave 3,
-A_AUDIT_ALLOWLIST 31→23), **#286** (handoff refresh), **#287** (pytest floor
-≥9.0.3 → last open advisory cleared), **#288** (treemap "Wasted %", punch-list
-#3). The prior 2026-06-12 wave was a security + compliance hardening wave (9
-PRs: #275 install.ps1, #277 CVE floors, #280+#276 R-6 audit waves, #281 STH
-export, #282 secret-scrub, #270–#274 the R-5 guard series + docs, plus
-Dependabots #264–#268), driven by an OSV scan + a defensive source audit + a
-competitive-research punch list.
-
 **▶ NEXT SESSION — start here:**
-1. **Deploy #290/#292 to burculogo + verify all 3 fixes** (owed). Because the
-   dashboard is a manual python (see RUNTIME GOTCHA above), the safe sequence is:
-   stop the manual `python main.py … dashboard` proc(s), run `update.cmd` on the
-   box (RDP — bridge can't reliably drive the 31 GB pre-update snapshot), then
-   restart (service or manual). First start builds `idx_sf_scan_name_size`
-   (~minutes, one-time). Then verify: Growth shows the size series; Kopya page
-   loads (indexed SQLite); PII page shows the "PII Tara" button (config already
-   enabled on-box) — optionally run a bounded PII scan. `config\config.yaml`
-   already has `compliance.pii.enabled: true` (preserved across update).
-2. **Research punch-list 2/4/5** (deep-research report, 2026-06-12; #3 shipped
-   in #288): #2 Lynis-style hardening-index score, #4 Presidio PII
-   context-boosting, #5 Sleuth Kit mactime timeline. All net-new features —
-   each wants its own design pass.
-3. **Customer on-box smoke** still owed from the 2026-06-12 wave (#262 CSV +
-   Adlandırma, #263 PDQ option) — gated on `update.cmd` pulling current master.
-4. **R-6 "later pass" candidates** (optional): the 23-entry allowlist is all
-   justified, but `create_snapshot`, `duplicates_delete`, `duplicates_quarantine`,
-   `notify_users_run_now`, `notifications_send_to` are real-ish actions that could
-   be triaged next (verify whether the engine already audits them before emitting).
-5. **Parquet-reports** (ADOPT, deferred); **PILOT** (ETW/Tantivy); **#114** ES
-   (deferred until 500 GB / 200 M-row).
+1. **Deploy #290/#292 to burculogo + verify all 3 empty-page fixes** (still owed).
+   Safe sequence: stop manual `python main.py … dashboard` proc, run `update.cmd`
+   (RDP — bridge can't reliably drive it), restart. First start builds
+   `idx_sf_scan_name_size` (~minutes). Verify: Growth shows size series; Kopya page
+   loads; PII page shows "PII Tara" button (config already `compliance.pii.enabled:
+   true`). Growth (#291) already live on-box via back-fill; duplicates + PII button
+   need the new code.
+2. **PR #309 — MFA/TOTP** (Wave 10 next). TOTP enrollment + QR code for the new
+   LDAP login flow. Follows `src/security/session.py` + `src/security/ldap_auth.py`.
+3. **Weekly digest + AI file classifier** — discussed but not scoped into PRs yet.
+   `src/reports/weekly_digest.py` + `src/reports/ai_classifier.py` + email sender.
+4. **Research punch-list 2/4/5** (#3 shipped in #288): #2 Lynis-style
+   hardening-index score, #4 Presidio PII context-boosting, #5 Sleuth Kit mactime
+   timeline. All net-new — each wants its own design pass.
+5. **Customer on-box smoke** still owed (#262 CSV + Adlandırma, #263 PDQ option) —
+   gated on `update.cmd` pulling current master.
+6. **R-6 "later pass"** (optional): 26-entry allowlist is justified; candidates for
+   triage: `create_snapshot`, `duplicates_delete`, `duplicates_quarantine`,
+   `notify_users_run_now`, `notifications_send_to`.
 
-`git log --oneline -15` confirms the real tip.
+`git log --oneline -10` confirms the real tip.
 
 ### Where we are
-- **master = `ec2d79c`**. ci_guards **12/12**; A-AUDIT allowlist = **23**. Per-PR CI:
-  the usual non-blocking `Pytest (Linux, Docker)` flake (`continue-on-error`, the
-  Docker image's `apt-get install` times out before pytest runs) — do NOT chase.
-  NOTE: `CodeQL` now genuinely scans on PRs (it flagged real issues on #281 —
-  fixed). Read CodeQL annotations; don't blanket-dismiss them as the old umbrella
-  flake. **CodeQL triage tip**: to prove an alert is pre-existing vs PR-introduced,
-  use the per-alert `/code-scanning/alerts/{n}/instances` endpoint, NOT the
-  `?ref=refs/heads/master` filter (the ref filter matches `most_recent_instance`,
-  which moves to the PR ref and hides master-side alerts).
-- **Open PRs: #203 only** (old D2/DuckDB bundle, do NOT merge as-is). #293/#294/
-  #295 merged 2026-06-14; #283/#285/#286/#287/#288 the day before.
-- **Security posture**: dependency floors **fully clean vs OSV** — the last open
-  advisory (dev-only pytest GHSA-6w46-j5rx-g56g) was cleared by #287
-  (`pytest>=9.0.3,<10`); Dependabot auto-closes it on its next master rescan.
-  Source audit found **no reachable Critical/High**. Both Mediums shipped
-  (M2 = #282 secret-scrub, M1 = #283 list-dir auth). The 5 HIGH CodeQL
-  `py/path-injection` alerts on the picker `realpath` sinks were dismissed
-  `won't fix` (localhost-gated + #278 scope guard + symlink-escape-required;
-  PR #283 strictly reduces exposure).
+- **master = `f9e503d`**. ci_guards **12/12**; A-AUDIT allowlist = **26** (was 23;
+  +3 for `auth_refresh`/`auth_me`/`auth_logout` in #307).
+- **Pytest (Linux, Docker)** now **blocking** (Wave 9 #305 flipped `continue-on-error`
+  to `false`). The only pre-existing failures are `tests/test_mft_progress.py × 4`
+  (`NtfsMftBackend.__init__` kwarg drift) — confirmed pre-existing, do NOT chase.
+- **CodeQL** scans genuinely; read annotations. Triage tip: use the per-alert
+  `/code-scanning/alerts/{n}/instances` endpoint to prove pre-existing vs PR-introduced
+  (the `?ref=master` filter moves with `most_recent_instance` and hides master alerts).
+- **Open PRs: #203 only** (old D2/DuckDB bundle, do NOT merge as-is).
+- **Security posture**: clean vs OSV; no reachable Critical/High in source audit.
+  LDAP auth endpoints are localhost-gated; JWT secret auto-generated and persisted to
+  `session_config` SQLite table (overridable via `FILEACTIVITY_SESSION_SECRET`).
+
+### What shipped 2026-06-27 (Wave 9 + Wave 10 portal-access)
+- **#304** — **Dockerfile + test fix** (Wave 9). Debian trixie (python:3.11-slim)
+  removed `libpcre3-dev`; fix: split apt-get into mandatory + best-effort layers.
+  Also hoisted FastAPI `Request` import to module-level `if HAS_FASTAPI:` block so
+  `from __future__ import annotations` doesn't break FastAPI's annotation resolution
+  (was causing 422 on 9 `test_list_dir_scope_auth` tests).
+- **#303** — **pyproject.toml** (Wave 9). Canonical build metadata; `setup.py` slimmed
+  to a shim. Dependency floors documented in one place.
+- **#305** — **pytest Docker job blocking** (Wave 9). Flipped `continue-on-error: false`
+  now that the Docker build is stable. Real test failures will now gate merges.
+- **#307** — **LDAP login + JWT session** (Wave 10). New `src/security/ldap_auth.py`
+  (two-phase AD bind, RFC 4515 LDAP injection escape, DOMAIN\user + UPN normalisation)
+  and `src/security/session.py` (JWT HS256, 8h access / 24h refresh, secret persisted
+  to `session_config` table). Four new endpoints: `POST /api/auth/login`,
+  `POST /api/auth/refresh`, `GET /api/auth/me`, `POST /api/auth/logout`. Role mapping:
+  `admin_groups` → `"admin"`, `manager_groups` → `"manager"`, else → `"viewer"`.
+  `PyJWT>=2.8.0` added to requirements. A-AUDIT allowlist 23→26.
+- **#308** — **per-user data scoping** (Wave 10). New `src/security/user_scope.py`:
+  `get_owner_scope(request)` returns `('AND owner LIKE ?', ['%username%'])` for viewer
+  role; `('', [])` for admin/manager/no-auth (fully backwards-compatible). Injected
+  into `search_files`, `drilldown_frequency`, `drilldown_type`, `drilldown_owner`,
+  `drilldown_export_xlsx`. Database methods gain `owner_scope` kwarg (`?` binding only,
+  never f-string). Scoped requests bypass DuckDB and call SQLite directly. 8 tests.
 
 ### What shipped 2026-06-14 (customer empty-page triage, diagnosed on-box via bridge)
-- **#293** — **growth size series flat-zero** (#291). `compute_scan_summary` now
-  back-fills `scan_runs.total_files`/`total_size` (written pre-enrich = 0, never
-  updated) in the same UPDATE as `summary_json`. On-box: the 3 existing scans were
-  back-filled directly (summary_json had the real 17.8 TB), so growth works there now.
-- **#294** — **PII page unusable from UI** (#292). New "PII Tara" button (shown when
-  `compliance.pii.enabled`) + `pii_scan(background=true)` daemon-thread mode so the
-  multi-hour content scan doesn't block the request; findings appear incrementally.
-  On-box: enabled in `config\config.yaml` (the ACTIVE config).
-- **#295** — **duplicates report empty at scale** (#290). The DuckDB-ATTACH dup
-  query ran >25 min / OOM-died on 2.9M rows. `duplicate_report` now uses indexed
-  SQLite directly (no DuckDB attempt), reads group/waste TOTALS from the precomputed
-  summary (identical definition) for `min_size==0`, and a new
-  `idx_sf_scan_name_size (scan_id, file_name, file_size)` streams the paginated
-  GROUP BY. SQLite proven to terminate (compute_scan_summary runs the same GROUP BY).
-- Diagnosis method: on-box bridge reads (scan_runs columns, summary_json, indexes,
-  config) + a faithful repro calling the real `Database`/`AnalyticsEngine` methods.
-  See [[burculogo-prod-box-bridge]] for the box specs + bridge/runtime gotchas.
-
-### What shipped 2026-06-13 (this follow-up session)
-- **#287** — **pytest floor bump** `>=8.0,<9` → `>=9.0.3,<10` (dev-dep only),
-  clearing GHSA-6w46-j5rx-g56g (tmpdir, MODERATE) — the last open advisory.
-  Major bump validated by a differential suite run (8.4.2 vs 9.0.3: identical
-  620 pass / 42 env-only fail, empty diff → no pytest-9 regressions), since CI
-  can't fully vet it (Linux Docker job flakes at build; Windows job runs 2 files).
-- **#288** — **Treemap "Wasted %"** (punch-list #3). Per-extension wasted % =
-  stale (1+ yr unaccessed) byte share, same 365-day cutoff as the Overview
-  stale KPI. `get_type_analysis` adds `stale_size`; `TypeAnalyzer` derives
-  `wasted_pct`. New "Israf % (eski)" red-heatmap colour mode + tooltip row.
-  `tests/test_treemap_wasted_pct.py` (4 cases). "Wasted" def = stale-only by
-  operator choice (vs stale+dupes / configurable).
-- **#286** — handoff doc refresh (this file).
-- **#283** — **M1 list-dir auth** (closes #278). The held PR from the prior wave:
-  scopes the folder-picker (`list-dir`/`open-folder`) so an UNAUTHENTICATED
-  localhost caller is confined to configured source roots + their parents
-  (`_path_within_source_scope`); authenticated admins keep the full picker
-  (`DashboardAuth.has_valid_token` tells a real token from the localhost bypass).
-  Rebased on master; the 5 pre-existing CodeQL `py/path-injection` HIGH alerts on
-  the `realpath` sinks were dismissed `won't fix` with justification (proven
-  pre-existing via the alert-instances endpoint), then squash-merged.
-- **#285** — **R-6 wave 3**: 8 mutating endpoints now emit
-  `insert_audit_event_simple` on the success path (status-guarded so no-op paths
-  write no fake row): `run_scan` (scan_started), `run_archive` (archive_run),
-  `drilldown_archive`, `chargeback_add/update/remove_center`,
-  `chargeback_add/remove_owner`. Chargeback config is global → `source_id=None`.
-  Allowlist **31→23**. Remaining 23 are all justified (approvals_* double-emit
-  guard, analytics-compute, self-test, export, dry-run, no-DB-write).
-
-### What shipped 2026-06-12 (the prior security+compliance wave)
-- **#270/#271/#272** — R-5 guard series: **P-PAGE** (Rule 2), **A-AUDIT** (Rule 4),
-  **S-SHAPE** (Rule 3) added to `scripts/ci_guards.py` (now 12 guards). **#273**
-  hardened all three after a max-effort review live-repro'd 4 edge-case gaps
-  (`.get('partial_summary_json')` bypass, dead-nested-def audit false-pass,
-  `Annotated[PaginationParams]` false-positive, partial-migration false-negative).
-- **#274** — docs refresh + streamlit floor bump (plotly-6 base64-JSON needs ≥1.42).
-- **#276 / #280** — **R-6 audit-backlog flush waves 1 + 2**: 15 mutating endpoints
-  now emit `insert_audit_event_simple` on the success path (snake_case event_type,
-  status-guarded, try/except so audit failure never rolls back the mutation):
-  legal_holds_*, retention_policy_*, quarantine_*, restore_*, bulk_restore,
-  orphan_sid_reassign, acl_snapshot, archive_selective, archive_by_insight.
-  Allowlist 46→31. **Review catch**: 3 `approvals_*` were NOT drained — the
-  ApprovalRegistry._audit() already emits identical event_types; a second
-  endpoint-level emit would write duplicate compliance-chain rows → kept
-  allowlisted with a per-name justification.
-- **#281** — **Signed Tree Head (STH) export** (Trillian/Rekor/CT pattern,
-  research punch-list #1). `src/storage/audit_sth.py` + `scripts/audit_sth.py`
-  (`--genkey/--emit/--verify [--check-chain]`): publishes a signed
-  `{tree_size, root_hash, timestamp, signature, public_key}` checkpoint so an
-  external auditor verifies the chain hasn't been rewritten with our published
-  Ed25519 pubkey — turns "trust us" into "verify". Offline CLI op, no new endpoint;
-  reads chain only. `cryptography>=41` now a real dep. Opt-in `audit.sth` config.
-- **#282** — **value-level secret scrub** (hardening M2, issue #279). New shared
-  `src/utils/secret_scrub.py`: masks secret SHAPES (PEM / `gh[pousr]_` / Slack /
-  AWS AKIA / `user:pass@` URLs / conservative base64) regardless of key name, in
-  BOTH the diag bundle and the error-reporter. Conservative catch-all (≥40 +
-  mixed-case + digit) so SHA/MD5/UUID aren't over-masked. Composes on top of the
-  existing key-name redaction.
-- **#277** — **CVE floors**: `pyarrow>=23.0.1` (clears CRITICAL ACE
-  GHSA-5wvp-7f3h-6wmm + 2 more) and `streamlit>=1.54.0` (clears MODERATE
-  Windows-NTLM-SSRF GHSA-7p48-42j8-8846). OSV-verified clean.
-- **#275** — thin `deploy/install.ps1` entry point with `-Branch` param +
-  scriptblock-Create so a PR branch can be smoke-tested with one paste; `update.cmd`
-  now calls it and remembers the install branch. Legacy one-liner still works.
-- **Dependabot** #264 datasketch, #265 click, #266 mcp, #267 imagehash, #268 plotly
-  5→6 (audited SAFE — playground px.* usage untouched by the 6.x breaks).
+- **#293** — growth size series flat-zero (#291). `compute_scan_summary` back-fills
+  `scan_runs.total_files`/`total_size`. On-box: back-filled 3 existing scans already.
+- **#294** — PII page unusable from UI (#292). "PII Tara" button + `background=true`
+  scan mode. On-box: `compliance.pii.enabled: true` already in `config\config.yaml`.
+- **#295** — duplicates report empty at scale (#290). Indexed SQLite path +
+  `idx_sf_scan_name_size` + summary totals. DuckDB path removed for this endpoint.
 
 ### What's PENDING (pick up here)
-1. **Deploy #290/#292 to burculogo + verify the 3 empty-page fixes** (NEXT SESSION
-   #1) — growth (#291) already live on-box via back-fill; duplicates + PII button
-   need the new code. Mind the manual-python RUNTIME GOTCHA.
-2. **Research punch-list 2/4/5** (Lynis index / Presidio PII / Sleuth Kit
-   mactime — #3 shipped in #288; see NEXT SESSION #2).
-3. **Customer on-box smoke** still owed from the prior wave (#262 CSV + Adlandırma,
-   #263 PDQ option) — gated on `update.cmd` pulling current master.
-4. **R-6 "later pass"** allowlist triage (NEXT SESSION #4) — optional.
-5. **#114**, **#203**, **#29**. (Hardening #278/#279 both shipped: #283 + #282;
-   pytest advisory cleared in #287.)
+1. **Deploy #290/#292 to burculogo** (NEXT SESSION #1 above).
+2. **PR #309 MFA/TOTP** (Wave 10 #3).
+3. **Weekly digest + AI classifier** (discussed, not scoped).
+4. **Research punch-list 2/4/5** (Lynis / Presidio / Sleuth Kit).
+5. **Customer on-box smoke** (#262 CSV, #263 PDQ).
+6. **R-6 later pass** (optional).
+7. **#114**, **#203**, **#29**.
 
 ### The 8 endpoint-conventions rules — 7 of 8 auto-enforced (12 guards live)
 `docs/standards/endpoint-conventions.md`. Auto: Rule 1 (R-CACHE), 2 (P-PAGE),
-3 (S-SHAPE), 4 (A-AUDIT, allowlist now 23 after R-6 waves 1–3), 5 (A-AWAIT),
-6 (C-CURSOR), 7 (D-CHAIN). Manual: Rule 8. New report endpoints use
+3 (S-SHAPE), 4 (A-AUDIT, allowlist now 26 after R-6 waves 1–3 + Wave 10 auth),
+5 (A-AWAIT), 6 (C-CURSOR), 7 (D-CHAIN). Manual: Rule 8. New report endpoints use
 `cached_report_endpoint`; pagination via `p: PaginationParams = Depends()`
 (`Annotated` recognised); `async def` MUST await; reads `get_read_cursor`, writes
 `get_cursor`; mutating endpoints emit audit events; summary reads via
