@@ -137,11 +137,9 @@ jobs:
   tests:
     name: Pytest (Linux, Docker)
     runs-on: ubuntu-latest
-    # Was advisory while pip-install on the runner stabilised.
-    # Now the test environment is baked into a Docker image at build
-    # time, so pip flakes can't fail the gate. Flip to gating once we
-    # see a few green runs in a row.
-    continue-on-error: true
+    # Dockerfile.test libhyperscan-dev flakiness fixed in W9-B.
+    # Now a real merge gate.
+    continue-on-error: false
     steps:
       - uses: actions/checkout@v6
 
