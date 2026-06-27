@@ -27,6 +27,10 @@ from typing import Optional, List
 # stays a lazy import inside each handler per the existing convention.
 from src.dashboard._endpoint_helpers import PaginationParams
 
+# Wave 10 #307 — per-user LDAP login + JWT session
+from src.security.ldap_auth import LDAPAuthenticator
+from src.security.session import SessionManager
+
 # ── Arka plan export kuyrugu ──
 _export_jobs = {}  # job_id -> {status, progress, file_path, error, created_at, ...}
 _export_lock = threading.Lock()
@@ -688,6 +692,20 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     from src.security.dashboard_auth import DashboardAuth
     app.state.dashboard_auth = DashboardAuth(config)
 
+    # Wave 10 #307 — LDAP per-user login + JWT session management.
+    # LDAPAuthenticator is a no-op when active_directory.enabled=false or
+    # ldap3 is absent, so single-user bearer-token deployments are unaffected.
+    app.state.ldap_auth = LDAPAuthenticator(config)
+    app.state.session_manager = SessionManager(db, config)
+
+    # Auth endpoint paths that must pass through before the gate
+    _AUTH_WHITELIST = frozenset({
+        "/api/auth/login",
+        "/api/auth/refresh",
+        "/api/auth/me",
+        "/api/auth/logout",
+    })
+
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         # Whitelist: static files + favicon are not gated. Everything
@@ -695,9 +713,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         path = request.url.path or ""
         if path.startswith("/static/") or path == "/favicon.ico":
             return await call_next(request)
+        # Auth endpoints must be reachable before a token exists
+        if path in _AUTH_WHITELIST:
+            return await call_next(request)
         gate = getattr(app.state, "dashboard_auth", None)
         if gate is None or gate.check(request):
             return await call_next(request)
+        # Wave 10 #307 — also accept a valid JWT access token so per-user
+        # sessions work alongside the shared bearer-token gate.
+        sm = getattr(app.state, "session_manager", None)
+        if sm is not None:
+            try:
+                auth_header = request.headers.get("Authorization", "") or ""
+                if auth_header.startswith("Bearer "):
+                    token = auth_header[len("Bearer "):]
+                    jwt_payload = sm.verify_access_token(token)
+                    if jwt_payload is not None:
+                        request.state.jwt_user = jwt_payload
+                        return await call_next(request)
+            except Exception:  # noqa: BLE001 — malformed token is not an error
+                pass
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
     app.state.analytics = analytics
@@ -945,6 +980,113 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     if os.path.exists(static_dir):
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    # --- Auth Endpoints (Wave 10 #307) ---
+
+    class _LoginBody(BaseModel):
+        username: str
+        password: str
+
+    class _RefreshBody(BaseModel):
+        refresh_token: str
+
+    @app.post("/api/auth/login")
+    def auth_login(body: _LoginBody):
+        """Authenticate with LDAP credentials and receive JWT tokens.
+
+        Returns 503 if ldap_login is not enabled in config.
+        Returns 401 on bad credentials.
+        Rule 4: emits audit event user_login on success.
+        """
+        auth_cfg = (config.get("dashboard") or {}).get("auth") or {}
+        if not auth_cfg.get("ldap_login", False):
+            return JSONResponse(
+                {"detail": "LDAP login not enabled — set dashboard.auth.ldap_login: true"},
+                status_code=503,
+            )
+        ldap = app.state.ldap_auth
+        user_info = ldap.authenticate(body.username, body.password)
+        if user_info is None:
+            return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
+        tokens = app.state.session_manager.issue_tokens(user_info)
+        # Rule 4 — audit user login (write endpoint)
+        try:
+            db.insert_audit_event_simple(
+                None, "user_login", user_info["username"], None,
+                details=f"login via LDAP; role={app.state.session_manager._determine_role(user_info.get('groups', []))}",
+            )
+        except Exception as _ae:
+            logger.warning("audit user_login failed: %s", _ae)
+        return {
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "expires_in": tokens["expires_in"],
+            "username": user_info["username"],
+            "display_name": user_info.get("display_name", user_info["username"]),
+            "role": app.state.session_manager._determine_role(user_info.get("groups", [])),
+        }
+
+    @app.post("/api/auth/refresh")
+    def auth_refresh(body: _RefreshBody):
+        """Exchange a valid refresh token for a new access token.
+
+        A_AUDIT_ALLOWLIST: read-only session operation — no data mutation.
+        """
+        sm = app.state.session_manager
+        try:
+            import jwt as _jwt
+            payload = _jwt.decode(body.refresh_token, sm.secret, algorithms=["HS256"])
+            if payload.get("type") != "refresh":
+                return JSONResponse({"detail": "Invalid refresh token"}, status_code=401)
+            username = payload.get("sub", "")
+        except Exception:
+            return JSONResponse({"detail": "Invalid refresh token"}, status_code=401)
+
+        # Re-issue an access token using the refresh token's subject identity.
+        # We don't re-query AD here to keep refresh fast; role is re-evaluated
+        # on next full login if group membership changes.
+        user_info = {
+            "username": username,
+            "display_name": username,
+            "email": "",
+            "groups": [],
+        }
+        result = sm.refresh_access_token(body.refresh_token, user_info)
+        if result is None:
+            return JSONResponse({"detail": "Invalid refresh token"}, status_code=401)
+        return result
+
+    @app.get("/api/auth/me")
+    def auth_me(request: Request):
+        """Return the current JWT user's claims, or 401 if no valid token.
+
+        A_AUDIT_ALLOWLIST: read-only identity probe — no data mutation.
+        """
+        sm = app.state.session_manager
+        auth_header = request.headers.get("Authorization", "") or ""
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse({"detail": "No token"}, status_code=401)
+        token = auth_header[len("Bearer "):]
+        payload = sm.verify_access_token(token)
+        if payload is None:
+            return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
+        return {
+            "username": payload.get("sub"),
+            "display_name": payload.get("name"),
+            "email": payload.get("email"),
+            "role": payload.get("role"),
+        }
+
+    @app.post("/api/auth/logout")
+    def auth_logout():
+        """Client-side logout — instructs the client to discard its tokens.
+
+        JWT tokens are stateless; server-side revocation requires a denylist
+        (not implemented in Phase 1). This endpoint exists so the UI has a
+        consistent logout target and can be extended later.
+        A_AUDIT_ALLOWLIST: no server-side mutation (stateless JWT, no DB write).
+        """
+        return {"detail": "Logged out — discard tokens client-side"}
 
     # --- HTML Endpoint ---
 
