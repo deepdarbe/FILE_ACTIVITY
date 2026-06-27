@@ -50,6 +50,8 @@ requires_fastapi = pytest.mark.skipif(
 from src.security.dashboard_auth import DashboardAuth  # noqa: E402
 
 if HAS_FASTAPI:
+    from fastapi import FastAPI, Request  # noqa: E402
+    from fastapi.responses import JSONResponse  # noqa: E402
     from src.dashboard.api import (  # noqa: E402
         _normalize_source_roots,
         _path_within_source_scope,
@@ -77,9 +79,6 @@ def _build_app(
     the client-host override registered SECOND — Starlette runs middleware
     LIFO, last-registered outermost), exactly like test_dashboard_auth.py.
     """
-    from fastapi import FastAPI, Request
-    from fastapi.responses import JSONResponse
-
     app = FastAPI()
     app.state.dashboard_auth = DashboardAuth(cfg)
 
