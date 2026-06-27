@@ -30,6 +30,8 @@ from src.dashboard._endpoint_helpers import PaginationParams
 # Wave 10 #307 — per-user LDAP login + JWT session
 from src.security.ldap_auth import LDAPAuthenticator
 from src.security.session import SessionManager
+# Wave 10 #308 — per-user data scoping (viewer role filters by owner)
+from src.security.user_scope import get_owner_scope, scope_is_restricted
 
 # ── Arka plan export kuyrugu ──
 _export_jobs = {}  # job_id -> {status, progress, file_path, error, created_at, ...}
@@ -1894,7 +1896,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return db.search_archived_files(q, extension=extension, page=page)
 
     @app.get("/api/files/search")
-    def search_files(q: str, source_id: Optional[int] = None,
+    def search_files(request: Request, q: str, source_id: Optional[int] = None,
                             p: PaginationParams = Depends()):
         """Embedded full-text substring search over scanned files.
 
@@ -1908,7 +1910,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         source's latest scan; when omitted, the whole index is searched
         (handy for "where is this file across all shares?"). Pagination is
         the canonical ``PaginationParams`` (Rule 2).
+
+        Wave 10 #308: viewer-role requests are scoped to their own files via
+        ``owner_scope`` — SQL-parameter-safe LIKE filter, never f-string.
         """
+        owner_scope = get_owner_scope(request)
         scan_id = None
         if source_id is not None:
             src = _get_source(db, source_id)
@@ -1919,6 +1925,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 return p.response(total=0, items=[])
         result = db.search_files(
             q, scan_id=scan_id, limit=p.page_size, offset=p.offset,
+            owner_scope=owner_scope,
         )
         return p.response(total=result["total"], items=result["files"])
 
@@ -2127,32 +2134,48 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return call
 
     @app.get("/api/drilldown/frequency/{source_id}")
-    def drilldown_frequency(source_id: int, min_days: int = 0,
+    def drilldown_frequency(request: Request, source_id: int, min_days: int = 0,
                                    max_days: Optional[int] = None,
                                    page: int = Query(1, ge=1, le=10000),
                                    limit: int = Query(100, ge=1, le=500)):
+        """Wave 10 #308: viewer-role requests are scoped to their own files."""
+        owner_scope = get_owner_scope(request)
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_frequency, db.get_files_by_frequency)
-        result = run(src.id, scan_id, min_days, max_days, limit, offset)
+        if scope_is_restricted(request):
+            result = db.get_files_by_frequency(
+                src.id, scan_id, min_days, max_days, limit, offset,
+                owner_scope=owner_scope,
+            )
+        else:
+            run = _run_drilldown(analytics.get_files_by_frequency, db.get_files_by_frequency)
+            result = run(src.id, scan_id, min_days, max_days, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
 
     @app.get("/api/drilldown/type/{source_id}")
-    def drilldown_type(source_id: int, extension: str = "",
+    def drilldown_type(request: Request, source_id: int, extension: str = "",
                               page: int = Query(1, ge=1, le=10000),
                               limit: int = Query(100, ge=1, le=500)):
+        """Wave 10 #308: viewer-role requests are scoped to their own files."""
+        owner_scope = get_owner_scope(request)
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_extension, db.get_files_by_extension)
-        result = run(src.id, scan_id, extension, limit, offset)
+        if scope_is_restricted(request):
+            result = db.get_files_by_extension(
+                src.id, scan_id, extension, limit, offset,
+                owner_scope=owner_scope,
+            )
+        else:
+            run = _run_drilldown(analytics.get_files_by_extension, db.get_files_by_extension)
+            result = run(src.id, scan_id, extension, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
@@ -2174,22 +2197,31 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/drilldown/owner/{source_id}")
-    def drilldown_owner(source_id: int, owner: str = "",
+    def drilldown_owner(request: Request, source_id: int, owner: str = "",
                                page: int = Query(1, ge=1, le=10000),
                                limit: int = Query(100, ge=1, le=500)):
+        """Wave 10 #308: viewer-role requests are scoped to their own files."""
+        owner_scope = get_owner_scope(request)
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_owner, db.get_files_by_owner)
-        result = run(src.id, scan_id, owner, limit, offset)
+        if scope_is_restricted(request):
+            result = db.get_files_by_owner(
+                src.id, scan_id, owner, limit, offset,
+                owner_scope=owner_scope,
+            )
+        else:
+            run = _run_drilldown(analytics.get_files_by_owner, db.get_files_by_owner)
+            result = run(src.id, scan_id, owner, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
 
     @app.get("/api/drilldown/{filter_type}/{source_id}/export.xlsx")
     def drilldown_export_xlsx(
+        request: Request,
         filter_type: str,
         source_id: int,
         min_days: int = 0,
@@ -2223,10 +2255,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         work: route oversize exports through ``write_large_workbook``
         (multi-sheet) or ``stream_csv`` (issue #122 pattern) the same way
         ``export_mit_naming_xlsx`` does — tracked in #225 R-2.
+
+        Wave 10 #308: viewer-role requests are scoped to their own files via
+        ``owner_scope`` — SQL-parameter-safe LIKE filter, never f-string.
         """
         from fastapi.responses import StreamingResponse
         from io import BytesIO
         from src.analyzer.report_exporter_v2 import XLSExporter
+
+        owner_scope = get_owner_scope(request)
+        scope_frag, scope_params = owner_scope
 
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
@@ -2235,14 +2273,28 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         # Resolve the filter-specific runner + positional args once, so the
         # XLSX (capped) and CSV (uncapped stream) paths share one lookup.
+        # For scoped (viewer-role) requests the SQLite method is called
+        # directly with owner_scope so the DuckDB path (which doesn't
+        # support the extra kwarg) is bypassed cleanly.
+        _restricted = scope_is_restricted(request)
         if filter_type == "frequency":
-            run = _run_drilldown(analytics.get_files_by_frequency,
-                                 db.get_files_by_frequency)
+            if _restricted:
+                def run(sid, scid, md, mxd, lim, off):
+                    return db.get_files_by_frequency(
+                        sid, scid, md, mxd, lim, off, owner_scope=owner_scope)
+            else:
+                run = _run_drilldown(analytics.get_files_by_frequency,
+                                     db.get_files_by_frequency)
             f_args = (min_days, max_days)
             sheet_title = f"freq_{min_days}-{max_days or 'inf'}"
         elif filter_type == "type":
-            run = _run_drilldown(analytics.get_files_by_extension,
-                                 db.get_files_by_extension)
+            if _restricted:
+                def run(sid, scid, ext, lim, off):
+                    return db.get_files_by_extension(
+                        sid, scid, ext, lim, off, owner_scope=owner_scope)
+            else:
+                run = _run_drilldown(analytics.get_files_by_extension,
+                                     db.get_files_by_extension)
             f_args = (extension,)
             sheet_title = f"type_{extension}" if extension else "type_all"
         elif filter_type == "size":
@@ -2251,8 +2303,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             f_args = (min_bytes, max_bytes)
             sheet_title = f"size_{min_bytes}-{max_bytes or 'inf'}"
         elif filter_type == "owner":
-            run = _run_drilldown(analytics.get_files_by_owner,
-                                 db.get_files_by_owner)
+            if _restricted:
+                def run(sid, scid, own, lim, off):
+                    return db.get_files_by_owner(
+                        sid, scid, own, lim, off, owner_scope=owner_scope)
+            else:
+                run = _run_drilldown(analytics.get_files_by_owner,
+                                     db.get_files_by_owner)
             f_args = (owner,)
             sheet_title = (f"owner_{owner}" if owner else "owner_all")[:31]
         else:
@@ -2284,23 +2341,30 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 # multi-minute (deep OFFSET re-scan per page) to seconds.
                 # Frequency keeps the paged runner because its date-range SQL
                 # lives there and frequency sets are not typically huge.
+                # Wave 10 #308: scope_frag (AND owner LIKE ?) is appended when
+                # the viewer role is active; scope_params extends where_params.
                 direct = False
                 where_sql = ""
-                where_params: tuple = ()
+                where_params: list = []
                 if filter_type == "owner" and owner:
                     where_sql = "AND owner = ?"
-                    where_params = (owner,)
+                    where_params = [owner]
                     direct = True
                 elif filter_type == "type" and extension:
                     where_sql = "AND LOWER(extension) = ?"
-                    where_params = (extension.lower(),)
+                    where_params = [extension.lower()]
                     direct = True
                 elif filter_type == "size":
                     upper = (max_bytes if max_bytes is not None
                              else 9_223_372_036_854_775_807)
                     where_sql = "AND file_size BETWEEN ? AND ?"
-                    where_params = (min_bytes, upper)
+                    where_params = [min_bytes, upper]
                     direct = True
+
+                if scope_frag:
+                    where_sql += f" {scope_frag}"
+                    where_params = where_params + list(scope_params)
+                    direct = True  # force direct path so scope is respected
 
                 if direct:
                     sql = (

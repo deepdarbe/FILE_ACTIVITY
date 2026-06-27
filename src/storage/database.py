@@ -2053,7 +2053,8 @@ class Database:
             )
 
     def search_files(self, query: str, scan_id: Optional[int] = None,
-                     limit: int = 100, offset: int = 0) -> dict:
+                     limit: int = 100, offset: int = 0,
+                     owner_scope: tuple = ('', [])) -> dict:
         """Substring search over file_path / file_name / owner via FTS5.
 
         Returns ``{"total": int, "files": [<scanned_files row dict>, ...],
@@ -2066,6 +2067,11 @@ class Database:
         result rather than scanning — trigram MATCH can't satisfy it anyway.
         Reads run on the read-only connection pool so this never contends
         with a running scan's writer lock (issue #132 contract).
+
+        ``owner_scope`` is a ``(sql_fragment, params)`` tuple produced by
+        ``get_owner_scope(request)`` (Wave 10 #308).  When non-empty the
+        fragment is appended to the WHERE clause so viewer-role requests only
+        see files they own.
         """
         q = (query or "").strip()
         if len(q) < self._FTS_MIN_QUERY_LEN:
@@ -2075,6 +2081,8 @@ class Database:
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
 
+        scope_frag, scope_params = owner_scope if owner_scope else ('', [])
+
         where = "scanned_files_fts MATCH ?"
         count_params: list = [phrase]
         page_params: list = [phrase]
@@ -2082,6 +2090,12 @@ class Database:
             where += " AND sf.scan_id = ?"
             count_params.append(scan_id)
             page_params.append(scan_id)
+        if scope_frag:
+            # Remap AND owner LIKE ? → AND sf.owner LIKE ? for the JOIN alias
+            scope_frag_fts = scope_frag.replace("AND owner LIKE ?", "AND sf.owner LIKE ?")
+            where += f" {scope_frag_fts}"
+            count_params.extend(scope_params)
+            page_params.extend(scope_params)
 
         # get_read_cursor: short-lived read-only connection — independent
         # of the scanner's writer pool, never blocks WAL checkpoint.
@@ -2507,13 +2521,23 @@ class Database:
             return cur.fetchall()
 
     def get_files_by_owner(self, source_id: int, scan_id: int, owner: str,
-                           limit: int = 100, offset: int = 0) -> dict:
-        """Sahibe gore dosya listesi (sayfalanmis)."""
+                           limit: int = 100, offset: int = 0,
+                           owner_scope: tuple = ('', [])) -> dict:
+        """Sahibe gore dosya listesi (sayfalanmis).
+
+        ``owner_scope`` is a ``(sql_fragment, params)`` tuple from
+        ``get_owner_scope(request)`` (Wave 10 #308).
+        """
         owner_cond = "owner IS NULL" if owner in ("Bilinmiyor", None, "") else "owner = ?"
         params_base = [source_id, scan_id]
         if owner not in ("Bilinmiyor", None, ""):
             params_base.append(owner)
         where = f"source_id = ? AND scan_id = ? AND {owner_cond}"
+
+        scope_frag, scope_params = owner_scope if owner_scope else ('', [])
+        if scope_frag:
+            where += f" {scope_frag}"
+            params_base = params_base + list(scope_params)
 
         with self.get_read_cursor() as cur:
             cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params_base)  # noqa: S608
@@ -2527,8 +2551,13 @@ class Database:
 
     def get_files_by_frequency(self, source_id: int, scan_id: int,
                                 min_days: int, max_days: int = None,
-                                limit: int = 100, offset: int = 0) -> dict:
-        """Erisim sikligina gore dosyalar (date karsilastirmasi ile - index kullanir)."""
+                                limit: int = 100, offset: int = 0,
+                                owner_scope: tuple = ('', [])) -> dict:
+        """Erisim sikligina gore dosyalar (date karsilastirmasi ile - index kullanir).
+
+        ``owner_scope`` is a ``(sql_fragment, params)`` tuple from
+        ``get_owner_scope(request)`` (Wave 10 #308).
+        """
         from datetime import datetime, timedelta
         conditions = ["source_id = ?", "scan_id = ?", "last_access_time IS NOT NULL"]
         params = [source_id, scan_id]
@@ -2543,6 +2572,13 @@ class Database:
             conditions.append("last_access_time > ?")
             params.append(max_date)
 
+        scope_frag, scope_params = owner_scope if owner_scope else ('', [])
+        if scope_frag:
+            # Strip leading "AND " prefix — conditions list is joined with AND already
+            cond_part = scope_frag[4:].strip() if scope_frag.startswith("AND ") else scope_frag.strip()
+            conditions.append(cond_part)
+            params = params + list(scope_params)
+
         where = " AND ".join(conditions)
 
         with self.get_cursor() as cur:
@@ -2556,14 +2592,24 @@ class Database:
         return {"total": total, "files": files}
 
     def get_files_by_extension(self, source_id: int, scan_id: int, extension: str,
-                                limit: int = 100, offset: int = 0) -> dict:
-        """Uzantiya gore dosyalar (sayfalanmis)."""
+                                limit: int = 100, offset: int = 0,
+                                owner_scope: tuple = ('', [])) -> dict:
+        """Uzantiya gore dosyalar (sayfalanmis).
+
+        ``owner_scope`` is a ``(sql_fragment, params)`` tuple from
+        ``get_owner_scope(request)`` (Wave 10 #308).
+        """
         ext = extension.lower().lstrip(".")
         ext_cond = "extension IS NULL" if ext in ("uzantisiz", "") else "extension = ?"
         params_base = [source_id, scan_id]
         if ext not in ("uzantisiz", ""):
             params_base.append(ext)
         where = f"source_id = ? AND scan_id = ? AND {ext_cond}"
+
+        scope_frag, scope_params = owner_scope if owner_scope else ('', [])
+        if scope_frag:
+            where += f" {scope_frag}"
+            params_base = params_base + list(scope_params)
 
         with self.get_cursor() as cur:
             cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params_base)  # noqa: S608
