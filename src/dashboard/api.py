@@ -731,7 +731,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     if jwt_payload is not None:
                         request.state.jwt_user = jwt_payload
                         return await call_next(request)
-            except Exception:
+            except Exception:  # noqa: BLE001 — malformed token is not an error
                 pass
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 

@@ -10,9 +10,8 @@ import sqlite3
 import sys
 import tempfile
 import time
-import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
