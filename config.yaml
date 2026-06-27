@@ -344,6 +344,10 @@ dashboard:
       - "Domain Admins"
     manager_groups:             # Bu AD gruplarindaki kullanicilar manager rolü alir
       - "FileActivity-Managers"
+    # Per-user data scoping (Wave 10 #308)
+    # viewer role: users see only files where owner matches their AD username
+    # admin/manager role: full visibility (no owner filter)
+    user_scope_enabled: true   # future flag; currently always active when JWT role=viewer
 
 security:
   # Fidye yazilimi tespit motoru (#37). Watcher event akisini dinler,
