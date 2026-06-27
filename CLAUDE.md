@@ -48,46 +48,52 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `f9e503d`, 2026-06-27)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `20775e9`, 2026-06-28)
 
-The 2026-06-27 session was a **Wave 9 + Wave 10 portal-access wave** — 5 PRs shipping
+The 2026-06-27/28 session was a **Wave 9 + Wave 10 portal-access wave** — 5 PRs shipping
 Docker/CI infrastructure fixes and a full per-user LDAP auth + data-scoping stack.
+burculogo was deployed to `20775e9` on 2026-06-28 via `update.cmd` + service restart.
 
 **BRIDGE GOTCHA (burculogo):** heavy/long bridge-spawned **detached** child procs
 get killed mid-op (NOT OOM — 109 GB RAM free). The dashboard's own process is
 unaffected. Validate heavy things post-deploy, not via bridge probes.
-**RUNTIME GOTCHA:** the dashboard runs as a **manual `python main.py … dashboard`**
-(system Python 3.12, PID held 8085), NOT the NSSM service (Stopped). So plain
-`update.cmd` (service-aware) updates files + starts the *service* → **8085 conflict**
-and the manual python keeps serving OLD code. The manual python must be stopped &
-restarted (or switch to the service) for new code to load.
+**RUNTIME GOTCHA:** the dashboard runs via NSSM service (switched 2026-06-28). Old
+sessions used manual `python main.py`; `update.cmd` now correctly stops service,
+pulls, restarts. No more 8085 conflict.
 
-**▶ NEXT SESSION — start here:**
-1. **Deploy #290/#292 to burculogo + verify all 3 empty-page fixes** (still owed).
-   Safe sequence: stop manual `python main.py … dashboard` proc, run `update.cmd`
-   (RDP — bridge can't reliably drive it), restart. First start builds
-   `idx_sf_scan_name_size` (~minutes). Verify: Growth shows size series; Kopya page
-   loads; PII page shows "PII Tara" button (config already `compliance.pii.enabled:
-   true`). Growth (#291) already live on-box via back-fill; duplicates + PII button
-   need the new code.
-2. **PR #309 — MFA/TOTP** (Wave 10 next). TOTP enrollment + QR code for the new
-   LDAP login flow. Follows `src/security/session.py` + `src/security/ldap_auth.py`.
-3. **Weekly digest + AI file classifier** — discussed but not scoped into PRs yet.
-   `src/reports/weekly_digest.py` + `src/reports/ai_classifier.py` + email sender.
-4. **Research punch-list 2/4/5** (#3 shipped in #288): #2 Lynis-style
-   hardening-index score, #4 Presidio PII context-boosting, #5 Sleuth Kit mactime
-   timeline. All net-new — each wants its own design pass.
-5. **Customer on-box smoke** still owed (#262 CSV + Adlandırma, #263 PDQ option) —
-   gated on `update.cmd` pulling current master.
-6. **R-6 "later pass"** (optional): 26-entry allowlist is justified; candidates for
-   triage: `create_snapshot`, `duplicates_delete`, `duplicates_quarantine`,
-   `notify_users_run_now`, `notifications_send_to`.
+**▶ NEXT SESSION — start here (bridge session):**
+1. **Diagnose page-loading slowness on burculogo** (PRIORITY). After deploying
+   `20775e9` + running the first MFT scan (2,899,237 files, 1229s) and starting a
+   PII content scan, pages became slow/unresponsive. Homepage measured 1043ms.
+   Possible causes: (a) PII scan saturating I/O; (b) WAL pressure during MFT scan;
+   (c) regression in Wave 10 auth middleware. Bridge: check WAL size
+   (`ls -la data/file_activity.db-wal`), check if PII scan is still running, check
+   response times. If PII scan finished and pages are still slow → investigate further.
+2. **Kopya Dosyalar (Duplicates) page is empty** — `idx_sf_scan_name_size` may not
+   have been built yet (first-start index, requires scan to complete). After MFT scan
+   finished, try reloading the page. If still empty, check `summary_json` for
+   `dup_groups` key.
+3. **Size = 0 B after MFT scan** — size enrichment pass (`size_enricher.py`) runs
+   after MFT walk. Check if it ran; if not, trigger a new scan or wait for the
+   scheduler.
+4. **PII scan in progress** (as of 2026-06-28 01:43 UTC): 534k/2.9M files (18%),
+   25,677 PII hits. Still running — check progress via log tail.
+5. **scan_started audit bug** — `NOT NULL constraint failed: file_audit_events.file_path`
+   on scan_started event (#285 wave 3 regression). Non-blocking (scan runs) but WARNING
+   in log. Fix: pass `file_path=''` or source path in `insert_audit_event_simple` call
+   for scan events. Small PR.
+6. **PR #310 — MFA/TOTP** (Wave 10 next, not started).
+7. **Weekly digest + AI file classifier** — not scoped yet.
+8. **Research punch-list 2/4/5** (Lynis / Presidio / Sleuth Kit).
+9. **R-6 "later pass"** (optional).
 
 `git log --oneline -10` confirms the real tip.
 
 ### Where we are
-- **master = `f9e503d`**. ci_guards **12/12**; A-AUDIT allowlist = **26** (was 23;
+- **master = `20775e9`**. ci_guards **12/12**; A-AUDIT allowlist = **26** (was 23;
   +3 for `auth_refresh`/`auth_me`/`auth_logout` in #307).
+- **burculogo**: running `20775e9`, NSSM service mode, MFT scan done (2.9M files),
+  PII scan in progress (~18% as of last check).
 - **Pytest (Linux, Docker)** now **blocking** (Wave 9 #305 flipped `continue-on-error`
   to `false`). The only pre-existing failures are `tests/test_mft_progress.py × 4`
   (`NtfsMftBackend.__init__` kwarg drift) — confirmed pre-existing, do NOT chase.
