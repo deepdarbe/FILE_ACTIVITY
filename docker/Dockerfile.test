@@ -16,25 +16,32 @@
 #          docker run --rm fa-test tests/test_pii_engine.py -v
 FROM python:3.11-slim AS base
 
-# System deps:
+# System deps — mandatory (always needed):
 #   build-essential       — fallback C/C++ toolchain for any wheel that has
 #                           to compile from sdist (e.g. hyperscan on glibc
 #                           combinations PyPI doesn't ship a manylinux wheel
 #                           for).
+#   git                   — some pip installs (and developer shells via
+#                           --shell) expect git to be present.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+ && rm -rf /var/lib/apt/lists/*
+
+# Best-effort: hyperscan system libs. Tests skip gracefully if absent.
 #   libpcre3-dev          — pulled in by hyperscan's setup.py when building
 #                           from source.
 #   libhyperscan-dev      — Debian bookworm packages Hyperscan 5.4. Lets the
 #                           hyperscan Python bindings link against the system
 #                           library instead of vendoring the engine, which
 #                           cuts ~200 MB off a from-source build.
-#   git                   — some pip installs (and developer shells via
-#                           --shell) expect git to be present.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpcre3-dev \
-    libhyperscan-dev \
-    git \
- && rm -rf /var/lib/apt/lists/*
+# The || true ensures the Docker build continues even when libhyperscan-dev
+# is unavailable on the runner (e.g. arm64 CI runners, older Debian mirrors).
+# Hyperscan tests already use pytest.importorskip and skip cleanly when absent.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpcre3-dev libhyperscan-dev \
+    || echo "libhyperscan-dev unavailable — hyperscan tests will skip" \
+    && rm -rf /var/lib/apt/lists/* || true
 
 WORKDIR /app
 
