@@ -1,8 +1,6 @@
 """Tests for Wave 10 #308: per-user data scope."""
 from unittest.mock import MagicMock
 
-import pytest
-
 
 def _make_request(role=None, sub=None):
     req = MagicMock()

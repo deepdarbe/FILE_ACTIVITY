@@ -5,7 +5,7 @@ Provides SQL fragment + params for WHERE-clause injection into owner-
 bearing queries.
 """
 from __future__ import annotations
-from typing import Any, Optional
+from typing import Any
 
 
 def get_owner_scope(request: Any) -> tuple[str, list]:
