@@ -337,6 +337,13 @@ dashboard:
     # from RDP keep working without configuration. Set to false to
     # require the token from localhost too.
     allow_unauth_localhost: true
+    # Cok kullanicili LDAP login (Wave 10 #307)
+    ldap_login: false           # true yapinca /api/auth/login aktif olur
+    admin_groups:               # Bu AD gruplarindaki kullanicilar admin rolü alir
+      - "FileActivity-Admins"
+      - "Domain Admins"
+    manager_groups:             # Bu AD gruplarindaki kullanicilar manager rolü alir
+      - "FileActivity-Managers"
 
 security:
   # Fidye yazilimi tespit motoru (#37). Watcher event akisini dinler,

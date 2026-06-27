@@ -65,3 +65,9 @@ ldap3>=2.9.1
 # is somehow absent; the test-suite uses importorskip. Pinned as a real dep
 # since both features are first-class compliance tooling now.
 cryptography>=41.0
+
+# Per-user JWT session tokens (Wave 10 #307).
+# Short-lived access tokens (8 h) + long-lived refresh tokens (24 h).
+# Secret auto-generated at first start and persisted in SQLite so it
+# survives restarts; can be overridden via FILEACTIVITY_SESSION_SECRET.
+PyJWT>=2.8.0

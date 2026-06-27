@@ -891,6 +891,10 @@ A_AUDIT_ALLOWLIST: set[str] = {
     "syslog_test",                     # 6080 — self-test
     "test_source",                     # 987 — connectivity test
     "text_near_dup_compute",           # 3396 — analytics compute
+    # Wave 10 #307 — auth session endpoints (no server-side data mutation)
+    "auth_refresh",                     # stateless JWT refresh — no DB write
+    "auth_me",                          # read-only identity probe
+    "auth_logout",                      # stateless — instructs client to discard tokens
 }
 
 # Same canonical fact as C-CURSOR's _HTTP_WRITE_METHODS — alias, don't fork,
