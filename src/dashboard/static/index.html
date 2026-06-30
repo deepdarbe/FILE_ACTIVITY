@@ -2180,6 +2180,26 @@ body.sidebar-open { overflow: hidden; }
 </div>
 </div>
 
+<!-- TOTP/MFA Enrollment Modal (Wave 10 #311) -->
+<div class="modal-overlay" id="modal-totp-setup">
+<div class="modal" style="max-width:520px">
+    <h3>&#x1F510; MFA / TOTP Kurulumu</h3>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:16px">Authenticator uygulamanizda (Google Authenticator, Authy vb.) QR kodu tarayin veya baglantiya tiklayin. Ardindan uygulama tarafindan olusturulan 6 haneli kodu girin.</p>
+    <div id="totp-qr-area" style="text-align:center;margin-bottom:16px">
+        <p style="color:var(--text-muted);font-size:12px">Yukleniyor...</p>
+    </div>
+    <div style="margin-bottom:16px">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Dogrulama Kodu</label>
+        <input id="totp-verify-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 haneli kod" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:16px;letter-spacing:4px;text-align:center">
+    </div>
+    <div id="totp-setup-error" style="display:none;background:#7f1d1d;color:#fca5a5;border:1px solid #ef4444;padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px"></div>
+    <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeModal('modal-totp-setup')">Iptal</button>
+        <button class="btn btn-primary" onclick="totpVerifyAndEnable()">Etkinlestir</button>
+    </div>
+</div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════════
 // GLOBAL STATE
@@ -9828,6 +9848,68 @@ async function runFileSearch() {
         '<thead><tr><th>Dosya Adi</th><th>Yol</th><th>Sahip</th><th style="text-align:right">Boyut</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody>';
     _setHtmlSafe('file-search-table', html);
+}
+
+// ═══════════════════════════════════════════════════
+// TOTP / MFA (Wave 10 #311)
+// ═══════════════════════════════════════════════════
+let _totpSetupUri = null;
+
+function openTotpSetupModal() {
+    const qrArea = document.getElementById('totp-qr-area');
+    const errEl = document.getElementById('totp-setup-error');
+    const codeEl = document.getElementById('totp-verify-code');
+    if (qrArea) _setHtmlSafe('totp-qr-area', '<p style="color:var(--text-muted);font-size:12px">Yukleniyor...</p>');
+    if (errEl) errEl.style.display = 'none';
+    if (codeEl) codeEl.value = '';
+    _totpSetupUri = null;
+
+    const token = window._jwtAccessToken || '';
+    const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+    fetch('/api/auth/totp/setup', { headers })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error || !data.uri) {
+                if (qrArea) _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">TOTP kullanilamaz: ' + escapeHtml(data.error || data.detail || 'Bilinmeyen hata') + '</p>');
+                return;
+            }
+            _totpSetupUri = data.uri;
+            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(data.uri);
+            const html = '<img src="' + qrUrl + '" alt="TOTP QR Kodu" style="border-radius:8px;border:2px solid var(--border)">'
+                + '<br><a href="' + escapeHtml(data.uri) + '" style="font-size:11px;color:var(--accent);word-break:break-all;display:inline-block;margin-top:8px">Authenticator uygulamasina ekle</a>';
+            if (qrArea) _setHtmlSafe('totp-qr-area', html);
+        })
+        .catch(e => {
+            if (qrArea) _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">Baglanti hatasi: ' + escapeHtml(String(e)) + '</p>');
+        });
+
+    openModal('modal-totp-setup');
+}
+
+function totpVerifyAndEnable() {
+    const codeEl = document.getElementById('totp-verify-code');
+    const errEl = document.getElementById('totp-setup-error');
+    if (!codeEl || !errEl) return;
+    const code = (codeEl.value || '').trim();
+    if (!code) { errEl.textContent = 'Lutfen 6 haneli kodu girin.'; errEl.style.display = 'block'; return; }
+    errEl.style.display = 'none';
+
+    const token = window._jwtAccessToken || '';
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+
+    fetch('/api/auth/totp/verify', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ code })
+    })
+        .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
+        .then(({ ok, data }) => {
+            if (!ok) { errEl.textContent = data.detail || 'Gecersiz kod.'; errEl.style.display = 'block'; return; }
+            closeModal('modal-totp-setup');
+            alert('TOTP basariyla etkinlestirildi. Bundan sonra giris yaparken authenticator kodunuzu girmeniz gerekecek.');
+        })
+        .catch(e => { errEl.textContent = 'Hata: ' + e; errEl.style.display = 'block'; });
 }
 
 
