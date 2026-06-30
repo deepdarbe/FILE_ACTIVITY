@@ -52,7 +52,7 @@ def tmp_db():
 
 @pytest.fixture()
 def totp_mgr(tmp_db):
-    pyotp = pytest.importorskip("pyotp")  # noqa: F841 — skips if not installed
+    pytest.importorskip("pyotp")
     from src.security.totp_auth import TOTPManager
     return TOTPManager(tmp_db)
 
