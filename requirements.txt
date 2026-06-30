@@ -71,3 +71,8 @@ cryptography>=41.0
 # Secret auto-generated at first start and persisted in SQLite so it
 # survives restarts; can be overridden via FILEACTIVITY_SESSION_SECRET.
 PyJWT>=2.8.0
+
+# TOTP/MFA second-factor authentication (Wave 10 #311).
+# RFC 6238 Time-based One-Time Passwords for per-user enrollment.
+# Missing package -> TOTPManager degrades gracefully (TOTP always passes through).
+pyotp>=2.9.0

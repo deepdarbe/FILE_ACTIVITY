@@ -895,6 +895,8 @@ A_AUDIT_ALLOWLIST: set[str] = {
     "auth_refresh",                     # stateless JWT refresh — no DB write
     "auth_me",                          # read-only identity probe
     "auth_logout",                      # stateless — instructs client to discard tokens
+    # Wave 10 #311 — TOTP setup is GET (no mutation; enabled=0 pending until verify)
+    "totp_setup",                       # GET — secret stored pending, enabled=0; no audit needed
 }
 
 # Same canonical fact as C-CURSOR's _HTTP_WRITE_METHODS — alias, don't fork,
