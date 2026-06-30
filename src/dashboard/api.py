@@ -1347,7 +1347,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         try:
             db.insert_audit_event_simple(
                 source_id=src.id, event_type="scan_started",
-                username="dashboard", file_path=None,
+                username="dashboard", file_path=src.unc_path or '',
                 details=f"source_name={src.name}",
             )
         except Exception as e:  # pragma: no cover - audit is best-effort
