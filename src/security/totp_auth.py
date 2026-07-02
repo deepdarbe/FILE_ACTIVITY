@@ -16,6 +16,32 @@ except ImportError:
     _HAVE_PYOTP = False
     logger.warning("pyotp not installed — TOTP/MFA will be unavailable")
 
+try:
+    import segno  # pure-python, zero-dependency QR generator
+    _HAVE_SEGNO = True
+except ImportError:
+    _HAVE_SEGNO = False
+
+
+def _render_qr_svg(uri: str) -> str | None:
+    """Render *uri* as an inline SVG string, entirely on-box.
+
+    Returns None if segno is not installed (the UI then falls back to
+    manual secret entry). We deliberately do NOT call any external QR
+    service: the otpauth:// URI embeds the shared TOTP secret, so sending
+    it off-box would leak the second factor.
+    """
+    if not _HAVE_SEGNO:
+        return None
+    try:
+        import io
+        buf = io.StringIO()
+        segno.make(uri, error="m").save(buf, kind="svg", scale=5, border=2)
+        return buf.getvalue()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("TOTP QR render failed: %s", e)
+        return None
+
 
 class TOTPManager:
     """Manages TOTP secrets and verification for per-user MFA enrollment."""
@@ -49,7 +75,9 @@ class TOTPManager:
                 (username,),
             )
             row = cur.fetchone()
-        return bool(row and row[0])
+        # NOTE: the production Database sets row_factory=dict_factory on both
+        # pools, so rows are dicts — always index by column name, never row[0].
+        return bool(row and row["enabled"])
 
     # ------------------------------------------------------------------
     # Write helpers — use get_cursor (Rule 6)
@@ -63,16 +91,26 @@ class TOTPManager:
 
         Returns:
             ``{'secret': ..., 'uri': ...}`` on success.
-            ``{'error': 'pyotp not installed'}`` when pyotp is unavailable.
+            ``{'error': ...}`` when pyotp is unavailable or TOTP is already
+            enabled for this user (re-enrollment must go through disable first,
+            which requires the current code — otherwise setup would be a
+            code-free way to disarm active MFA).
         """
         if not _HAVE_PYOTP:
             return {"error": "pyotp not installed"}
+
+        # SECURITY: never let a bare setup call silently disarm an active
+        # second factor. If TOTP is already enabled, the caller must disable
+        # it first (that path requires a valid current code). Only a *pending*
+        # (enabled=0) or absent enrollment may be (re)generated here.
+        if self.is_enabled(username):
+            return {"error": "TOTP already enabled — disable it first (requires current code)"}
 
         secret = pyotp.random_base32()
         totp = pyotp.TOTP(secret)
         uri = totp.provisioning_uri(name=username, issuer_name=issuer)
 
-        # Upsert: allow re-enrollment (resets any existing pending secret)
+        # Upsert: replace only a pending/absent enrollment (enabled stays 0).
         with self.db.get_cursor() as cur:
             cur.execute(
                 """
@@ -85,7 +123,9 @@ class TOTPManager:
             )
 
         logger.info("TOTP setup generated for user %s", username)
-        return {"secret": secret, "uri": uri}
+        # QR is rendered on-box (segno) so the secret never leaves the server.
+        # qr_svg is None when segno is absent → UI shows the secret for manual entry.
+        return {"secret": secret, "uri": uri, "qr_svg": _render_qr_svg(uri)}
 
     def verify_and_enable(self, username: str, code: str) -> bool:
         """Verify *code* against the pending secret and enable TOTP on success.
@@ -108,7 +148,7 @@ class TOTPManager:
             logger.warning("TOTP verify_and_enable: no secret for user %s", username)
             return False
 
-        totp = pyotp.TOTP(row[0])
+        totp = pyotp.TOTP(row["secret"])
         if not totp.verify(code, valid_window=1):
             logger.info("TOTP verify_and_enable: wrong code for user %s", username)
             return False
@@ -132,25 +172,21 @@ class TOTPManager:
                 "UPDATE user_totp_secrets SET enabled=0 WHERE username=?",
                 (username,),
             )
-            changed = cur.rowcount if hasattr(cur, "rowcount") else 1
-        result = bool(changed)
+            changed = cur.rowcount
+        result = changed > 0
         logger.info("TOTP disabled for user %s (found=%s)", username, result)
         return result
 
     def verify_code(self, username: str, code: str) -> bool:
         """Verify a TOTP *code* for a user that already has TOTP enabled.
 
-        Pass-through rules (returns True without verification):
-        - pyotp is not installed
-        - no row exists for *username*
-        - TOTP is disabled (``enabled=0``) for *username*
-
-        Returns False only when TOTP is enabled AND the code is wrong.
+        Semantics:
+        - No row / ``enabled=0`` → pass through (returns True): TOTP is opt-in,
+          so an un-enrolled user is not gated by a second factor.
+        - Enrolled (``enabled=1``) but pyotp unavailable → fail CLOSED
+          (returns False): we cannot verify, so we must not accept any code.
+        - Enrolled and pyotp available → returns the real verification result.
         """
-        if not _HAVE_PYOTP:
-            # Cannot check — let through; operator should install pyotp
-            return True
-
         with self.db.get_read_cursor() as cur:
             cur.execute(
                 "SELECT secret, enabled FROM user_totp_secrets WHERE username=?",
@@ -158,9 +194,16 @@ class TOTPManager:
             )
             row = cur.fetchone()
 
-        if not row or not row[1]:
+        if not row or not row["enabled"]:
             # Not enrolled — pass through (opt-in model)
             return True
 
-        totp = pyotp.TOTP(row[0])
+        if not _HAVE_PYOTP:
+            # Enrolled but cannot verify — fail closed, never accept blindly.
+            logger.error(
+                "TOTP enabled for %s but pyotp unavailable — denying login", username
+            )
+            return False
+
+        totp = pyotp.TOTP(row["secret"])
         return totp.verify(code, valid_window=1)

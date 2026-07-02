@@ -9853,34 +9853,52 @@ async function runFileSearch() {
 // ═══════════════════════════════════════════════════
 // TOTP / MFA (Wave 10 #311)
 // ═══════════════════════════════════════════════════
-let _totpSetupUri = null;
+// NOTE: these enrollment helpers are invoked by the LDAP/JWT login-portal UI
+// (backend shipped in #307; the portal front-end is a separate, not-yet-built
+// piece). They read the access token the portal stores in localStorage
+// 'fa_jwt_access' (window._jwtAccessToken kept as a fallback). Until the portal
+// exists there is intentionally no button wired to openTotpSetupModal() — a
+// button here would only 401, so it is wired together with the login UI.
+
+function _totpAuthHeaders(extra) {
+    let token = '';
+    try { token = localStorage.getItem('fa_jwt_access') || ''; } catch (e) { /* private mode */ }
+    if (!token) token = window._jwtAccessToken || '';
+    const headers = Object.assign({}, extra || {});
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    return headers;
+}
 
 function openTotpSetupModal() {
-    const qrArea = document.getElementById('totp-qr-area');
     const errEl = document.getElementById('totp-setup-error');
     const codeEl = document.getElementById('totp-verify-code');
-    if (qrArea) _setHtmlSafe('totp-qr-area', '<p style="color:var(--text-muted);font-size:12px">Yukleniyor...</p>');
+    _setHtmlSafe('totp-qr-area', '<p style="color:var(--text-muted);font-size:12px">Yukleniyor...</p>');
     if (errEl) errEl.style.display = 'none';
     if (codeEl) codeEl.value = '';
-    _totpSetupUri = null;
 
-    const token = window._jwtAccessToken || '';
-    const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
-    fetch('/api/auth/totp/setup', { headers })
+    // POST (not GET): setup mutates state (writes a pending secret).
+    fetch('/api/auth/totp/setup', { method: 'POST', headers: _totpAuthHeaders() })
         .then(r => r.json())
         .then(data => {
             if (data.error || !data.uri) {
-                if (qrArea) _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">TOTP kullanilamaz: ' + escapeHtml(data.error || data.detail || 'Bilinmeyen hata') + '</p>');
+                _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">TOTP kullanilamaz: ' + escapeHtml(data.error || data.detail || 'Bilinmeyen hata') + '</p>');
                 return;
             }
-            _totpSetupUri = data.uri;
-            const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(data.uri);
-            const html = '<img src="' + qrUrl + '" alt="TOTP QR Kodu" style="border-radius:8px;border:2px solid var(--border)">'
-                + '<br><a href="' + escapeHtml(data.uri) + '" style="font-size:11px;color:var(--accent);word-break:break-all;display:inline-block;margin-top:8px">Authenticator uygulamasina ekle</a>';
-            if (qrArea) _setHtmlSafe('totp-qr-area', html);
+            // QR is rendered on-box (server-side segno SVG) so the shared secret
+            // never leaves the server. If segno is absent, qr_svg is null and we
+            // fall back to manual secret entry — never a third-party QR service.
+            let html;
+            if (data.qr_svg) {
+                html = '<div style="display:inline-block;background:#fff;padding:8px;border-radius:8px;border:2px solid var(--border)">' + data.qr_svg + '</div>';
+            } else {
+                html = '<p style="color:var(--text-muted);font-size:12px">Gizli anahtari authenticator uygulamaniza elle girin:</p>'
+                    + '<code style="display:inline-block;font-size:14px;letter-spacing:2px;background:var(--bg-sidebar);padding:8px 12px;border-radius:6px;word-break:break-all">' + escapeHtml(data.secret || '') + '</code>';
+            }
+            html += '<br><a href="' + escapeHtml(data.uri) + '" style="font-size:11px;color:var(--accent);word-break:break-all;display:inline-block;margin-top:8px">Authenticator uygulamasina ekle</a>';
+            _setHtmlSafe('totp-qr-area', html);
         })
         .catch(e => {
-            if (qrArea) _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">Baglanti hatasi: ' + escapeHtml(String(e)) + '</p>');
+            _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">Baglanti hatasi: ' + escapeHtml(String(e)) + '</p>');
         });
 
     openModal('modal-totp-setup');
@@ -9894,20 +9912,16 @@ function totpVerifyAndEnable() {
     if (!code) { errEl.textContent = 'Lutfen 6 haneli kodu girin.'; errEl.style.display = 'block'; return; }
     errEl.style.display = 'none';
 
-    const token = window._jwtAccessToken || '';
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = 'Bearer ' + token;
-
     fetch('/api/auth/totp/verify', {
         method: 'POST',
-        headers,
+        headers: _totpAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ code })
     })
         .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
         .then(({ ok, data }) => {
             if (!ok) { errEl.textContent = data.detail || 'Gecersiz kod.'; errEl.style.display = 'block'; return; }
             closeModal('modal-totp-setup');
-            alert('TOTP basariyla etkinlestirildi. Bundan sonra giris yaparken authenticator kodunuzu girmeniz gerekecek.');
+            notify('TOTP etkinlestirildi. Girislerde artik authenticator kodunuz istenecek.', 'success');
         })
         .catch(e => { errEl.textContent = 'Hata: ' + e; errEl.style.display = 'block'; });
 }

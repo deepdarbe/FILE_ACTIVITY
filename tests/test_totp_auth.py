@@ -5,8 +5,6 @@ Requires pyotp to be installed. Tests are skipped if pyotp is absent.
 from __future__ import annotations
 
 import sqlite3
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -15,13 +13,24 @@ import pytest
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
+def _dict_factory(cursor, row):
+    """Mirror the production Database.dict_factory: rows are dicts, not tuples.
+
+    This is deliberate — the real Database sets row_factory=dict_factory on both
+    pools, so a stub using sqlite3.Row (which supports int indexing) would MASK
+    the row[0]-vs-row['col'] bug class. Tests must see the same dict shape prod
+    does.
+    """
+    return {col[0]: row[i] for i, col in enumerate(cursor.description)}
+
+
 class _FakeDB:
     """Minimal Database stub that wraps a real SQLite connection."""
 
-    def __init__(self, db_path: str):
-        self._db_path = db_path
-        self._conn = sqlite3.connect(db_path)
-        self._conn.row_factory = sqlite3.Row
+    def __init__(self):
+        # :memory: is sufficient — _FakeDB holds a single shared connection.
+        self._conn = sqlite3.connect(":memory:")
+        self._conn.row_factory = _dict_factory
 
     def get_cursor(self):
         return _FakeCursor(self._conn)
@@ -46,8 +55,7 @@ class _FakeCursor:
 
 @pytest.fixture()
 def tmp_db():
-    with tempfile.TemporaryDirectory() as d:
-        yield _FakeDB(str(Path(d) / "test.db"))
+    yield _FakeDB()
 
 
 @pytest.fixture()
@@ -130,6 +138,37 @@ class TestTOTPManagerVerifyAndEnable:
         assert result is False
 
 
+class TestTOTPManagerSetupSecurity:
+    def test_setup_refused_when_already_enabled(self, totp_mgr):
+        """generate_setup must NOT silently disarm an active enrollment.
+
+        Once TOTP is enabled, a bare setup call would (before the fix) reset
+        enabled=0 and replace the secret with no code — a code-free MFA disarm.
+        It must now return an error and leave the enrollment intact.
+        """
+        import pyotp
+        setup = totp_mgr.generate_setup("erin")
+        code = pyotp.TOTP(setup["secret"]).now()
+        assert totp_mgr.verify_and_enable("erin", code) is True
+        assert totp_mgr.is_enabled("erin") is True
+
+        result = totp_mgr.generate_setup("erin")
+        assert "error" in result and "already enabled" in result["error"]
+        # Still enabled — the active enrollment was not clobbered.
+        assert totp_mgr.is_enabled("erin") is True
+
+    def test_setup_allowed_when_only_pending(self, totp_mgr):
+        """Re-running setup on a pending (enabled=0) enrollment is allowed."""
+        totp_mgr.generate_setup("pat")          # pending
+        result = totp_mgr.generate_setup("pat")  # regenerate pending — OK
+        assert "secret" in result and "error" not in result
+
+    def test_setup_includes_qr_svg_key(self, totp_mgr):
+        """generate_setup always returns a qr_svg key (SVG string or None)."""
+        result = totp_mgr.generate_setup("quinn")
+        assert "qr_svg" in result
+
+
 class TestTOTPManagerVerifyCode:
     def test_enabled_user_correct_code_passes(self, totp_mgr):
         """verify_code returns True when TOTP is enabled and code is correct."""
@@ -201,6 +240,10 @@ class TestTOTPManagerDisable:
         # Any code (or wrong code) should pass through after disabling
         assert totp_mgr.verify_code("nina", "000000") is True
 
+    def test_disable_returns_false_for_unknown_user(self, totp_mgr):
+        """disable() reports False when no row was updated (never enrolled)."""
+        assert totp_mgr.disable("ghost") is False
+
 
 class TestTOTPManagerNoPyotp:
     """Tests that TOTPManager degrades gracefully when pyotp is not installed."""
@@ -222,3 +265,18 @@ class TestTOTPManagerNoPyotp:
         with patch("src.security.totp_auth._HAVE_PYOTP", False):
             result = totp_mgr.verify_and_enable("oscar", "000000")
         assert result is False
+
+    def test_enrolled_user_fails_closed_without_pyotp(self, totp_mgr):
+        """An ENROLLED user must fail CLOSED (not pass through) if pyotp vanishes.
+
+        This is the fail-open regression guard: enabled=1 is read from the DB
+        (no pyotp needed), so is_enabled() still gates the login; verify_code
+        must then reject every code rather than blindly accept it.
+        """
+        import pyotp
+        setup = totp_mgr.generate_setup("rita")
+        code = pyotp.TOTP(setup["secret"]).now()
+        assert totp_mgr.verify_and_enable("rita", code) is True
+        with patch("src.security.totp_auth._HAVE_PYOTP", False):
+            # Even a "correct-looking" code must be denied — we cannot verify.
+            assert totp_mgr.verify_code("rita", pyotp.TOTP(setup["secret"]).now()) is False

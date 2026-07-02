@@ -74,5 +74,10 @@ PyJWT>=2.8.0
 
 # TOTP/MFA second-factor authentication (Wave 10 #311).
 # RFC 6238 Time-based One-Time Passwords for per-user enrollment.
-# Missing package -> TOTPManager degrades gracefully (TOTP always passes through).
+# Missing pyotp -> enrolled logins fail CLOSED (no code is accepted); un-enrolled
+# users are unaffected (TOTP is opt-in).
 pyotp>=2.9.0
+# On-box QR rendering for TOTP enrollment (pure-python, zero-dependency). Keeps the
+# otpauth:// secret on the server instead of a third-party QR service. Optional:
+# if absent, the enrollment UI falls back to manual secret entry.
+segno>=1.6.0
