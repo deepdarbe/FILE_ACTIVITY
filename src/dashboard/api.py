@@ -1031,8 +1031,25 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                     {"totp_required": True, "detail": "TOTP code required"},
                     status_code=401,
                 )
+            # Brute-force throttle: a 6-digit code is grindable without a limiter.
+            allowed, retry_after = totp_mgr.throttle_check(totp_user)
+            if not allowed:
+                return JSONResponse(
+                    {"detail": "Too many failed TOTP attempts — try again later",
+                     "retry_after": retry_after},
+                    status_code=429,
+                )
             if not totp_mgr.verify_code(totp_user, body.totp_code):
+                totp_mgr.throttle_fail(totp_user)
+                try:
+                    db.insert_audit_event_simple(
+                        None, "login_totp_failed", totp_user, '',
+                        details="Invalid TOTP code at login",
+                    )
+                except Exception as _ae:
+                    logger.warning("audit login_totp_failed failed: %s", _ae)
                 return JSONResponse({"detail": "Invalid TOTP code"}, status_code=401)
+            totp_mgr.throttle_reset(totp_user)
 
         tokens = app.state.session_manager.issue_tokens(user_info)
         # Rule 4 — audit user login (write endpoint)
@@ -1226,9 +1243,26 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             return err
         if not totp_mgr.is_enabled(username):
             return JSONResponse({"detail": "TOTP is not enabled"}, status_code=400)
+        # Brute-force throttle: disabling MFA is a code-gated, attacker-interesting op.
+        allowed, retry_after = totp_mgr.throttle_check(username)
+        if not allowed:
+            return JSONResponse(
+                {"detail": "Too many failed TOTP attempts — try again later",
+                 "retry_after": retry_after},
+                status_code=429,
+            )
         # Verify the current TOTP code before disabling (confirmation step)
         if not totp_mgr.verify_code(username, body.code):
+            totp_mgr.throttle_fail(username)
+            try:
+                db.insert_audit_event_simple(
+                    None, "totp_disable_denied", username, '',
+                    details="Invalid TOTP code on disable attempt",
+                )
+            except Exception as _ae:
+                logger.warning("audit totp_disable_denied failed: %s", _ae)
             return JSONResponse({"detail": "Invalid TOTP code — cannot disable MFA"}, status_code=401)
+        totp_mgr.throttle_reset(username)
         totp_mgr.disable(username)
         # Rule 4 — audit TOTP deactivation (file_path='' — event is not file-scoped)
         try:

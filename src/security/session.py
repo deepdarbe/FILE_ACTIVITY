@@ -40,6 +40,15 @@ class SessionManager:
         """Load secret from env / DB, or generate + persist a new one."""
         env_secret = os.environ.get('FILEACTIVITY_SESSION_SECRET')
         if env_secret:
+            # A short HS256 key is offline-crackable → forged admin tokens.
+            # Refuse to start rather than sign with a weak secret (RFC 7518 §3.2
+            # recommends a key at least as long as the HMAC output: 32 bytes).
+            if len(env_secret) < 32:
+                raise RuntimeError(
+                    "FILEACTIVITY_SESSION_SECRET must be at least 32 characters "
+                    f"(got {len(env_secret)}); generate one with "
+                    "`python -c \"import secrets; print(secrets.token_hex(32))\"`"
+                )
             logger.debug("Using FILEACTIVITY_SESSION_SECRET from environment")
             return env_secret
 
@@ -48,7 +57,10 @@ class SessionManager:
                 "SELECT value FROM session_config WHERE key = 'jwt_secret'"
             ).fetchone()
             if row:
-                return row[0]
+                # dict_factory rows — index by column name, never row[0].
+                # row[0] raised KeyError → hard startup crash on every restart
+                # once a jwt_secret row existed and no env override was set.
+                return row["value"]
 
             new_secret = secrets.token_hex(32)
             conn.execute(

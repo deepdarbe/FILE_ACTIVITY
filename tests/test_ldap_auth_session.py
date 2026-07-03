@@ -63,13 +63,19 @@ _stub_broken_cryptography()
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
 
+def _dict_factory(cursor, row):
+    """Mirror production Database.dict_factory so tests see dict rows (not
+    sqlite3.Row, which would mask row[0]-vs-row['col'] bugs)."""
+    return {col[0]: row[i] for i, col in enumerate(cursor.description)}
+
+
 class _FakeDB:
     """Minimal Database stub for SessionManager tests."""
 
     def __init__(self, db_path: str):
         self._db_path = db_path
         self._conn = sqlite3.connect(db_path)
-        self._conn.row_factory = sqlite3.Row
+        self._conn.row_factory = _dict_factory
 
     def get_cursor(self):
         return _FakeCursor(self._conn)
@@ -192,10 +198,27 @@ class TestSessionManagerSecret:
         assert sm1.secret == sm2.secret
 
     def test_env_var_overrides_db_secret(self, tmp_db, session_cfg, monkeypatch):
-        monkeypatch.setenv('FILEACTIVITY_SESSION_SECRET', 'my-env-secret-abc123')
+        strong = 'x' * 40  # >= 32 chars (see length guard below)
+        monkeypatch.setenv('FILEACTIVITY_SESSION_SECRET', strong)
         from src.security.session import SessionManager
         sm = SessionManager(tmp_db, session_cfg)
-        assert sm.secret == 'my-env-secret-abc123'
+        assert sm.secret == strong
+
+    def test_short_env_secret_rejected(self, tmp_db, session_cfg, monkeypatch):
+        """A weak (<32 char) env secret must hard-fail startup, not sign tokens."""
+        monkeypatch.setenv('FILEACTIVITY_SESSION_SECRET', 'too-short')
+        from src.security.session import SessionManager
+        with pytest.raises(RuntimeError, match="at least 32"):
+            SessionManager(tmp_db, session_cfg)
+
+    def test_secret_survives_restart_dict_rows(self, tmp_db, session_cfg, monkeypatch):
+        """Regression: the persisted-secret read used row[0], which is a KeyError
+        under the production dict row factory → hard crash on every restart."""
+        monkeypatch.delenv('FILEACTIVITY_SESSION_SECRET', raising=False)
+        from src.security.session import SessionManager
+        sm1 = SessionManager(tmp_db, session_cfg)   # generates + persists
+        sm2 = SessionManager(tmp_db, session_cfg)   # must READ it back, not crash
+        assert sm1.secret == sm2.secret
 
 
 # ---------------------------------------------------------------------------

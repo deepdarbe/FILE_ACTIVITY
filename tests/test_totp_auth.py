@@ -280,3 +280,65 @@ class TestTOTPManagerNoPyotp:
         with patch("src.security.totp_auth._HAVE_PYOTP", False):
             # Even a "correct-looking" code must be denied — we cannot verify.
             assert totp_mgr.verify_code("rita", pyotp.TOTP(setup["secret"]).now()) is False
+
+
+class TestTOTPManagerCaseInsensitive:
+    """Case-variation MFA-bypass guard: AD sAMAccountName is case-insensitive,
+    so an enrolled 'alice' logging in as 'ALICE' must still be gated by TOTP."""
+
+    def test_is_enabled_ignores_case(self, totp_mgr):
+        import pyotp
+        setup = totp_mgr.generate_setup("alice")
+        code = pyotp.TOTP(setup["secret"]).now()
+        totp_mgr.verify_and_enable("alice", code)
+        # The login gate would call is_enabled with whatever case was typed.
+        assert totp_mgr.is_enabled("ALICE") is True
+        assert totp_mgr.is_enabled("Alice") is True
+        assert totp_mgr.is_enabled("alice") is True
+
+    def test_verify_code_ignores_case(self, totp_mgr):
+        import pyotp
+        setup = totp_mgr.generate_setup("bob")
+        code = pyotp.TOTP(setup["secret"]).now()
+        totp_mgr.verify_and_enable("BOB", code)  # enable via a different case
+        fresh = pyotp.TOTP(setup["secret"]).now()
+        assert totp_mgr.verify_code("Bob", fresh) is True
+
+    def test_setup_refused_case_insensitive(self, totp_mgr):
+        """Re-setup as a case-variant of an enabled user is still refused."""
+        import pyotp
+        setup = totp_mgr.generate_setup("carol")
+        code = pyotp.TOTP(setup["secret"]).now()
+        totp_mgr.verify_and_enable("carol", code)
+        result = totp_mgr.generate_setup("CAROL")
+        assert "error" in result and "already enabled" in result["error"]
+
+
+class TestTOTPThrottle:
+    """Brute-force throttle on the code-verify path."""
+
+    def test_locks_after_max_failures(self, totp_mgr):
+        allowed, _ = totp_mgr.throttle_check("dan")
+        assert allowed is True
+        # Default is 5 failures → lock on the 5th.
+        for _ in range(5):
+            totp_mgr.throttle_fail("dan")
+        allowed, retry_after = totp_mgr.throttle_check("dan")
+        assert allowed is False
+        assert retry_after > 0
+
+    def test_throttle_key_is_case_insensitive(self, totp_mgr):
+        for _ in range(5):
+            totp_mgr.throttle_fail("erin")
+        allowed, _ = totp_mgr.throttle_check("ERIN")
+        assert allowed is False
+
+    def test_success_resets_counter(self, totp_mgr):
+        for _ in range(4):  # one short of the lock
+            totp_mgr.throttle_fail("finn")
+        totp_mgr.throttle_reset("finn")
+        # Counter cleared → 4 more failures should not lock (needs 5 fresh).
+        for _ in range(4):
+            totp_mgr.throttle_fail("finn")
+        allowed, _ = totp_mgr.throttle_check("finn")
+        assert allowed is True

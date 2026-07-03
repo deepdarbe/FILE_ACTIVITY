@@ -6,6 +6,8 @@ Depends on pyotp (optional — degrades gracefully when not installed).
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -43,25 +45,106 @@ def _render_qr_svg(uri: str) -> str | None:
         return None
 
 
+class _AttemptThrottle:
+    """In-process failed-attempt throttle with temporary lockout.
+
+    Protects the TOTP code-verification path from online brute force: a 6-digit
+    code with ``valid_window=1`` leaves only ~3 of 10^6 values acceptable at any
+    instant, so without a limiter an attacker who already has the password could
+    grind the second factor. After ``max_attempts`` failures within ``window_s``
+    an identity is locked for ``lockout_s``. A success clears the counter.
+
+    Single-process only (the dashboard is one process; anyio dispatches sync
+    endpoints to worker threads, hence the lock). Not a distributed limiter.
+    Uses ``time.monotonic()`` so wall-clock changes cannot shorten a lockout.
+    """
+
+    def __init__(self, max_attempts: int = 5, window_s: int = 300, lockout_s: int = 900):
+        self._max = max_attempts
+        self._window = window_s
+        self._lockout = lockout_s
+        self._lock = threading.Lock()
+        self._fails: dict[str, list[float]] = {}
+        self._locked: dict[str, float] = {}
+
+    def check(self, key: str) -> tuple[bool, int]:
+        """Return ``(allowed, retry_after_seconds)`` for *key*."""
+        now = time.monotonic()
+        with self._lock:
+            unlock = self._locked.get(key)
+            if unlock is not None:
+                if now < unlock:
+                    return False, int(unlock - now) + 1
+                # Lockout expired — clear and allow a fresh window.
+                self._locked.pop(key, None)
+                self._fails.pop(key, None)
+            return True, 0
+
+    def record_failure(self, key: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            times = [t for t in self._fails.get(key, []) if now - t < self._window]
+            times.append(now)
+            self._fails[key] = times
+            if len(times) >= self._max:
+                self._locked[key] = now + self._lockout
+                self._fails.pop(key, None)
+                logger.warning("TOTP throttle: locked identity after %d failures", self._max)
+
+    def record_success(self, key: str) -> None:
+        with self._lock:
+            self._fails.pop(key, None)
+            self._locked.pop(key, None)
+
+
 class TOTPManager:
     """Manages TOTP secrets and verification for per-user MFA enrollment."""
 
     def __init__(self, db):
         """db: Database instance (must expose get_cursor / get_read_cursor)."""
         self.db = db
+        # Shared, process-wide brute-force throttle for the code-verify path.
+        self._throttle = _AttemptThrottle()
         self._ensure_table()
+
+    @staticmethod
+    def _norm(username: str) -> str:
+        """Canonical lookup key for a username.
+
+        SECURITY: AD sAMAccountName matching is case-insensitive, so a victim
+        enrolled as 'alice' can be logged in as 'ALICE' with the same password.
+        If the TOTP row were keyed case-sensitively, is_enabled('ALICE') would
+        miss the 'alice' row and skip the second factor entirely. Casefolding
+        every key here (plus COLLATE NOCASE on the column) makes the lookup
+        immune to case variation.
+        """
+        return (username or "").strip().lower()
 
     def _ensure_table(self):
         """Create user_totp_secrets table if it does not exist."""
         with self.db.get_cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS user_totp_secrets (
-                    username   TEXT PRIMARY KEY,
+                    username   TEXT PRIMARY KEY COLLATE NOCASE,
                     secret     TEXT NOT NULL,
                     enabled    INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT DEFAULT (datetime('now'))
                 )
             """)
+
+    # ------------------------------------------------------------------
+    # Brute-force throttle (used by the login gate + disable endpoint)
+    # ------------------------------------------------------------------
+
+    def throttle_check(self, username: str) -> tuple[bool, int]:
+        """Return ``(allowed, retry_after_seconds)`` for the code-verify path."""
+        return self._throttle.check(self._norm(username))
+
+    def throttle_fail(self, username: str) -> None:
+        self._throttle.record_failure(self._norm(username))
+
+    def throttle_reset(self, username: str) -> None:
+        self._throttle.record_success(self._norm(username))
 
     # ------------------------------------------------------------------
     # Read helpers — use get_read_cursor (Rule 6)
@@ -72,7 +155,7 @@ class TOTPManager:
         with self.db.get_read_cursor() as cur:
             cur.execute(
                 "SELECT enabled FROM user_totp_secrets WHERE username=?",
-                (username,),
+                (self._norm(username),),
             )
             row = cur.fetchone()
         # NOTE: the production Database sets row_factory=dict_factory on both
@@ -108,6 +191,7 @@ class TOTPManager:
 
         secret = pyotp.random_base32()
         totp = pyotp.TOTP(secret)
+        # URI label keeps the caller's spelling; the DB key is casefolded.
         uri = totp.provisioning_uri(name=username, issuer_name=issuer)
 
         # Upsert: replace only a pending/absent enrollment (enabled stays 0).
@@ -119,7 +203,7 @@ class TOTPManager:
                 ON CONFLICT(username) DO UPDATE
                     SET secret=excluded.secret, enabled=0
                 """,
-                (username, secret),
+                (self._norm(username), secret),
             )
 
         logger.info("TOTP setup generated for user %s", username)
@@ -137,10 +221,11 @@ class TOTPManager:
         if not _HAVE_PYOTP:
             return False
 
+        key = self._norm(username)
         with self.db.get_read_cursor() as cur:
             cur.execute(
                 "SELECT secret FROM user_totp_secrets WHERE username=?",
-                (username,),
+                (key,),
             )
             row = cur.fetchone()
 
@@ -156,7 +241,7 @@ class TOTPManager:
         with self.db.get_cursor() as cur:
             cur.execute(
                 "UPDATE user_totp_secrets SET enabled=1 WHERE username=?",
-                (username,),
+                (key,),
             )
 
         logger.info("TOTP enabled for user %s", username)
@@ -170,7 +255,7 @@ class TOTPManager:
         with self.db.get_cursor() as cur:
             cur.execute(
                 "UPDATE user_totp_secrets SET enabled=0 WHERE username=?",
-                (username,),
+                (self._norm(username),),
             )
             changed = cur.rowcount
         result = changed > 0
@@ -190,7 +275,7 @@ class TOTPManager:
         with self.db.get_read_cursor() as cur:
             cur.execute(
                 "SELECT secret, enabled FROM user_totp_secrets WHERE username=?",
-                (username,),
+                (self._norm(username),),
             )
             row = cur.fetchone()
 
