@@ -32,6 +32,8 @@ from src.security.ldap_auth import LDAPAuthenticator
 from src.security.session import SessionManager
 # Wave 10 #308 — per-user data scoping (viewer role filters by owner)
 from src.security.user_scope import get_owner_scope, scope_is_restricted
+# Wave 10 #311 — TOTP/MFA second-factor enrollment and verification
+from src.security.totp_auth import TOTPManager
 
 # ── Arka plan export kuyrugu ──
 _export_jobs = {}  # job_id -> {status, progress, file_path, error, created_at, ...}
@@ -699,6 +701,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # ldap3 is absent, so single-user bearer-token deployments are unaffected.
     app.state.ldap_auth = LDAPAuthenticator(config)
     app.state.session_manager = SessionManager(db, config)
+    # Wave 10 #311 — TOTP/MFA second-factor (optional; degrades when pyotp absent)
+    app.state.totp_manager = TOTPManager(db)
 
     # Auth endpoint paths that must pass through before the gate
     _AUTH_WHITELIST = frozenset({
@@ -988,6 +992,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     class _LoginBody(BaseModel):
         username: str
         password: str
+        totp_code: str = ""  # optional — required only when TOTP is enabled
 
     class _RefreshBody(BaseModel):
         refresh_token: str
@@ -1010,6 +1015,42 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         user_info = ldap.authenticate(body.username, body.password)
         if user_info is None:
             return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
+
+        # Wave 10 #311 — TOTP second-factor check (after LDAP succeeds).
+        # Key off the LDAP-normalized username (user_info["username"]), NOT the
+        # raw body.username — enrollment stores rows under the normalized name,
+        # so using the raw form would let 'CORP\alice' / 'alice@corp' skip MFA.
+        totp_user = user_info["username"]
+        totp_mgr = getattr(app.state, "totp_manager", None)
+        if totp_mgr and totp_mgr.is_enabled(totp_user):
+            if not body.totp_code:
+                # 401 (not 202): a 2xx would read as success to ok-checking
+                # clients, which would then store undefined tokens. The flag
+                # tells a TOTP-aware client to prompt for the code.
+                return JSONResponse(
+                    {"totp_required": True, "detail": "TOTP code required"},
+                    status_code=401,
+                )
+            # Brute-force throttle: a 6-digit code is grindable without a limiter.
+            allowed, retry_after = totp_mgr.throttle_check(totp_user)
+            if not allowed:
+                return JSONResponse(
+                    {"detail": "Too many failed TOTP attempts — try again later",
+                     "retry_after": retry_after},
+                    status_code=429,
+                )
+            if not totp_mgr.verify_code(totp_user, body.totp_code):
+                totp_mgr.throttle_fail(totp_user)
+                try:
+                    db.insert_audit_event_simple(
+                        None, "login_totp_failed", totp_user, '',
+                        details="Invalid TOTP code at login",
+                    )
+                except Exception as _ae:
+                    logger.warning("audit login_totp_failed failed: %s", _ae)
+                return JSONResponse({"detail": "Invalid TOTP code"}, status_code=401)
+            totp_mgr.throttle_reset(totp_user)
+
         tokens = app.state.session_manager.issue_tokens(user_info)
         # Rule 4 — audit user login (write endpoint)
         try:
@@ -1089,6 +1130,149 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         A_AUDIT_ALLOWLIST: no server-side mutation (stateless JWT, no DB write).
         """
         return {"detail": "Logged out — discard tokens client-side"}
+
+    # --- TOTP/MFA Endpoints (Wave 10 #311) ---
+
+    def _get_jwt_username(request: Request):
+        """Extract the authenticated username from the JWT on the request.
+
+        Prefers ``request.state.jwt_user`` (already decoded by auth_middleware,
+        so no second HS256 decode); falls back to parsing/verifying the Bearer
+        header directly for requests the middleware admitted without decoding
+        (e.g. the localhost gate bypass). Returns None if no valid token.
+        """
+        jwt_user = getattr(getattr(request, "state", None), "jwt_user", None)
+        if jwt_user:
+            return jwt_user.get("sub")
+        sm = getattr(app.state, "session_manager", None)
+        if sm is None:
+            return None
+        auth_header = request.headers.get("Authorization", "") or ""
+        if not auth_header.startswith("Bearer "):
+            return None
+        token = auth_header[len("Bearer "):]
+        payload = sm.verify_access_token(token)
+        return payload.get("sub") if payload else None
+
+    def _totp_ctx(request: Request):
+        """Shared preamble for the TOTP endpoints. Returns
+        ``(username, totp_mgr, None)`` on success or ``(None, None, response)``
+        with the appropriate 401/503 error to return."""
+        username = _get_jwt_username(request)
+        if not username:
+            return None, None, JSONResponse(
+                {"detail": "Authentication required"}, status_code=401)
+        totp_mgr = getattr(app.state, "totp_manager", None)
+        if totp_mgr is None:
+            return None, None, JSONResponse(
+                {"detail": "TOTP manager not initialised"}, status_code=503)
+        return username, totp_mgr, None
+
+    @app.post("/api/auth/totp/setup")
+    def totp_setup(request: Request):
+        """Generate a new pending TOTP secret + provisioning URI for enrollment.
+
+        POST (not GET): it mutates state (writes a pending secret), so it must
+        be a write method — this keeps it CSRF-safe (no prefetch/img trigger)
+        and lets A-AUDIT enforce the audit event. Refuses if TOTP is already
+        enabled (re-enrollment must go through disable first, which requires a
+        current code) so setup can never be a code-free MFA-disarm.
+        Rule 4: emits audit event totp_setup_generated on success.
+        """
+        username, totp_mgr, err = _totp_ctx(request)
+        if err is not None:
+            return err
+        result = totp_mgr.generate_setup(username)
+        if "error" in result:
+            # 'already enabled' is a client conflict; missing pyotp is 503.
+            status = 409 if "already enabled" in result["error"] else 503
+            return JSONResponse({"detail": result["error"]}, status_code=status)
+        # Rule 4 — audit that a pending secret was generated (MFA state change).
+        try:
+            db.insert_audit_event_simple(
+                None, "totp_setup_generated", username, '',
+                details="TOTP pending secret generated (awaiting verification)",
+            )
+        except Exception as _ae:
+            logger.warning("audit totp_setup_generated failed: %s", _ae)
+        return result
+
+    class _TOTPVerifyBody(BaseModel):
+        code: str
+
+    @app.post("/api/auth/totp/verify")
+    def totp_verify(body: _TOTPVerifyBody, request: Request):
+        """Verify a TOTP code and enable TOTP for the authenticated user.
+
+        The user must have called POST /api/auth/totp/setup first to generate
+        a pending secret, then scanned the QR code in their authenticator app.
+        Requires a valid JWT (Bearer token).
+        Rule 4: emits audit event totp_enabled on success.
+        """
+        username, totp_mgr, err = _totp_ctx(request)
+        if err is not None:
+            return err
+        ok = totp_mgr.verify_and_enable(username, body.code)
+        if not ok:
+            return JSONResponse({"detail": "Invalid or expired TOTP code"}, status_code=400)
+        # Rule 4 — audit TOTP activation (file_path='' — event is not file-scoped)
+        try:
+            db.insert_audit_event_simple(
+                None, "totp_enabled", username, '',
+                details="TOTP second-factor enabled by user",
+            )
+        except Exception as _ae:
+            logger.warning("audit totp_enabled failed: %s", _ae)
+        return {"detail": "TOTP enabled", "username": username}
+
+    class _TOTPDisableBody(BaseModel):
+        code: str  # TOTP code required to confirm disable (prevents accidental disabling)
+
+    @app.post("/api/auth/totp/disable")
+    def totp_disable(body: _TOTPDisableBody, request: Request):
+        """Disable TOTP for the authenticated user after verifying their current code.
+
+        POST (not DELETE): DELETE-with-body is stripped/rejected by many proxies
+        and HTTP clients, and this matches the other auth mutations. Requires a
+        valid JWT and — only when TOTP is actually enabled — a current TOTP code,
+        so a never-enrolled user cannot trigger a bogus 'disabled' success/audit.
+        Rule 4: emits audit event totp_disabled on success.
+        """
+        username, totp_mgr, err = _totp_ctx(request)
+        if err is not None:
+            return err
+        if not totp_mgr.is_enabled(username):
+            return JSONResponse({"detail": "TOTP is not enabled"}, status_code=400)
+        # Brute-force throttle: disabling MFA is a code-gated, attacker-interesting op.
+        allowed, retry_after = totp_mgr.throttle_check(username)
+        if not allowed:
+            return JSONResponse(
+                {"detail": "Too many failed TOTP attempts — try again later",
+                 "retry_after": retry_after},
+                status_code=429,
+            )
+        # Verify the current TOTP code before disabling (confirmation step)
+        if not totp_mgr.verify_code(username, body.code):
+            totp_mgr.throttle_fail(username)
+            try:
+                db.insert_audit_event_simple(
+                    None, "totp_disable_denied", username, '',
+                    details="Invalid TOTP code on disable attempt",
+                )
+            except Exception as _ae:
+                logger.warning("audit totp_disable_denied failed: %s", _ae)
+            return JSONResponse({"detail": "Invalid TOTP code — cannot disable MFA"}, status_code=401)
+        totp_mgr.throttle_reset(username)
+        totp_mgr.disable(username)
+        # Rule 4 — audit TOTP deactivation (file_path='' — event is not file-scoped)
+        try:
+            db.insert_audit_event_simple(
+                None, "totp_disabled", username, '',
+                details="TOTP second-factor disabled by user",
+            )
+        except Exception as _ae:
+            logger.warning("audit totp_disabled failed: %s", _ae)
+        return {"detail": "TOTP disabled", "username": username}
 
     # --- HTML Endpoint ---
 

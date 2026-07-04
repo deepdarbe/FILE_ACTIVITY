@@ -2974,7 +2974,16 @@ class Database:
         to the unchained raw INSERT.
 
         H-3 (issue #158): see ``insert_audit_event`` for rationale.
+
+        ``file_audit_events.file_path`` is ``TEXT NOT NULL``. Many event types
+        (scan_started, user_login, totp_enabled, …) are not file-scoped and
+        legitimately have no path; callers that pass ``file_path=None`` would
+        otherwise hit ``NOT NULL constraint failed`` and have the row silently
+        dropped by their best-effort try/except (PR #314). Coerce None→'' here,
+        at the single choke point, so every non-file-scoped audit event lands.
         """
+        if file_path is None:
+            file_path = ''
         if self._audit_chain_enabled():
             return self.insert_audit_event_chained({
                 "source_id": source_id,
