@@ -16,7 +16,7 @@
 # break CI. Compatible with Python 3.9+. Suite verified under 9.0.3: a
 # differential run (8.4.2 vs 9.0.3) showed identical pass/fail, i.e. no
 # pytest-9 regressions.
-pytest>=9.0.3,<10
+pytest>=9.1.1,<10
 
 # Optional: handy when iterating locally to print captured stdout on
 # failure with nicer formatting. Not required by the suite itself.
