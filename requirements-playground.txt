@@ -17,6 +17,6 @@
 # >=1.42 plotly-6 base64-JSON rendering requirement below.
 # (plotly 6 emits base64-encoded typed arrays in figure JSON; Streamlit
 # renders that format only from 1.42 — older Streamlit shows blank charts.)
-streamlit>=1.54.0
+streamlit>=1.58.0
 plotly>=6.7.0
 pandas>=2.0
