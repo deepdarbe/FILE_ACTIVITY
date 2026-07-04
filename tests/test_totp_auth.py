@@ -200,6 +200,30 @@ class TestTOTPManagerVerifyCode:
         assert totp_mgr.verify_code("jake", "000000") is True
 
 
+class TestTOTPSingleUse:
+    """A code's time-step is single-use on the verify path (anti-replay)."""
+
+    def test_code_cannot_be_replayed(self, totp_mgr):
+        import pyotp
+        setup = totp_mgr.generate_setup("sam")
+        totp = pyotp.TOTP(setup["secret"])
+        totp_mgr.verify_and_enable("sam", totp.now())
+        code = totp.now()
+        assert totp_mgr.verify_code("sam", code) is True      # first use
+        assert totp_mgr.verify_code("sam", code) is False     # replay rejected
+
+    def test_last_used_step_persisted(self, totp_mgr, tmp_db):
+        import pyotp
+        setup = totp_mgr.generate_setup("tess")
+        totp = pyotp.TOTP(setup["secret"])
+        totp_mgr.verify_and_enable("tess", totp.now())
+        totp_mgr.verify_code("tess", totp.now())
+        with tmp_db.get_read_cursor() as cur:
+            cur.execute("SELECT last_used_step FROM user_totp_secrets WHERE username=?", ("tess",))
+            row = cur.fetchone()
+        assert row["last_used_step"] > 0
+
+
 class TestTOTPManagerIsEnabled:
     def test_is_enabled_false_before_enable(self, totp_mgr):
         """is_enabled returns False before verify_and_enable."""

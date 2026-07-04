@@ -105,6 +105,13 @@ class SessionManager:
         refresh_payload = {
             'sub': username,
             'type': 'refresh',
+            # Carry identity/role inputs so /api/auth/refresh can re-issue an
+            # access token with the SAME role instead of defaulting to viewer.
+            # Group membership is effectively frozen for the refresh token's
+            # lifetime — re-evaluated on the next full login.
+            'name': display_name,
+            'email': email,
+            'groups': groups,
             'exp': now + timedelta(hours=_REFRESH_TOKEN_HOURS),
             'iat': now,
         }

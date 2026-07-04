@@ -157,6 +157,36 @@ class TestSessionManagerIssueTokens:
         payload = jwt.decode(tokens['access_token'], session_manager.secret, algorithms=['HS256'])
         assert payload['role'] == 'manager'
 
+    def test_refresh_token_carries_groups(self, session_manager):
+        """Refresh token must carry groups so refresh can preserve the role."""
+        import jwt
+        user = {'username': 'gina', 'display_name': 'Gina', 'email': 'g@corp',
+                'groups': ['FileActivity-Admins']}
+        tokens = session_manager.issue_tokens(user)
+        payload = jwt.decode(tokens['refresh_token'], session_manager.secret, algorithms=['HS256'])
+        assert payload['groups'] == ['FileActivity-Admins']
+
+    def test_refresh_preserves_admin_role(self, session_manager):
+        """Regression: refresh used to rebuild user_info with groups=[] → the
+        re-issued access token silently downgraded an admin to viewer. The
+        refresh token now carries groups; reconstructing from its claims (as
+        /api/auth/refresh does) must keep role=admin."""
+        import jwt
+        user = {'username': 'hank', 'display_name': 'Hank', 'email': '',
+                'groups': ['FileActivity-Admins']}
+        refresh = session_manager.issue_tokens(user)['refresh_token']
+        claims = jwt.decode(refresh, session_manager.secret, algorithms=['HS256'])
+        # Mirror the endpoint's reconstruction from refresh-token claims.
+        reconstructed = {
+            'username': claims['sub'],
+            'display_name': claims.get('name', claims['sub']),
+            'email': claims.get('email', ''),
+            'groups': claims.get('groups', []),
+        }
+        new_access = session_manager.refresh_access_token(refresh, reconstructed)['access_token']
+        payload = jwt.decode(new_access, session_manager.secret, algorithms=['HS256'])
+        assert payload['role'] == 'admin'
+
 
 class TestSessionManagerVerify:
     def test_valid_token_returns_payload(self, session_manager):
