@@ -150,6 +150,22 @@ def test_non_match_returns_empty(db):
     assert res["files"] == []
 
 
+def test_glob_wildcard_is_stripped(db):
+    """Glob-style input ('*.xlsx') normalizes to a substring search so it
+    matches real filenames (the '*' is a literal FTS5 char otherwise)."""
+    database, _ = db
+    star = database.search_files("*.xlsx")
+    plain = database.search_files(".xlsx")
+    assert star["total"] == plain["total"]
+    assert star["total"] >= 1  # seeded .xlsx files
+
+
+def test_fts_has_data_true_after_rebuild(db):
+    """fts_has_data() reports True once the index has been built (fixture)."""
+    database, _ = db
+    assert database.fts_has_data() is True
+
+
 def test_scan_id_scoping(db):
     """scan_id filter restricts results to that scan only."""
     database, _ = db

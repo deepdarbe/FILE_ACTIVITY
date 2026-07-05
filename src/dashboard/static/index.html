@@ -9868,8 +9868,18 @@ async function runFileSearch() {
     const items = (data && data.items) || [];
     const total = (data && data.total) || 0;
     if (!items.length) {
+        // Distinguish "index empty (needs rebuild)" from a genuine no-match.
+        if (data && data.index_ready === false) {
+            _setHtmlSafe('file-search-meta', 'Arama indeksi henuz olusturulmamis gorunuyor.');
+            _setHtmlSafe('file-search-table',
+                '<div class="empty-state"><div class="icon">&#x1F6E0;&#xFE0F;</div><h3>Arama Indeksi Bos</h3>' +
+                '<p>Bu veri icin FTS arama indeksi olusturulmamis (cok buyuk taramalarda otomatik olusturma atlanmis olabilir). ' +
+                'Yeniden taramaya gerek yok &mdash; indeksi simdi olusturabilirsiniz.</p>' +
+                '<button class="btn btn-primary" style="margin-top:12px" onclick="reindexFileSearch()">Arama Indeksini Yeniden Olustur</button></div>');
+            return;
+        }
         _setHtmlSafe('file-search-meta', '"' + escapeHtml(q) + '" icin sonuc bulunamadi.');
-        _setHtmlSafe('file-search-table', '<div class="empty-state"><div class="icon">🔎</div><h3>Sonuc Yok</h3><p>Farkli bir terim deneyin. Tarama tamamlandiktan sonra arama indeksi guncellenir.</p></div>');
+        _setHtmlSafe('file-search-table', '<div class="empty-state"><div class="icon">🔎</div><h3>Sonuc Yok</h3><p>Farkli bir terim deneyin. Yildiz (*) gerekmez &mdash; dogrudan ".pst", "rapor" veya yol parcasi yazin. Tarama tamamlandiktan sonra arama indeksi guncellenir.</p></div>');
         return;
     }
     const shown = items.length;
@@ -9890,6 +9900,29 @@ async function runFileSearch() {
         '<thead><tr><th>Dosya Adi</th><th>Yol</th><th>Sahip</th><th style="text-align:right">Boyut</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody>';
     _setHtmlSafe('file-search-table', html);
+}
+
+// Rebuild the FTS5 search index in the background (no re-scan needed), then poll
+// until it finishes. Offered when a search finds the index empty (index_ready=false).
+async function reindexFileSearch() {
+    _setHtmlSafe('file-search-meta', 'Arama indeksi olusturuluyor... (buyuk taramalarda birkac dakika surebilir)');
+    _setHtmlSafe('file-search-table', '');
+    try {
+        await api('/files/search/reindex', { method: 'POST' });
+    } catch (e) {
+        _setHtmlSafe('file-search-meta', 'Indeks olusturma baslatilamadi: ' + escapeHtml(e.message || String(e)));
+        return;
+    }
+    const poll = async () => {
+        let st = null;
+        try { st = await api('/files/search/reindex/status', { silent: true }); } catch (e) { /* transient */ }
+        if (st && st.running) { setTimeout(poll, 3000); return; }
+        _setHtmlSafe('file-search-meta',
+            (st && st.index_ready)
+                ? 'Arama indeksi hazir. Aramanizi tekrar calistirin.'
+                : 'Indeks olusturma tamamlandi. Aramayi tekrar deneyin.');
+    };
+    setTimeout(poll, 3000);
 }
 
 // ═══════════════════════════════════════════════════

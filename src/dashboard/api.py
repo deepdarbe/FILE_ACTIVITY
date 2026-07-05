@@ -2127,7 +2127,54 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             q, scan_id=scan_id, limit=p.page_size, offset=p.offset,
             owner_scope=owner_scope,
         )
-        return p.response(total=result["total"], items=result["files"])
+        resp = p.response(total=result["total"], items=result["files"])
+        # On an empty result, tell the UI whether the search INDEX is empty
+        # (needs a one-shot rebuild) vs a genuine no-match, so it can offer the
+        # "reindex" action instead of a dead-end "0 sonuc".
+        if result["total"] == 0:
+            resp["index_ready"] = db.fts_has_data()
+        return resp
+
+    _fts_reindex_state = {"running": False}
+    _fts_reindex_lock = threading.Lock()
+
+    @app.post("/api/files/search/reindex")
+    def files_search_reindex():
+        """Rebuild the FTS5 search index in the background (no re-scan needed).
+
+        External-content FTS5 only fills on rebuild_fts (scan-complete); this
+        gives the operator a recovery path when the index is empty/stale — e.g.
+        a large MFT scan whose best-effort rebuild failed. Runs off-thread so
+        the request returns immediately; the UI polls the status endpoint.
+        Rule 4: emits an audit event.
+        """
+        with _fts_reindex_lock:
+            if _fts_reindex_state["running"]:
+                return {"status": "running"}
+            _fts_reindex_state["running"] = True
+
+        def _worker():
+            try:
+                db.rebuild_fts()
+            except Exception as e:  # pragma: no cover - best-effort
+                logger.warning("FTS reindex worker failed: %s", e)
+            finally:
+                _fts_reindex_state["running"] = False
+
+        threading.Thread(target=_worker, daemon=True).start()
+        try:
+            db.insert_audit_event_simple(
+                None, "fts_reindex", "dashboard", "",
+                details="search index rebuild requested",
+            )
+        except Exception as _ae:
+            logger.warning("audit fts_reindex failed: %s", _ae)
+        return {"status": "started"}
+
+    @app.get("/api/files/search/reindex/status")
+    def files_search_reindex_status():
+        """Poll the background FTS reindex (running?) + whether the index has data."""
+        return {"running": _fts_reindex_state["running"], "index_ready": db.fts_has_data()}
 
     @app.get("/api/archive/stats")
     def archive_stats():
