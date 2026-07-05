@@ -1088,11 +1088,15 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # Re-issue an access token using the refresh token's subject identity.
         # We don't re-query AD here to keep refresh fast; role is re-evaluated
         # on next full login if group membership changes.
+        # Reconstruct identity from the refresh token's own claims so the
+        # re-issued access token keeps the SAME role. Without carrying groups
+        # here, _determine_role([]) would silently downgrade every refreshed
+        # session to "viewer".
         user_info = {
             "username": username,
-            "display_name": username,
-            "email": "",
-            "groups": [],
+            "display_name": payload.get("name", username),
+            "email": payload.get("email", ""),
+            "groups": payload.get("groups", []),
         }
         result = sm.refresh_access_token(body.refresh_token, user_info)
         if result is None:
@@ -1199,6 +1203,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     class _TOTPVerifyBody(BaseModel):
         code: str
+        password: str = ""  # step-up: account password re-auth to bind a factor
 
     @app.post("/api/auth/totp/verify")
     def totp_verify(body: _TOTPVerifyBody, request: Request):
@@ -1206,12 +1211,23 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
         The user must have called POST /api/auth/totp/setup first to generate
         a pending secret, then scanned the QR code in their authenticator app.
-        Requires a valid JWT (Bearer token).
+        Requires a valid JWT (Bearer token) AND the account password (step-up):
+        binding a NEW second factor must not be possible with only a stolen
+        access token — otherwise a token thief could enroll their own
+        authenticator and lock the victim out.
         Rule 4: emits audit event totp_enabled on success.
         """
         username, totp_mgr, err = _totp_ctx(request)
         if err is not None:
             return err
+        # Step-up re-authentication: re-bind against LDAP with the JWT identity
+        # + the supplied password before flipping enabled=1.
+        ldap = getattr(app.state, "ldap_auth", None)
+        if ldap is None or ldap.authenticate(username, body.password) is None:
+            return JSONResponse(
+                {"detail": "Password re-authentication required to enable MFA"},
+                status_code=401,
+            )
         ok = totp_mgr.verify_and_enable(username, body.code)
         if not ok:
             return JSONResponse({"detail": "Invalid or expired TOTP code"}, status_code=400)

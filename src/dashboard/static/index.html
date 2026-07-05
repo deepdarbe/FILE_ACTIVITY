@@ -2192,6 +2192,10 @@ body.sidebar-open { overflow: hidden; }
         <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Dogrulama Kodu</label>
         <input id="totp-verify-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 haneli kod" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:16px;letter-spacing:4px;text-align:center">
     </div>
+    <div style="margin-bottom:16px">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Hesap Parolasi (dogrulama)</label>
+        <input id="totp-verify-password" type="password" autocomplete="current-password" placeholder="AD parolaniz" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg-sidebar);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px">
+    </div>
     <div id="totp-setup-error" style="display:none;background:#7f1d1d;color:#fca5a5;border:1px solid #ef4444;padding:8px 12px;border-radius:6px;margin-bottom:12px;font-size:12px"></div>
     <div class="modal-actions">
         <button class="btn btn-outline" onclick="closeModal('modal-totp-setup')">Iptal</button>
@@ -9872,9 +9876,11 @@ function _totpAuthHeaders(extra) {
 function openTotpSetupModal() {
     const errEl = document.getElementById('totp-setup-error');
     const codeEl = document.getElementById('totp-verify-code');
+    const pwEl = document.getElementById('totp-verify-password');
     _setHtmlSafe('totp-qr-area', '<p style="color:var(--text-muted);font-size:12px">Yukleniyor...</p>');
     if (errEl) errEl.style.display = 'none';
     if (codeEl) codeEl.value = '';
+    if (pwEl) pwEl.value = '';
 
     // POST (not GET): setup mutates state (writes a pending secret).
     fetch('/api/auth/totp/setup', { method: 'POST', headers: _totpAuthHeaders() })
@@ -9906,16 +9912,19 @@ function openTotpSetupModal() {
 
 function totpVerifyAndEnable() {
     const codeEl = document.getElementById('totp-verify-code');
+    const pwEl = document.getElementById('totp-verify-password');
     const errEl = document.getElementById('totp-setup-error');
     if (!codeEl || !errEl) return;
     const code = (codeEl.value || '').trim();
+    const password = pwEl ? (pwEl.value || '') : '';
     if (!code) { errEl.textContent = 'Lutfen 6 haneli kodu girin.'; errEl.style.display = 'block'; return; }
+    if (!password) { errEl.textContent = 'Lutfen hesap parolanizi girin.'; errEl.style.display = 'block'; return; }
     errEl.style.display = 'none';
 
     fetch('/api/auth/totp/verify', {
         method: 'POST',
         headers: _totpAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ code })
+        body: JSON.stringify({ code, password })
     })
         .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
         .then(({ ok, data }) => {

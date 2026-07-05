@@ -5,11 +5,14 @@ Depends on pyotp (optional — degrades gracefully when not installed).
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import threading
 import time
 
 logger = logging.getLogger(__name__)
+
+_STEP_SECONDS = 30  # RFC 6238 default time-step
 
 try:
     import pyotp
@@ -131,6 +134,32 @@ class TOTPManager:
                     created_at TEXT DEFAULT (datetime('now'))
                 )
             """)
+            # last_used_step: the last accepted TOTP time-step, for single-use
+            # (anti-replay) enforcement on the verify path. Added via migration
+            # so existing enrollments keep working.
+            try:
+                cur.execute(
+                    "ALTER TABLE user_totp_secrets "
+                    "ADD COLUMN last_used_step INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass  # column already exists
+
+    @staticmethod
+    def _match_step(secret: str, code: str, valid_window: int = 1) -> int | None:
+        """Return the TOTP time-step that *code* matches, or None.
+
+        Replaces ``pyotp.TOTP.verify`` so the caller can record which step was
+        consumed and reject a later reuse of the same (or an older) step —
+        constant-time comparison, RFC 6238 §5.2 single-use.
+        """
+        totp = pyotp.TOTP(secret)
+        now = int(time.time())
+        for offset in range(-valid_window, valid_window + 1):
+            t = now + offset * _STEP_SECONDS
+            if hmac.compare_digest(str(totp.at(t)), str(code)):
+                return t // _STEP_SECONDS
+        return None
 
     # ------------------------------------------------------------------
     # Brute-force throttle (used by the login gate + disable endpoint)
@@ -270,12 +299,16 @@ class TOTPManager:
           so an un-enrolled user is not gated by a second factor.
         - Enrolled (``enabled=1``) but pyotp unavailable → fail CLOSED
           (returns False): we cannot verify, so we must not accept any code.
-        - Enrolled and pyotp available → returns the real verification result.
+        - Enrolled and pyotp available → real verification, and each accepted
+          time-step is single-use: a code (or an older one) already consumed on
+          this path is rejected as a replay.
         """
+        key = self._norm(username)
         with self.db.get_read_cursor() as cur:
             cur.execute(
-                "SELECT secret, enabled FROM user_totp_secrets WHERE username=?",
-                (self._norm(username),),
+                "SELECT secret, enabled, last_used_step "
+                "FROM user_totp_secrets WHERE username=?",
+                (key,),
             )
             row = cur.fetchone()
 
@@ -290,5 +323,17 @@ class TOTPManager:
             )
             return False
 
-        totp = pyotp.TOTP(row["secret"])
-        return totp.verify(code, valid_window=1)
+        step = self._match_step(row["secret"], code)
+        if step is None:
+            return False
+        if step <= (row["last_used_step"] or 0):
+            # Single-use: this time-step was already consumed on the verify path.
+            logger.warning("TOTP replay rejected for %s (step %s)", username, step)
+            return False
+
+        with self.db.get_cursor() as cur:
+            cur.execute(
+                "UPDATE user_totp_secrets SET last_used_step=? WHERE username=?",
+                (step, key),
+            )
+        return True
