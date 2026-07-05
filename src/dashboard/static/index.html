@@ -8271,10 +8271,18 @@ async function sqlqRun() {
 
 // ═══════════════════════════════════════════════════
 // GUVENLIK > YETIM SID'LER / RANSOMWARE / ACL (issue #81)
-// Reusable, lightweight entity-list renderer used by all three security
-// pages. Mirrors the contract of the planned components/entity-list.js
-// from PR #98 — vanilla JS, no dependencies. Each call replaces the
-// container's contents.
+// Lightweight STATIC-table renderer used by the three security pages (+ a few
+// others). Signature: renderStaticList(containerId, items, columns[{field,label}], opts).
+//
+// IMPORTANT: this is intentionally NOT named `renderEntityList`. The RICH
+// component window.renderEntityList lives in components/entity-list.js
+// (search / pagination / bulk-action toolbar; columns are [{key,label}]) and is
+// what the "Profesyonel" views call. When this stub was named renderEntityList
+// it was hoisted AFTER the component script and OVERWROTE window.renderEntityList,
+// so every professional view (Kopya Dosyalar, Adlandirma Uyumu, Erisim Sikligi,
+// Arsiv Gecmisi) silently rendered empty (it passed the component a DOM node +
+// options object to a getElementById(containerId) that returned null). Keeping
+// the two names distinct is the fix — do not rename this back.
 // ═══════════════════════════════════════════════════
 
 let _securityFlagsCache = null;
@@ -8293,7 +8301,7 @@ async function getSecurityFlags() {
 // declarations are hoisted within the same <script> block, so all callers
 // here continue to resolve to the canonical version.
 
-function renderEntityList(containerId, items, columns, opts = {}) {
+function renderStaticList(containerId, items, columns, opts = {}) {
     const c = document.getElementById(containerId);
     if (!c) return;
     if (!items || !items.length) {
@@ -8336,7 +8344,7 @@ async function loadOrphanSids() {
     const reBtn = document.getElementById('orphan-sids-reassign-btn');
     if (!sourceId) {
         if (summary) summary.innerHTML = '';
-        renderEntityList('orphan-sids-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
+        renderStaticList('orphan-sids-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
         if (xlsxBtn) xlsxBtn.style.display = 'none';
         if (csvBtn) csvBtn.style.display = 'none';
         if (reBtn) reBtn.style.display = 'none';
@@ -8355,7 +8363,7 @@ async function loadOrphanSids() {
             <div class="card success"><div class="card-label">Sure</div><div class="card-value">${data.elapsed_seconds || 0}s</div></div>
         `;
         const items = data.orphan_sids || [];
-        renderEntityList('orphan-sids-container', items, [
+        renderStaticList('orphan-sids-container', items, [
             { field: 'sid', label: 'SID / Sahip' },
             { field: 'sid', label: 'Etiket', render: (i, v) => `<span style="color:var(--text-muted)">${escapeHtml(v.includes('\\\\') ? v.split('\\\\').pop() : v)}</span>` },
             { field: 'file_count', label: 'Dosya Sayisi', render: (i, v) => formatNum(v) },
@@ -8456,7 +8464,7 @@ async function loadRansomwareAlerts() {
             <div class="card accent"><div class="card-label">Bekleyen</div><div class="card-value">${formatNum(total - ackd)}</div></div>
         `;
         const sevColors = { critical: 'var(--danger)', high: 'var(--danger)', warning: 'var(--warning)', info: 'var(--info)' };
-        renderEntityList('ransomware-container', alerts, [
+        renderStaticList('ransomware-container', alerts, [
             { field: 'triggered_at', label: 'Zaman', render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v || '')}</span>` },
             { field: 'rule_name', label: 'Kural' },
             {
@@ -8532,7 +8540,7 @@ async function loadAclAnalyzer() {
     try {
         const data = await api(url);
         const trustees = data.trustees || [];
-        renderEntityList('acl-container', trustees, [
+        renderStaticList('acl-container', trustees, [
             { field: 'trustee_sid', label: 'Trustee SID', render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v)}</span>` },
             { field: 'trustee_name', label: 'Etiket', render: (i, v) => escapeHtml(v || '(cozulemedi)') },
             { field: 'file_count', label: 'Dosya Sayisi', render: (i, v) => formatNum(v) },
@@ -8561,7 +8569,7 @@ async function loadAclTrusteePaths(sid) {
     try {
         const data = await api(`/security/acl/trustee/${encodeURIComponent(sid)}/paths?limit=100`);
         const paths = data.paths || [];
-        renderEntityList('acl-container', paths, [
+        renderStaticList('acl-container', paths, [
             { field: 'file_path', label: 'Dosya Yolu', render: (i, v) => `<span style="font-family:Consolas,monospace;font-size:11px">${escapeHtml(v)}</span>` },
             { field: 'permission_name', label: 'Izin' },
             { field: 'ace_type', label: 'ACE Turu', render: (i, v) => {
@@ -8612,7 +8620,7 @@ async function loadExtensionAnomalies() {
     const xlsxBtn = document.getElementById('ext-anomaly-xlsx-btn');
     if (!sourceId) {
         if (summary) summary.innerHTML = '';
-        renderEntityList('ext-anomaly-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
+        renderStaticList('ext-anomaly-container', [], [], { emptyHtml: 'Lutfen bir kaynak secin' });
         if (xlsxBtn) xlsxBtn.style.display = 'none';
         return;
     }
@@ -8629,7 +8637,7 @@ async function loadExtensionAnomalies() {
             <div class="card warning"><div class="card-label">Tahmini Uzanti Anomalisi</div><div class="card-value">${formatNum(extCount)}</div><div class="card-sub">Kismi veri</div></div>
             <div class="card accent"><div class="card-label">Detay</div><div class="card-value" style="font-size:14px">Tarama devam ediyor</div><div class="card-sub">Tarama bitince detay goruntulenecek</div></div>
         `;
-        renderEntityList('ext-anomaly-container', [], [], { emptyHtml: 'Tarama tamamlandiktan sonra detayli liste goruntulenecek' });
+        renderStaticList('ext-anomaly-container', [], [], { emptyHtml: 'Tarama tamamlandiktan sonra detayli liste goruntulenecek' });
         _psv2StartPoll(sourceId, 'extension-anomalies', loadExtensionAnomalies);
         return;
     }
@@ -8658,7 +8666,7 @@ async function loadExtensionAnomalies() {
         _extAnomalyUpdateSelCount();
 
         const sevColors = { critical: 'var(--danger)', high: 'var(--danger)', medium: 'var(--warning)', low: 'var(--info)' };
-        renderEntityList('ext-anomaly-container', items, [
+        renderStaticList('ext-anomaly-container', items, [
             {
                 field: 'id',
                 label: '<input type="checkbox" onclick="extAnomalyToggleAll(this)">',
