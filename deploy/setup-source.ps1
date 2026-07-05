@@ -248,11 +248,53 @@ foreach ($d in @("", "\data", "\logs", "\reports", "\config")) {
 # Koddan gelen uzerine yazilmamasi gereken top-level itemlar
 $skipTop = @("data", "logs", "reports", ".git", ".github", "dist", "build", ".venv")
 
+# Issue #320 — 'deploy' klasoru guncellemede kilitlenip Remove-Item'i abort
+# ediyordu ("The process cannot access ... deploy ... being used by another
+# process"), servis + python durdurulmus olsa bile. Iki kok sebep:
+#   (1) Bu script'in (veya cocuk process'in) calisma dizini, silinecek
+#       klasorun ICINDE olabiliyor — Windows, bir process'in icinde durdugu
+#       dizinin silinmesine izin vermez. 'bin'/'config' silinip 'deploy'da
+#       takilmasi tam bu belirti.
+#   (2) Remove-Item -Recurse tek bir kilitli dosyada tum guncellemeyi patlatir.
+# Cozum: CWD'yi notr (InstallDir koku) yap — boylece script silinecek hicbir
+# alt dizinin icinde durmaz — ve klasorleri remove+copy yerine 'robocopy /MIR'
+# ile aynala: robocopy dest dizin handle'ini SILMEDEN icerigi senkronlar ve
+# kilitli dosyalari retry'lar. config\ bu dongude yok (repo kokunde config/
+# dizini yok), musterinin config.yaml'i etkilenmez.
+Set-Location -LiteralPath $InstallDir
+
+function Copy-DirResilient {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Dest
+    )
+    if (-not (Test-Path $Dest)) { New-Item -Path $Dest -ItemType Directory -Force | Out-Null }
+    # /MIR: aynala (ekle/guncelle + eskiyeni sil). /R:3 /W:2: kilitli dosya retry.
+    # Loglar sessiz. robocopy her Windows'ta System32'de bulunur.
+    & robocopy $Source $Dest /MIR /NFL /NDL /NJH /NJS /NP /R:3 /W:2 | Out-Null
+    # robocopy exit kodlari: 0-7 basari (bit-flag; 1=kopyalandi, 2=fazla vs.),
+    # 8+ gercek hata.
+    if ($LASTEXITCODE -ge 8) {
+        # Son care: remove+copy'yi ustel backoff ile birkac kez dene.
+        for ($i = 0; $i -lt 3; $i++) {
+            try {
+                if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force -ErrorAction Stop }
+                Copy-Item -Path $Source -Destination $Dest -Recurse -Force -ErrorAction Stop
+                $global:LASTEXITCODE = 0
+                return
+            } catch {
+                Start-Sleep -Seconds ([int][Math]::Pow(2, $i))
+            }
+        }
+        throw "Klasor guncellenemedi: $Dest — icindeki bir dosya/dizin kilitli. Ilgili pencereyi/process'i kapatip update.cmd'yi tekrar deneyin."
+    }
+    $global:LASTEXITCODE = 0
+}
+
 Get-ChildItem $srcRoot -Force | Where-Object { $skipTop -notcontains $_.Name } | ForEach-Object {
     $dest = "$InstallDir\$($_.Name)"
     if ($_.PSIsContainer) {
-        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
-        Copy-Item -Path $_.FullName -Destination $dest -Recurse -Force
+        Copy-DirResilient -Source $_.FullName -Dest $dest
     } else {
         Copy-Item -Path $_.FullName -Destination $dest -Force
     }
