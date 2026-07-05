@@ -2016,6 +2016,22 @@ class Database:
         """
         return '"' + query.replace('"', '""') + '"'
 
+    def fts_has_data(self) -> bool:
+        """True if the FTS5 search index currently has any indexed rows.
+
+        Lets the search endpoint tell "no match for this term" apart from
+        "index not built yet". External-content FTS5 is NOT auto-populated by
+        inserts into ``scanned_files`` — it only fills on ``rebuild_fts`` at
+        scan-complete, so a scan that predates the index (or whose best-effort
+        rebuild failed) leaves the box searchable-but-empty. Fast: LIMIT 1.
+        """
+        try:
+            with self.get_read_cursor() as cur:
+                cur.execute("SELECT rowid FROM scanned_files_fts LIMIT 1")
+                return cur.fetchone() is not None
+        except Exception:
+            return False
+
     def rebuild_fts(self, scan_id: Optional[int] = None) -> None:
         """(Re)build the ``scanned_files_fts`` trigram index in one shot.
 
@@ -2074,6 +2090,11 @@ class Database:
         see files they own.
         """
         q = (query or "").strip()
+        # Glob-style input ("*.pst", "rapor?") is natural for operators, but
+        # FTS5 trigram is SUBSTRING search — the '*'/'?' are literal characters
+        # that never appear in a real filename, so the query would always miss.
+        # Strip them: "*.pst" -> ".pst" (matches every file containing ".pst").
+        q = q.replace("*", "").replace("?", "").strip()
         if len(q) < self._FTS_MIN_QUERY_LEN:
             return {"total": 0, "files": [], "query": q}
 
