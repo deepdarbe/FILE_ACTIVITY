@@ -34,6 +34,8 @@ from src.security.session import SessionManager
 from src.security.user_scope import get_owner_scope, scope_is_restricted
 # Wave 10 #311 — TOTP/MFA second-factor enrollment and verification
 from src.security.totp_auth import TOTPManager
+# #319 — login brute-force / password-spraying throttle (per-username + per-IP)
+from src.security.throttle import AttemptThrottle
 
 # ── Arka plan export kuyrugu ──
 _export_jobs = {}  # job_id -> {status, progress, file_path, error, created_at, ...}
@@ -703,6 +705,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     app.state.session_manager = SessionManager(db, config)
     # Wave 10 #311 — TOTP/MFA second-factor (optional; degrades when pyotp absent)
     app.state.totp_manager = TOTPManager(db)
+    # #319 — login throttle: lock a username or source IP for 15 min after 10
+    # failed attempts in 5 min. Blunts credential stuffing / password spraying
+    # before the cost-bearing LDAP bind; complements AD's own account lockout.
+    login_throttle = AttemptThrottle(max_attempts=10, window_s=300,
+                                     lockout_s=900, name="login throttle")
 
     # Auth endpoint paths that must pass through before the gate
     _AUTH_WHITELIST = frozenset({
@@ -998,11 +1005,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         refresh_token: str
 
     @app.post("/api/auth/login")
-    def auth_login(body: _LoginBody):
+    def auth_login(body: _LoginBody, request: Request):
         """Authenticate with LDAP credentials and receive JWT tokens.
 
         Returns 503 if ldap_login is not enabled in config.
-        Returns 401 on bad credentials.
+        Returns 401 on bad credentials, 429 when the login throttle has locked
+        this username or source IP.
         Rule 4: emits audit event user_login on success.
         """
         auth_cfg = (config.get("dashboard") or {}).get("auth") or {}
@@ -1011,9 +1019,22 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 {"detail": "LDAP login not enabled — set dashboard.auth.ldap_login: true"},
                 status_code=503,
             )
+        # #319 — login brute-force / spraying throttle (per-username AND per-IP).
+        _ip = request.client.host if (request and request.client) else "?"
+        _throttle_keys = (f"u:{(body.username or '').strip().lower()}", f"ip:{_ip}")
+        for _k in _throttle_keys:
+            _ok, _ra = login_throttle.check(_k)
+            if not _ok:
+                return JSONResponse(
+                    {"detail": "Too many failed login attempts — try again later",
+                     "retry_after": _ra},
+                    status_code=429,
+                )
         ldap = app.state.ldap_auth
         user_info = ldap.authenticate(body.username, body.password)
         if user_info is None:
+            for _k in _throttle_keys:
+                login_throttle.record_failure(_k)
             return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
 
         # Wave 10 #311 — TOTP second-factor check (after LDAP succeeds).
@@ -1041,6 +1062,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 )
             if not totp_mgr.verify_code(totp_user, body.totp_code):
                 totp_mgr.throttle_fail(totp_user)
+                for _k in _throttle_keys:
+                    login_throttle.record_failure(_k)
                 try:
                     db.insert_audit_event_simple(
                         None, "login_totp_failed", totp_user, '',
@@ -1051,6 +1074,9 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 return JSONResponse({"detail": "Invalid TOTP code"}, status_code=401)
             totp_mgr.throttle_reset(totp_user)
 
+        # Full success — clear the login throttle for this username + IP.
+        for _k in _throttle_keys:
+            login_throttle.record_success(_k)
         tokens = app.state.session_manager.issue_tokens(user_info)
         # Rule 4 — audit user login (write endpoint)
         try:
