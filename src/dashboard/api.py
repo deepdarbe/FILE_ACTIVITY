@@ -1125,15 +1125,25 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.post("/api/auth/logout")
-    def auth_logout():
-        """Client-side logout — instructs the client to discard its tokens.
+    def auth_logout(request: Request):
+        """Log out — server-side revocation of ALL the caller's tokens (#317).
 
-        JWT tokens are stateless; server-side revocation requires a denylist
-        (not implemented in Phase 1). This endpoint exists so the UI has a
-        consistent logout target and can be extended later.
-        A_AUDIT_ALLOWLIST: no server-side mutation (stateless JWT, no DB write).
+        Bumps the user's token_version so every outstanding access + refresh
+        token (this device and any other) is rejected on its next use, not just
+        the one the client discards. Rule 4: emits an audit event when a user is
+        identified. Best-effort: an unauthenticated call is still a 200 no-op.
         """
-        return {"detail": "Logged out — discard tokens client-side"}
+        username = _get_jwt_username(request)
+        if username:
+            try:
+                app.state.session_manager.bump_token_version(username)
+                db.insert_audit_event_simple(
+                    None, "user_logout", username, '',
+                    details="logout — all sessions revoked",
+                )
+            except Exception as _ae:
+                logger.warning("logout revoke/audit failed: %s", _ae)
+        return {"detail": "Logged out — all sessions revoked"}
 
     # --- TOTP/MFA Endpoints (Wave 10 #311) ---
 
@@ -1239,6 +1249,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             )
         except Exception as _ae:
             logger.warning("audit totp_enabled failed: %s", _ae)
+        # #317 — enabling MFA revokes existing sessions so the new second factor
+        # takes effect immediately (no lingering password-only tokens).
+        try:
+            app.state.session_manager.bump_token_version(username)
+        except Exception as _re:
+            logger.warning("token revoke on totp_enabled failed: %s", _re)
         return {"detail": "TOTP enabled", "username": username}
 
     class _TOTPDisableBody(BaseModel):
@@ -1288,6 +1304,12 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             )
         except Exception as _ae:
             logger.warning("audit totp_disabled failed: %s", _ae)
+        # #317 — disabling MFA revokes existing sessions (an MFA state change
+        # should not leave old tokens valid).
+        try:
+            app.state.session_manager.bump_token_version(username)
+        except Exception as _re:
+            logger.warning("token revoke on totp_disabled failed: %s", _re)
         return {"detail": "TOTP disabled", "username": username}
 
     # --- HTML Endpoint ---
