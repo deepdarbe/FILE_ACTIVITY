@@ -37,83 +37,51 @@ from src.scanner.backends.ntfs_mft import (  # noqa: E402
     NtfsMftBackend,
     _PROGRESS_EVERY_N_RECORDS,
 )
-from src.storage.operations_tracker import OperationsRegistry  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# A. ops_registry.progress called every 50k records
+# A. progress_callback dispatch (issue #137 — replaced the #135 ops_registry/
+#    op_id coupling with a plain callable(stage, processed)). Exercised via the
+#    _emit_progress seam because walk() / _collect_records are Win32-only.
 # ---------------------------------------------------------------------------
 
 
-def test_mft_iteration_calls_ops_progress() -> None:
-    """Run a 250k-record MFT loop; assert progress called every 50k."""
-    registry = MagicMock()
-    backend = NtfsMftBackend(
-        config={},
-        ops_registry=registry,
-        op_id="abc123",
-    )
+def test_mft_emit_progress_invokes_callback() -> None:
+    """_emit_progress forwards (stage, processed) to the progress_callback."""
+    cb = MagicMock()
+    backend = NtfsMftBackend(config={}, progress_callback=cb)
+    backend._emit_progress("mft_collect", 50_000)
+    cb.assert_called_once_with("mft_collect", 50_000)
 
-    # Simulate the inner-loop emit cadence: backend has ``_emit_progress``
-    # which is the single dispatch point. Calling it 5 times at the boundary
-    # values mimics what _collect_records does for 250k records.
+
+def test_mft_emit_progress_cadence() -> None:
+    """Five boundary emits => five callback calls carrying the running count."""
+    cb = MagicMock()
+    backend = NtfsMftBackend(config={}, progress_callback=cb)
     for processed in range(
         _PROGRESS_EVERY_N_RECORDS,
         5 * _PROGRESS_EVERY_N_RECORDS + 1,
         _PROGRESS_EVERY_N_RECORDS,
     ):
-        backend._emit_progress(processed)
-
-    # Should have called progress() exactly 5 times (50k, 100k, 150k, 200k, 250k).
-    assert registry.progress.call_count == 5
-
-    # Each call uses the issued op_id and a Turkish "MFT okuma" label.
-    for call in registry.progress.call_args_list:
-        args, kwargs = call
-        assert args[0] == "abc123" or kwargs.get("op_id") == "abc123" or args[0] == "abc123"
-        label = kwargs.get("label") or (args[1] if len(args) > 1 else "")
-        assert "MFT okuma" in label
+        backend._emit_progress("mft_emit", processed)
+    assert cb.call_count == 5
+    # Last call reports the final running total (250k for a 50k step).
+    assert cb.call_args_list[-1][0] == ("mft_emit", 5 * _PROGRESS_EVERY_N_RECORDS)
 
 
-def test_mft_emit_progress_swallows_tracker_errors() -> None:
-    """Tracker exceptions MUST NOT propagate — scan continues."""
-    registry = MagicMock()
-    registry.progress.side_effect = RuntimeError("tracker offline")
-
-    backend = NtfsMftBackend(
-        config={},
-        ops_registry=registry,
-        op_id="opid",
-    )
-    # Should not raise.
-    backend._emit_progress(50_000)
+def test_mft_emit_progress_swallows_callback_errors() -> None:
+    """A callback that raises MUST NOT propagate — the walk continues."""
+    cb = MagicMock(side_effect=RuntimeError("tracker offline"))
+    backend = NtfsMftBackend(config={}, progress_callback=cb)
+    backend._emit_progress("mft_collect", 50_000)  # no raise
+    cb.assert_called_once()
 
 
-def test_mft_emit_progress_noop_without_registry() -> None:
-    """No registry / no op_id => progress is a silent no-op."""
-    backend = NtfsMftBackend(config={}, ops_registry=None, op_id=None)
-    backend._emit_progress(50_000)  # no raise
-
-    backend2 = NtfsMftBackend(config={}, ops_registry=MagicMock(), op_id=None)
-    backend2._emit_progress(50_000)
-    backend2.ops_registry.progress.assert_not_called()
-
-
-def test_mft_emit_progress_real_registry() -> None:
-    """End-to-end with the real OperationsRegistry — labels stick."""
-    registry = OperationsRegistry()
-    op_id = registry.start("scan", "test-scan")
-
-    backend = NtfsMftBackend(
-        config={},
-        ops_registry=registry,
-        op_id=op_id,
-    )
-    backend._emit_progress(150_000)
-
-    [snap] = registry.list_active()
-    assert "MFT okuma" in snap.label
-    assert "150,000" in snap.label
+def test_mft_emit_progress_noop_without_callback() -> None:
+    """No callback wired => _emit_progress is a silent no-op."""
+    backend = NtfsMftBackend(config={})  # default progress_callback=None
+    assert backend.progress_callback is None
+    backend._emit_progress("mft_collect", 50_000)  # no raise, nothing dispatched
 
 
 # ---------------------------------------------------------------------------
