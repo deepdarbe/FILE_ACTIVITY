@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import hmac
 import logging
-import threading
 import time
+
+from src.security.throttle import AttemptThrottle as _AttemptThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -48,58 +49,6 @@ def _render_qr_svg(uri: str) -> str | None:
         return None
 
 
-class _AttemptThrottle:
-    """In-process failed-attempt throttle with temporary lockout.
-
-    Protects the TOTP code-verification path from online brute force: a 6-digit
-    code with ``valid_window=1`` leaves only ~3 of 10^6 values acceptable at any
-    instant, so without a limiter an attacker who already has the password could
-    grind the second factor. After ``max_attempts`` failures within ``window_s``
-    an identity is locked for ``lockout_s``. A success clears the counter.
-
-    Single-process only (the dashboard is one process; anyio dispatches sync
-    endpoints to worker threads, hence the lock). Not a distributed limiter.
-    Uses ``time.monotonic()`` so wall-clock changes cannot shorten a lockout.
-    """
-
-    def __init__(self, max_attempts: int = 5, window_s: int = 300, lockout_s: int = 900):
-        self._max = max_attempts
-        self._window = window_s
-        self._lockout = lockout_s
-        self._lock = threading.Lock()
-        self._fails: dict[str, list[float]] = {}
-        self._locked: dict[str, float] = {}
-
-    def check(self, key: str) -> tuple[bool, int]:
-        """Return ``(allowed, retry_after_seconds)`` for *key*."""
-        now = time.monotonic()
-        with self._lock:
-            unlock = self._locked.get(key)
-            if unlock is not None:
-                if now < unlock:
-                    return False, int(unlock - now) + 1
-                # Lockout expired — clear and allow a fresh window.
-                self._locked.pop(key, None)
-                self._fails.pop(key, None)
-            return True, 0
-
-    def record_failure(self, key: str) -> None:
-        now = time.monotonic()
-        with self._lock:
-            times = [t for t in self._fails.get(key, []) if now - t < self._window]
-            times.append(now)
-            self._fails[key] = times
-            if len(times) >= self._max:
-                self._locked[key] = now + self._lockout
-                self._fails.pop(key, None)
-                logger.warning("TOTP throttle: locked identity after %d failures", self._max)
-
-    def record_success(self, key: str) -> None:
-        with self._lock:
-            self._fails.pop(key, None)
-            self._locked.pop(key, None)
-
-
 class TOTPManager:
     """Manages TOTP secrets and verification for per-user MFA enrollment."""
 
@@ -107,7 +56,7 @@ class TOTPManager:
         """db: Database instance (must expose get_cursor / get_read_cursor)."""
         self.db = db
         # Shared, process-wide brute-force throttle for the code-verify path.
-        self._throttle = _AttemptThrottle()
+        self._throttle = _AttemptThrottle(name="TOTP throttle")
         self._ensure_table()
 
     @staticmethod
