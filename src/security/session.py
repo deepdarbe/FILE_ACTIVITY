@@ -29,12 +29,50 @@ class SessionManager:
         self.secret = self._load_or_create_secret()
 
     def _ensure_session_table(self):
-        """Create session_config table if it doesn't exist."""
+        """Create session_config + user_token_version tables if absent."""
         with self._db.get_cursor() as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS session_config "
                 "(key TEXT PRIMARY KEY, value TEXT)"
             )
+            # #317 — per-user token version for server-side revocation. Bumped on
+            # logout / TOTP enable / TOTP disable; embedded as the `ver` claim in
+            # every token and re-checked on verify/refresh, so all of a user's
+            # outstanding tokens are invalidated at once. Absent row == version 0.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS user_token_version "
+                "(username TEXT PRIMARY KEY COLLATE NOCASE, version INTEGER NOT NULL DEFAULT 0)"
+            )
+
+    def _norm_user(self, username: str) -> str:
+        return (username or "").strip().lower()
+
+    def get_token_version(self, username: str) -> int:
+        """Current token version for *username* (0 if never bumped)."""
+        with self._db.get_read_cursor() as cur:
+            cur.execute(
+                "SELECT version FROM user_token_version WHERE username=?",
+                (self._norm_user(username),),
+            )
+            row = cur.fetchone()
+        return int(row["version"]) if row else 0
+
+    def bump_token_version(self, username: str) -> int:
+        """Invalidate all of *username*'s outstanding tokens; returns new version."""
+        key = self._norm_user(username)
+        with self._db.get_cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_token_version (username, version) VALUES (?, 1) "
+                "ON CONFLICT(username) DO UPDATE SET version = version + 1",
+                (key,),
+            )
+            cur.execute(
+                "SELECT version FROM user_token_version WHERE username=?", (key,)
+            )
+            row = cur.fetchone()
+        new_v = int(row["version"]) if row else 1
+        logger.info("token_version bumped for %s -> %d (sessions revoked)", username, new_v)
+        return new_v
 
     def _load_or_create_secret(self) -> str:
         """Load secret from env / DB, or generate + persist a new one."""
@@ -92,12 +130,14 @@ class SessionManager:
         email = user_info.get('email', '')
         groups = user_info.get('groups', [])
         role = self._determine_role(groups)
+        ver = self.get_token_version(username)  # #317 — revocation stamp
 
         access_payload = {
             'sub': username,
             'name': display_name,
             'email': email,
             'role': role,
+            'ver': ver,
             'type': 'access',
             'exp': now + timedelta(hours=_ACCESS_TOKEN_HOURS),
             'iat': now,
@@ -105,6 +145,7 @@ class SessionManager:
         refresh_payload = {
             'sub': username,
             'type': 'refresh',
+            'ver': ver,
             # Carry identity/role inputs so /api/auth/refresh can re-issue an
             # access token with the SAME role instead of defaulting to viewer.
             # Group membership is effectively frozen for the refresh token's
@@ -136,6 +177,11 @@ class SessionManager:
             payload = jwt.decode(token, self.secret, algorithms=['HS256'])
             if payload.get('type') != 'access':
                 return None
+            # #317 — reject tokens issued before the user's version was bumped
+            # (logout / TOTP change). Absent claim == 0, so pre-#317 tokens stay
+            # valid until the first bump; backwards-compatible.
+            if int(payload.get('ver', 0)) < self.get_token_version(payload.get('sub', '')):
+                return None
             return payload
         except Exception:
             return None
@@ -150,6 +196,10 @@ class SessionManager:
         try:
             payload = jwt.decode(refresh_token, self.secret, algorithms=['HS256'])
             if payload.get('type') != 'refresh':
+                return None
+            # #317 — a revoked refresh token (older than the user's version) can
+            # no longer mint access tokens.
+            if int(payload.get('ver', 0)) < self.get_token_version(payload.get('sub', '')):
                 return None
         except Exception:
             return None

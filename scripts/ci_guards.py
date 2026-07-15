@@ -894,7 +894,8 @@ A_AUDIT_ALLOWLIST: set[str] = {
     # Wave 10 #307 — auth session endpoints (no server-side data mutation)
     "auth_refresh",                     # stateless JWT refresh — no DB write
     "auth_me",                          # read-only identity probe
-    "auth_logout",                      # stateless — instructs client to discard tokens
+    # auth_logout removed from allowlist (#317): it now mutates (bumps
+    # token_version) and emits a user_logout audit event, so A-AUDIT passes it.
 }
 
 # Same canonical fact as C-CURSOR's _HTTP_WRITE_METHODS — alias, don't fork,

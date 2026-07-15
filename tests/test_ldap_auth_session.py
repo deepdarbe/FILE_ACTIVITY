@@ -251,6 +251,50 @@ class TestSessionManagerSecret:
         assert sm1.secret == sm2.secret
 
 
+class TestSessionManagerRevocation:
+    """#317 — server-side token revocation via per-user token_version."""
+
+    def test_token_version_starts_at_zero(self, session_manager):
+        assert session_manager.get_token_version("newuser") == 0
+
+    def test_bump_revokes_outstanding_access_token(self, session_manager):
+        user = {'username': 'ivan', 'display_name': 'Ivan', 'email': '', 'groups': []}
+        tok = session_manager.issue_tokens(user)['access_token']
+        assert session_manager.verify_access_token(tok) is not None  # valid now
+        session_manager.bump_token_version('ivan')                   # e.g. logout
+        assert session_manager.verify_access_token(tok) is None      # revoked
+
+    def test_bump_revokes_refresh_token(self, session_manager):
+        user = {'username': 'jane', 'display_name': 'Jane', 'email': '', 'groups': []}
+        refresh = session_manager.issue_tokens(user)['refresh_token']
+        assert session_manager.refresh_access_token(refresh, user) is not None
+        session_manager.bump_token_version('jane')
+        assert session_manager.refresh_access_token(refresh, user) is None
+
+    def test_new_token_after_bump_is_valid(self, session_manager):
+        user = {'username': 'kyle', 'display_name': 'Kyle', 'email': '', 'groups': []}
+        session_manager.bump_token_version('kyle')                   # revoke old (none yet)
+        tok = session_manager.issue_tokens(user)['access_token']     # minted at new version
+        assert session_manager.verify_access_token(tok) is not None
+
+    def test_bump_is_case_insensitive(self, session_manager):
+        user = {'username': 'lily', 'display_name': 'Lily', 'email': '', 'groups': []}
+        tok = session_manager.issue_tokens(user)['access_token']
+        session_manager.bump_token_version('LILY')                   # different case
+        assert session_manager.verify_access_token(tok) is None
+
+    def test_pre_317_token_without_ver_valid_until_bump(self, session_manager):
+        """A token minted before #317 (no `ver` claim) stays valid until the
+        first bump — backwards-compatible."""
+        import jwt as _jwt
+        import time as _t
+        payload = {'sub': 'mona', 'type': 'access', 'exp': int(_t.time()) + 3600}
+        legacy = _jwt.encode(payload, session_manager.secret, algorithm='HS256')
+        assert session_manager.verify_access_token(legacy) is not None  # ver absent == 0
+        session_manager.bump_token_version('mona')
+        assert session_manager.verify_access_token(legacy) is None      # now stale
+
+
 # ---------------------------------------------------------------------------
 # LDAPAuthenticator tests
 # ---------------------------------------------------------------------------
