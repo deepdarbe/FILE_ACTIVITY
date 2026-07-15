@@ -366,3 +366,45 @@ class TestTOTPThrottle:
             totp_mgr.throttle_fail("finn")
         allowed, _ = totp_mgr.throttle_check("finn")
         assert allowed is True
+
+
+class TestTOTPManagerEncryption:
+    """#318 — TOTP seeds are encrypted at rest when a SecretBox is wired."""
+
+    def _mgr(self, tmp_db):
+        pytest.importorskip("pyotp")
+        from src.security.secret_box import SecretBox, _HAVE_CRYPTO
+        if not _HAVE_CRYPTO:
+            pytest.skip("cryptography not available")
+        from src.security.totp_auth import TOTPManager
+        box = SecretBox("totp-at-rest-key-material-abcdef123456")
+        assert box.active is True
+        return TOTPManager(tmp_db, secret_box=box)
+
+    def test_secret_stored_encrypted(self, tmp_db):
+        mgr = self._mgr(tmp_db)
+        plaintext = mgr.generate_setup("nadia")["secret"]
+        with tmp_db.get_read_cursor() as cur:
+            cur.execute("SELECT secret FROM user_totp_secrets WHERE username=?", ("nadia",))
+            stored = cur.fetchone()["secret"]
+        assert stored != plaintext        # not stored raw
+        assert stored.startswith("enc:")  # ciphertext at rest
+
+    def test_encrypted_round_trip_verify(self, tmp_db):
+        import pyotp
+        mgr = self._mgr(tmp_db)
+        setup = mgr.generate_setup("omar")
+        assert mgr.verify_and_enable("omar", pyotp.TOTP(setup["secret"]).now()) is True
+        assert mgr.verify_code("omar", pyotp.TOTP(setup["secret"]).now()) is True
+
+    def test_legacy_plaintext_row_still_verifies(self, tmp_db):
+        """A pre-#318 plaintext seed (no enc: prefix) still verifies with a box."""
+        import pyotp
+        mgr = self._mgr(tmp_db)
+        secret = pyotp.random_base32()
+        with tmp_db.get_cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_totp_secrets (username, secret, enabled) VALUES (?,?,1)",
+                ("legacy", secret),  # stored PLAINTEXT + enabled
+            )
+        assert mgr.verify_code("legacy", pyotp.TOTP(secret).now()) is True

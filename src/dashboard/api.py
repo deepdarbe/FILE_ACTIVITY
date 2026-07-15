@@ -36,6 +36,8 @@ from src.security.user_scope import get_owner_scope, scope_is_restricted
 from src.security.totp_auth import TOTPManager
 # #319 — login brute-force / password-spraying throttle (per-username + per-IP)
 from src.security.throttle import AttemptThrottle
+# #318 — envelope encryption for TOTP seeds at rest
+from src.security.secret_box import SecretBox
 
 # ── Arka plan export kuyrugu ──
 _export_jobs = {}  # job_id -> {status, progress, file_path, error, created_at, ...}
@@ -704,7 +706,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     app.state.ldap_auth = LDAPAuthenticator(config)
     app.state.session_manager = SessionManager(db, config)
     # Wave 10 #311 — TOTP/MFA second-factor (optional; degrades when pyotp absent)
-    app.state.totp_manager = TOTPManager(db)
+    app.state.totp_manager = TOTPManager(
+        db, secret_box=SecretBox(app.state.session_manager.secret))
     # #319 — login throttle: lock a username or source IP for 15 min after 10
     # failed attempts in 5 min. Blunts credential stuffing / password spraying
     # before the cost-bearing LDAP bind; complements AD's own account lockout.
