@@ -2644,8 +2644,14 @@ class Database:
 
     def get_files_by_size_range(self, source_id: int, scan_id: int,
                                  min_bytes: int, max_bytes: int = None,
-                                 limit: int = 100, offset: int = 0) -> dict:
-        """Boyut araligina gore dosyalar (sayfalanmis)."""
+                                 limit: int = 100, offset: int = 0,
+                                 owner_scope: tuple = ('', [])) -> dict:
+        """Boyut araligina gore dosyalar (sayfalanmis).
+
+        ``owner_scope`` is a ``(sql_fragment, params)`` tuple from
+        ``get_owner_scope(request)`` (Wave 10 #308) — viewer-role requests are
+        confined to their own files (parameter-bound LIKE, never f-string).
+        """
         conditions = ["source_id = ?", "scan_id = ?", "file_size >= ?"]
         params = [source_id, scan_id, min_bytes]
 
@@ -2654,6 +2660,10 @@ class Database:
             params.append(max_bytes)
 
         where = " AND ".join(conditions)
+        scope_frag, scope_params = owner_scope if owner_scope else ('', [])
+        if scope_frag:
+            where += f" {scope_frag}"
+            params = params + list(scope_params)
 
         with self.get_cursor() as cur:
             cur.execute(f"SELECT COUNT(*) as cnt FROM scanned_files WHERE {where}", params)  # noqa: S608
