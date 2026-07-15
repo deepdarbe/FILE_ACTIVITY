@@ -161,6 +161,23 @@ class NtfsMftBackend:
         self.config = config or {}
         self.progress_callback = progress_callback
 
+    def _emit_progress(self, stage: str, processed: int) -> None:
+        """Single dispatch point for ``progress_callback(stage, processed)``.
+
+        Swallows any callback error so a tracker hiccup never breaks the MFT
+        walk (#137); a no-op when no callback was wired. The three enumeration/
+        yield sites funnel through here, and keeping it a method makes the
+        progress contract unit-testable off-Windows (``walk()`` itself is
+        Win32-only, so it can't be exercised on the Linux CI runner).
+        """
+        cb = self.progress_callback
+        if cb is None:
+            return
+        try:
+            cb(stage, processed)
+        except Exception as exc:  # pragma: no cover - defensive only
+            logger.debug("progress_callback raised: %s", exc)
+
     # ------------------------------------------------------------------
     # Capability check
     # ------------------------------------------------------------------
@@ -301,11 +318,8 @@ class NtfsMftBackend:
             emitted += 1
             # Issue #135/#137 — yield-loop progress so the dashboard banner keeps
             # ticking while the orchestrator drains records into the DB.
-            if emitted % _PROGRESS_EVERY_N_RECORDS == 0 and self.progress_callback is not None:
-                try:
-                    self.progress_callback("mft_emit", emitted)
-                except Exception:  # pragma: no cover - defensive only
-                    pass
+            if emitted % _PROGRESS_EVERY_N_RECORDS == 0:
+                self._emit_progress("mft_emit", emitted)
 
         logger.info("MFT taramasi tamamlandi: %d dosya yayildi", emitted)
 
@@ -369,11 +383,8 @@ class NtfsMftBackend:
             new_count = len(records)
             if (new_count // _PROGRESS_EVERY_N_RECORDS) > (
                 prev_count // _PROGRESS_EVERY_N_RECORDS
-            ) and self.progress_callback is not None:
-                try:
-                    self.progress_callback("mft_collect", new_count)
-                except Exception:  # pragma: no cover - defensive only
-                    pass
+            ):
+                self._emit_progress("mft_collect", new_count)
 
             # The first 8 bytes of the output buffer are the next-FRN to
             # resume enumeration from.
@@ -391,11 +402,8 @@ class NtfsMftBackend:
             # via a closure). Best-effort only: any failure here MUST NOT
             # break the IOCTL loop. Throttled to once every 10 iterations
             # so a 50k-record volume reports ~5 updates rather than 5000.
-            if self.progress_callback is not None and iterations % 10 == 0:
-                try:
-                    self.progress_callback("mft_collect", len(records))
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug("progress_callback raised: %s", exc)
+            if iterations % 10 == 0:
+                self._emit_progress("mft_collect", len(records))
 
         return records
 
