@@ -170,3 +170,58 @@ def test_existing_callsite_shape_dashboard_simple(tmp_path):
         assert eid is not None
         assert _events_count(db) == 1
         assert _chain_count(db) == (1 if enabled else 0)
+
+
+# ── file_path NOT NULL: None/missing coerced on EVERY path, not just _simple ──
+
+
+def _file_path_of_only_event(db: Database):
+    with db.get_cursor() as cur:
+        cur.execute("SELECT file_path FROM file_audit_events LIMIT 1")
+        return cur.fetchone()["file_path"]
+
+
+def test_public_wrapper_coerces_none_file_path(tmp_path):
+    """A non-file-scoped event (scan_started) sent through the public
+    ``insert_audit_event`` wrapper with ``file_path=None`` must land, not be
+    dropped by NOT NULL. PR #314 only guarded ``insert_audit_event_simple``;
+    the fix moves coercion to the raw insert so this path is covered too.
+    """
+    for enabled in (False, True):
+        db = _make_db(tmp_path / f"pub_{enabled}", chain_enabled=enabled)
+        eid = db.insert_audit_event(
+            source_id=1,
+            event_time="2026-06-28 01:00:00",
+            event_type="scan_started",
+            username="dashboard",
+            file_path=None,          # non-file-scoped event
+            file_name=None,
+            details="source_name=ortak",
+            detected_by="system",
+        )
+        assert eid is not None
+        assert _events_count(db) == 1
+        assert _file_path_of_only_event(db) == ''
+        assert _chain_count(db) == (1 if enabled else 0)
+
+
+def test_chained_dict_coerces_missing_file_path(tmp_path):
+    """``insert_audit_event_chained(event)`` with the ``file_path`` key absent
+    (a watcher/scheduler emitting a non-file event) must land as ''.
+    """
+    for enabled in (False, True):
+        db = _make_db(tmp_path / f"chain_{enabled}", chain_enabled=enabled)
+        eid = db.insert_audit_event_chained({
+            "source_id": 1,
+            "event_time": "2026-06-28 01:00:00",
+            "event_type": "scan_started",
+            "username": "scheduler",
+            # no file_path / file_name keys at all
+            "detected_by": "scheduler",
+        })
+        assert eid is not None
+        assert _events_count(db) == 1
+        assert _file_path_of_only_event(db) == ''
+        # chain integrity holds even with the coerced empty path
+        if enabled:
+            assert db.verify_audit_chain()["verified"] is True
