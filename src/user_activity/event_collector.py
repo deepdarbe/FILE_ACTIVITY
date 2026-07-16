@@ -313,6 +313,16 @@ class EventCollector:
 
         access_type = _parse_access_mask(access_mask)
 
+        # #340 Faz 1 — normalize pywintypes TimeGenerated (a datetime
+        # subclass) to the schema's TEXT format. Stores LOCAL wall-clock
+        # DELIBERATELY: user_access_logs defaults use
+        # datetime('now','localtime') and _detect_night_access reads
+        # strftime('%H') — storing UTC would skew night detection by the
+        # box's offset. (Window filters comparing against UTC
+        # datetime('now') may over-include by <= the offset; harmless.)
+        if hasattr(event_time, "strftime"):
+            event_time = event_time.strftime("%Y-%m-%d %H:%M:%S")
+
         return {
             "username": username,
             "domain": domain,
