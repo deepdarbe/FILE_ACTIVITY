@@ -48,7 +48,59 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `20775e9`, 2026-06-28)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `ad79731`, 2026-07-16)
+
+The 2026-07-16 session ran a **10-iteration continuous-improvement loop** and then a
+**live-deploy incident**. Six PRs landed on master (all squash-merged, ci_guards 12/12):
+
+| PR | Fix |
+|----|-----|
+| **#330** | size-drilldown viewer owner-scope hole (#308 gap) |
+| **#331** | **analyzer-cache stampede** — concurrent misses ran `compute()` N×; per-key in-flight lock. This is the customer's *Kaynaklar 0/3 hang + 2× "Erisim sikligi analizi"*. + CodeQL log-injection scrub |
+| **#332** | owner-scope on naming/insight/top-creators/growth report endpoints (#308) |
+| **#333** | `NULL file_path` dropped non-file audit events (`scan_started` etc.) — coercion moved to the raw-insert choke point |
+| **#334** | duplicates page resolved a completed-only scan while the rest of the UI uses `include_running` → empty page during a running scan |
+| **#335** | mit-naming CSV+XLSX exports were unscoped → bypassed #332's list scoping |
+
+### ⚠️ OPEN INCIDENT — burculogo will not start after the 2026-07-16 deploy (handed to a bridge session)
+Deploy of `ad79731` via the `iex` one-liner **succeeded** (schema migrations incl. new
+`analyzer_cache`/`user_totp_secrets` tables created cleanly at startup — our code is fine;
+Docker CI imports `api.py` green). But the box is wedged by a **pre-existing WAL-leak +
+zombie-process** problem, NOT by this deploy:
+- Startup found a **70 GB WAL** (from the prior MFT 2.9M + PII scan) and spent ~13 min
+  draining it (`70921 MB → 0` at 16:07:05). That is the four-times-recurring WAL trap.
+- A **detached/orphan python process** (NSSM service showed *Stopped*, no `python.exe`
+  visible to a non-elevated query, yet the checkpointer thread kept logging) then wrote
+  the WAL back up **0 → 4.3 GB**, and every `wal_checkpoint(TRUNCATE)` **grew** the WAL
+  instead of shrinking it (`4200 MB -> 4256 MB (forced)`) — the classic **long-lived
+  reader blocks truncation** signature. The orphan died ~16:13:30 (log froze, WAL frozen
+  at 4.27 GB, no python procs).
+- `Start-Service FileActivity` now fails ("Cannot start service") with **no fresh output**
+  in `logs\service.err` (stale, dated 2026-05-19) — so NSSM's redirect isn't capturing the
+  crash. Disk is fine (206 GB free). Root cause still unconfirmed from off-box.
+
+**NEXT SESSION (bridge) — recovery runbook:**
+1. Confirm clean: no `python.exe`/`pythonw.exe`; WAL frozen (not growing).
+2. **Run the app manually (bypasses NSSM) to see the real startup output** — exact service command:
+   ```powershell
+   cd C:\FileActivity
+   .\.venv\Scripts\python.exe main.py --config "C:\FileActivity\config\config.yaml" dashboard
+   ```
+   (NSSM install line: `nssm install FileActivity <venvPy> main.py --config <cfg> dashboard`,
+   `AppThrottle 10000` = 10 s — a startup that exits <10 s throttle-fails the service.)
+   - **Traceback** → fix per the file it names (unlikely ours — CI imports clean).
+   - **Churns "WAL checkpoint..." then "Uvicorn running on 8085"** → it works; the service
+     failure was NSSM's throttle firing during the slow 4 GB startup checkpoint. Let the
+     manual run drain WAL → 0, `Ctrl+C`, then `Start-Service` (now fast, WAL small).
+3. **If WAL re-leaks the moment a scan (auto-)resumes** → there IS a live long-lived-reader
+   bug (a scan/DuckDB-ATTACH/dashboard read holding a snapshot across the whole scan).
+   That is a real, code-fixable defect and should be the **top of the next `/loop`**:
+   grep for a read cursor / DuckDB ATTACH held open across `bulk_insert_scanned_files`.
+   Background on the failure mode: https://loke.dev/blog/sqlite-checkpoint-starvation-wal-growth
+
+---
+
+## 🔖 SESSION HANDOFF — (as of master `20775e9`, 2026-06-28)
 
 The 2026-06-27/28 session was a **Wave 9 + Wave 10 portal-access wave** — 5 PRs shipping
 Docker/CI infrastructure fixes and a full per-user LDAP auth + data-scoping stack.
