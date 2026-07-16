@@ -53,3 +53,35 @@ class TestScopeIsRestricted:
     def test_no_jwt_not_restricted(self):
         from src.security.user_scope import scope_is_restricted
         assert not scope_is_restricted(_make_request(role=None))
+
+
+class TestGetScopeUsername:
+    """The in-memory companion to get_owner_scope, used by cached/aggregate
+    report endpoints that can't inject a SQL LIKE fragment (#308 consistency)."""
+
+    def test_admin_none(self):
+        from src.security.user_scope import get_scope_username
+        assert get_scope_username(_make_request(role='admin', sub='boss')) is None
+
+    def test_manager_none(self):
+        from src.security.user_scope import get_scope_username
+        assert get_scope_username(_make_request(role='manager', sub='mgr')) is None
+
+    def test_no_jwt_none(self):
+        from src.security.user_scope import get_scope_username
+        assert get_scope_username(_make_request(role=None)) is None
+
+    def test_viewer_lowercased_username(self):
+        from src.security.user_scope import get_scope_username
+        assert get_scope_username(_make_request(role='viewer', sub='Alice')) == 'alice'
+
+    def test_viewer_empty_sub_none(self):
+        from src.security.user_scope import get_scope_username
+        assert get_scope_username(_make_request(role='viewer', sub='')) is None
+
+    def test_username_matches_like_semantics(self):
+        """The returned value mirrors '%username%' LIKE: substring, ci."""
+        from src.security.user_scope import get_scope_username
+        user = get_scope_username(_make_request(role='viewer', sub='alice'))
+        # owner 'CORP\\Alice' contains 'alice' case-insensitively → match
+        assert user in 'corp\\alice'.lower()

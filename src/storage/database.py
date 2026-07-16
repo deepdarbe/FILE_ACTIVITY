@@ -3473,8 +3473,19 @@ class Database:
                 "total_scans": total_scans
             }
 
-    def get_top_file_creators(self, source_id, scan_id=None, limit=20):
-        """En cok dosya olusturan kullanicilar (owner bazli)."""
+    def get_top_file_creators(self, source_id, scan_id=None, limit=20,
+                              owner_scope=('', [])):
+        """En cok dosya olusturan kullanicilar (owner bazli).
+
+        Wave 10 #308: ``owner_scope`` — an ``('AND owner LIKE ?', ['%user%'])``
+        pair (bound param, never f-string) — narrows the aggregate to a single
+        viewer's files. Applied to BOTH the group-by and the total-files count
+        so a scoped request never enumerates other owners and never leaks the
+        share's global file total via ``percentage``. Default ``('', [])``
+        keeps the full (admin/manager/no-auth) view.
+        """
+        scope_frag, scope_params = owner_scope
+        scope_params = list(scope_params)
         # Son scan_id'yi bul
         if not scan_id:
             with self.get_cursor() as cur:
@@ -3488,19 +3499,26 @@ class Database:
                 scan_id = row["id"]
 
         with self.get_cursor() as cur:
-            # Toplam dosya sayisi
-            cur.execute("SELECT COUNT(*) as total FROM scanned_files WHERE scan_id=?", (scan_id,))
+            # Toplam dosya sayisi (scoped identically so percentage stays sane)
+            cur.execute(
+                f"SELECT COUNT(*) as total FROM scanned_files "
+                f"WHERE scan_id=? {scope_frag}",
+                [scan_id, *scope_params],
+            )
             total_files = cur.fetchone()["total"]
 
-            cur.execute("""
+            cur.execute(
+                f"""
                 SELECT owner, COUNT(*) as file_count,
                        SUM(file_size) as total_size
                 FROM scanned_files
-                WHERE scan_id=? AND owner IS NOT NULL AND owner != ''
+                WHERE scan_id=? AND owner IS NOT NULL AND owner != '' {scope_frag}
                 GROUP BY owner
                 ORDER BY file_count DESC
                 LIMIT ?
-            """, (scan_id, limit))
+                """,
+                [scan_id, *scope_params, limit],
+            )
             creators = [dict(r) for r in cur.fetchall()]
 
             for c in creators:
