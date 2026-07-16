@@ -443,6 +443,14 @@ class SourceCreate(BaseModel):
     unc_path: str
     archive_dest: Optional[str] = None
 
+class SourceUpdate(BaseModel):
+    # #339 — partial update; absent field = unchanged (exclude_unset).
+    # unc_path deliberately NOT updatable (archive/restore path mapping
+    # is anchored to the original root; see Database.update_source).
+    name: Optional[str] = None
+    archive_dest: Optional[str] = None
+    enabled: Optional[bool] = None
+
 class PolicyCreate(BaseModel):
     name: str
     source_id: Optional[int] = None
@@ -1501,6 +1509,55 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 logger.warning("audit emit failed for source_deleted: %s", e)
             return {"message": f"Kaynak silindi: {src.name}"}
         raise HTTPException(500, "Silme basarisiz")
+
+    @app.put("/api/sources/{source_id}")
+    def update_source(source_id: int, data: SourceUpdate, request: Request):
+        """#339 — partial source update (archive_dest / name / enabled).
+
+        Fixes the customer-reported gap: a source added WITHOUT an
+        archive destination could never get one afterwards (no update
+        path existed anywhere in the stack), so every archive feature
+        400'd with 'Arsiv hedefi tanimli degil' forever.
+        """
+        import sqlite3 as _sqlite3
+        src = _get_source(db, source_id)
+        fields = data.model_dump(exclude_unset=True)
+        if "name" in fields:
+            fields["name"] = (fields["name"] or "").strip()
+            if not fields["name"]:
+                raise HTTPException(400, "name bos olamaz")
+        if "archive_dest" in fields:
+            # Bos string / whitespace -> NULL = "arsiv hedefi kaldirildi".
+            fields["archive_dest"] = (fields["archive_dest"] or "").strip() or None
+        if not fields:
+            raise HTTPException(
+                400, "Guncellenecek alan yok (name, archive_dest, enabled)")
+        try:
+            ok = db.update_source(source_id, fields)
+        except _sqlite3.IntegrityError:
+            raise HTTPException(
+                409, f"Bu isimde kaynak zaten var: {fields.get('name')}")
+        if ok:
+            try:
+                db.insert_audit_event_simple(
+                    source_id=source_id, event_type="source_updated",
+                    username=_get_jwt_username(request) or "admin",
+                    file_path=None,
+                    details=(
+                        f"changes={fields};old_archive_dest={src.archive_dest};"
+                        f"old_name={src.name}"
+                    ),
+                )
+            except Exception as e:  # pragma: no cover - audit is best-effort
+                logger.warning("audit emit failed for source_updated: %s", e)
+        return {
+            "ok": True,
+            "updated": ok,
+            "message": (
+                f"Kaynak guncellendi: {fields.get('name', src.name)}"
+                if ok else "Degisiklik yok"
+            ),
+        }
 
     @app.post("/api/sources/{source_id}/test")
     def test_source(source_id: int):
