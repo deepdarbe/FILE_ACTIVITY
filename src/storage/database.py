@@ -2721,7 +2721,20 @@ class Database:
         ``audit.chain_enabled`` is true. CI guard test
         ``tests/test_audit_chain_no_unchained_callsites.py`` rejects external
         references to this name.
+
+        ``file_audit_events.file_path`` is ``TEXT NOT NULL``, but many event
+        types (scan_started, user_login, totp_enabled, …) are not file-scoped
+        and legitimately have no path. PR #314 coerced ``None → ''`` in
+        ``insert_audit_event_simple``, but the chained/unchained paths reached
+        via ``insert_audit_event`` / ``insert_audit_event_chained`` (the
+        watchers, archiver, retention, …) bypassed that guard and could still
+        hit ``NOT NULL constraint failed`` — the row then silently dropped by
+        the caller's best-effort try/except. Coercing here, at the single raw
+        INSERT that every path funnels through, makes the bug class impossible
+        regardless of entry point.
         """
+        if file_path is None:
+            file_path = ''
         with self.get_cursor() as cur:
             cur.execute("""
                 INSERT INTO file_audit_events
