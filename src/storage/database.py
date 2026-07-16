@@ -56,6 +56,15 @@ class Database:
         # can call ``request()`` after batch flush.
         self._wal_autocheckpoint_pages = 1000
         self.checkpointer = None
+        # #337 — startup retention cleanup moved to a background daemon
+        # thread (it used to run synchronously inside connect() in ONE
+        # giant transaction: 2.9M-row delete -> 5.9 GB WAL, port 8085
+        # blocked ~12 min, and a mid-delete kill rolled everything back).
+        # _retention_lock is the per-process single-flight guard shared
+        # by the worker and the /api/db/cleanup endpoint path.
+        self._retention_lock = threading.Lock()
+        self._retention_stop = threading.Event()
+        self._retention_thread = None
 
     def set_audit_break_callback(self, callback) -> None:
         """Register a callback invoked on every audit chain verification
@@ -243,76 +252,15 @@ class Database:
             except Exception as e:
                 logger.warning(f"WAL checkpoint hatasi (kritik degil): {e}")
 
-            # Baslangicta eski scan'leri ve orphan satirlari temizle.
-            # Iki ayri kontrol:
-            # (1) RETENTION: Her kaynak icin son N scan tutulur (default 3).
-            # (2) ORPHAN: scanned_files'ta scan_run'a bagli olmayan satirlari
-            #     SIL — eski versiyonlardan kalmis 1.27M+ orphan satir
-            #     dashboard'u dakikalarca asiyordu.
-            # Orphan kontrolu retention'dan bagimsiz ve hep calisir;
-            # tek scan + milyonlarca orphan en kotu durumdur.
-            try:
-                retention = self.config.get("retention", {}) or {}
-                if retention.get("auto_cleanup_on_startup", True):
-                    keep_n = int(retention.get("keep_last_n_scans", 3))
-                    # Hizli orphan tespiti — eger varsa bunlari da temizleyecegiz
-                    # NOT: conn.row_factory = dict_factory oldugu icin
-                    # row[0] -> KeyError(0) atar. Sutun adiyla erismek
-                    # zorundayiz veya tek-deger SELECT'i icin scalar() yerine
-                    # alias + dict erisim. Asagida hep alias kullaniyoruz.
-                    orphan_row = conn.execute(
-                        "SELECT COUNT(*) AS cnt FROM scanned_files "
-                        "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
-                    ).fetchone()
-                    orphan_count = (orphan_row["cnt"] if orphan_row else 0) or 0
-
-                    count_row = conn.execute(
-                        "SELECT COUNT(*) AS cnt FROM scan_runs"
-                    ).fetchone()
-                    total_scans = (count_row["cnt"] if count_row else 0) or 0
-                    source_row = conn.execute(
-                        "SELECT COUNT(DISTINCT source_id) AS cnt FROM scan_runs"
-                    ).fetchone()
-                    total_sources = (source_row["cnt"] if source_row else 0) or 0
-
-                    needs_retention = total_scans > keep_n * max(total_sources, 1)
-                    needs_orphan = orphan_count > 0
-
-                    if needs_retention or needs_orphan:
-                        if needs_retention:
-                            logger.info(
-                                "Startup retention temizligi: %d scan var, her kaynak icin son %d tutuluyor",
-                                total_scans, keep_n,
-                            )
-                        if needs_orphan:
-                            logger.info(
-                                "Orphan scanned_files satirlari tespit edildi: %d adet (scan_run'a bagli degil), siliniyor",
-                                orphan_count,
-                            )
-                        result = self.cleanup_old_scans(keep_last_n=keep_n)
-                        if result.get("deleted_runs") or result.get("deleted_orphans"):
-                            logger.info(
-                                "Temizlendi: %d scan_run, %d dosya kaydi (eski scan), %d orphan satir",
-                                result.get("deleted_runs", 0),
-                                result.get("deleted_files", 0),
-                                result.get("deleted_orphans", 0),
-                            )
-                            try:
-                                conn.execute("PRAGMA incremental_vacuum(1000)")
-                            except Exception:
-                                pass
-                        elif "error" in result:
-                            logger.warning("Retention temizligi hatasi: %s", result["error"])
-            except Exception as e:
-                logger.warning("Retention temizligi sirasinda hata (kritik degil): %s", e)
-
-            # Scan summary backfill — summary_json olmayan scan'ler icin
-            # hesapla. Dashboard Overview bunu okur, file table'i taramaz.
-            # Ilk acilista birkac saniye sürebilir, sonrasi anlik.
-            try:
-                self.backfill_missing_summaries()
-            except Exception as e:
-                logger.warning("Summary backfill hatasi (kritik degil): %s", e)
+            # #337 — startup retention temizligi + summary backfill artik
+            # ARKA PLAN daemon thread'inde calisir (bkz.
+            # _startup_retention_worker). Eskiden burada senkron kosuyordu:
+            # 2.9M satirlik silme TEK transaction'da 5.9 GB WAL uretti,
+            # port 8085 ~12 dk baglanamadi ve process kill'inde tum is
+            # rollback olup bir sonraki acilista bastan basliyordu.
+            # Worker parquet orphan replay'den SONRA baslatilir (asagida)
+            # ki replay edilen satirlar retention karari verilmeden once
+            # ingest edilmis olsun.
 
             # Parquet staging orphan replay: kazadan sonra kalmis .parquet
             # dosyalarini SQLite'a ingest et. Dashboard ilk acilmadan once
@@ -331,6 +279,22 @@ class Database:
                 logger.warning(
                     "Parquet staging orphan replay basarisiz (kritik degil): %s", e
                 )
+
+            # #337 — spawn the background retention/backfill worker as the
+            # LAST step of connect() so the caller (and uvicorn's port
+            # bind) is never blocked by multi-minute cleanup work.
+            try:
+                retention = self.config.get("retention", {}) or {}
+                if retention.get("auto_cleanup_on_startup", True):
+                    self._retention_stop.clear()
+                    self._retention_thread = threading.Thread(
+                        target=self._startup_retention_worker,
+                        name="file_activity.retention",
+                        daemon=True,
+                    )
+                    self._retention_thread.start()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Retention worker baslatilamadi (kritik degil): %s", e)
         except Exception as e:
             self.connected = False
             raise DatabaseConnectionError(
@@ -371,6 +335,16 @@ class Database:
 
     def close(self):
         """Baglantilari kapat."""
+        # #337 — stop the background retention worker first: per-batch
+        # commits mean a stop mid-run loses at most one batch of work,
+        # resumed on the next start. join(10) keeps NSSM stop snappy;
+        # daemon=True covers a hard process exit.
+        rt = getattr(self, "_retention_thread", None)
+        if rt is not None and rt.is_alive():
+            self._retention_stop.set()
+            rt.join(timeout=10)
+        self._retention_thread = None
+
         # Issue #153 — shut the checkpointer thread down before the
         # writer connection: the daemon opens its own short-lived
         # handles and we want any in-flight TRUNCATE to wind down
@@ -1608,12 +1582,16 @@ class Database:
 
     def _execute_write_with_retry(
         self, label: str, sql: str, params: tuple
-    ) -> None:
+    ) -> int:
         """Issue #194 Wave 6 — run a single write statement with the same
         5x exponential backoff that bulk_insert_scanned_files uses. Used
         by compute_scan_summary's UPDATE and complete_scan_run's UPDATE
         so a transient writer-lock contention doesn't lose the summary
         row or leave scan_runs in a dangling state.
+
+        #337 — returns ``cur.rowcount`` so the batched retention deleter
+        can detect its terminating (short) batch. Pre-existing callers
+        ignored the old ``None`` return, so this is backward compatible.
         """
         backoff = 1.0
         last_err: Optional[Exception] = None
@@ -1621,12 +1599,13 @@ class Database:
             try:
                 with self.get_cursor() as cur:
                     cur.execute(sql, params)
+                    rowcount = cur.rowcount
                 if attempt > 1:
                     logger.info(
                         "%s succeeded on attempt %d (after %d retries)",
                         label, attempt, attempt - 1,
                     )
-                return
+                return rowcount
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
                 if "database is locked" not in msg and "busy" not in msg:
@@ -4157,66 +4136,339 @@ class Database:
             row = cur.fetchone()
             return int(row["c"] if row else 0)
 
+    # ──────────────────────────────────────────────
+    # #337 — batched, resumable retention cleanup
+    # ──────────────────────────────────────────────
+
+    def _live_scan_running(self) -> bool:
+        """True iff a FRESH running scan exists (updated_at within 120s).
+
+        The freshness test (issue #135 semantics) keeps a zombie
+        scan_run left by a crashed scanner from permanently stretching
+        the retention worker's politeness sleeps.
+        """
+        try:
+            with self.get_read_cursor() as cur:
+                row = cur.execute(
+                    "SELECT COUNT(*) AS c FROM scan_runs "
+                    "WHERE status='running' AND updated_at >= "
+                    "datetime('now','localtime','-120 seconds')"
+                ).fetchone()
+            return bool(row and (row["c"] or 0) > 0)
+        except Exception:  # pragma: no cover - defensive
+            return False
+
+    def _batched_delete(self, table: str, where_sql: str, params: tuple,
+                        batch_size: int, stop_event: "threading.Event",
+                        sleep_between: float,
+                        max_batches: int = 20000) -> tuple:
+        """DELETE matching rows in per-batch-COMMITTED chunks (#337).
+
+        Each batch is its own transaction (own ``get_cursor`` block via
+        ``_execute_write_with_retry``), so the WAL stays bounded at
+        roughly one batch's dirty page set, the checkpointer can
+        TRUNCATE between batches (we ``request()`` it explicitly), and
+        an interruption loses at most one batch of work. The rowid
+        subquery form works on stock SQLite (no DELETE...LIMIT compile
+        flag needed; scanned_files.id is INTEGER PRIMARY KEY = rowid).
+
+        Returns ``(total_deleted, interrupted)``. ``max_batches`` is a
+        belt-and-suspenders bound so a pathological chase (e.g. a live
+        writer refilling the predicate) terminates with interrupted=True
+        instead of hanging forever.
+        """
+        total = 0
+        batches = 0
+        interrupted = False
+        sql = (
+            f"DELETE FROM {table} WHERE rowid IN "
+            f"(SELECT rowid FROM {table} WHERE {where_sql} LIMIT ?)"
+        )  # noqa: S608 - table/where are internal literals, values bound
+        while True:
+            if stop_event.is_set():
+                interrupted = True
+                break
+            # Politeness: while a LIVE scan is inserting, stretch the
+            # inter-batch sleep so the scanner's bulk_insert sees
+            # minimal writer-lock contention. Probe every 10 batches.
+            effective_sleep = sleep_between
+            if batches % 10 == 0 and self._live_scan_running():
+                effective_sleep = max(sleep_between, 5.0)
+            n = self._execute_write_with_retry(
+                "retention_batch_delete", sql, tuple(params) + (batch_size,)
+            ) or 0
+            total += n
+            batches += 1
+            # Nudge the checkpointer between batches (no open write txn
+            # now) so TRUNCATE keeps the WAL near zero during the sweep.
+            cp = self.checkpointer
+            if cp is not None:
+                try:
+                    cp.request()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            if n < batch_size:
+                break
+            if batches >= max_batches:
+                logger.warning(
+                    "retention: %s icin batch limiti (%d) asildi — "
+                    "kalan is bir sonraki calismaya birakildi",
+                    table, max_batches,
+                )
+                interrupted = True
+                break
+            if stop_event.wait(effective_sleep):
+                interrupted = True
+                break
+        return total, interrupted
+
+    def cleanup_old_scans_batched(self, keep_last_n: int = 5,
+                                  batch_size: int = None,
+                                  sleep_between: float = None,
+                                  stop_event: "threading.Event" = None) -> dict:
+        """#337 — batched/resumable replacement for the old single-
+        transaction cleanup. Per kaynak son N taramayi korur, eski
+        scan'lerin satirlarini KUCUK per-batch-commit'li parcalarla siler.
+
+        Design notes (verified against the 2026-07-16 prod incident):
+        * Children BEFORE parent: scanned_files.scan_id has ON DELETE
+          CASCADE and foreign_keys=ON — deleting a scan_runs parent first
+          would cascade-delete millions of child rows in ONE statement,
+          recreating the giant transaction this fix removes.
+        * ``status='running'`` runs are never victims: with keep_last=0
+          (the /api/db/cleanup contract) the old victim query could
+          select the ACTIVE run and the batched loop would chase the
+          scanner's inserts forever.
+        * Interruption-resume: victims are recomputed from the tiny
+          scan_runs table on every call; per-batch commits mean at most
+          one batch of work is lost. Fully-drained-but-parent-alive runs
+          are re-selected and finish instantly; parent-deleted stragglers
+          are caught by the orphan sweep.
+        * Single-flight ``_retention_lock`` (per process): the startup
+          worker and the /api/db/cleanup endpoint can't run two
+          interleaved deleters; the loser returns
+          ``{"skipped": "already_running"}``.
+        """
+        retention_cfg = self.config.get("retention", {}) or {}
+        if batch_size is None:
+            batch_size = int(retention_cfg.get("cleanup_batch_rows", 10000))
+        if sleep_between is None:
+            sleep_between = float(retention_cfg.get(
+                "cleanup_sleep_between_batches_seconds", 0.5))
+        if stop_event is None:
+            stop_event = threading.Event()
+
+        if not self._retention_lock.acquire(blocking=False):
+            return {"skipped": "already_running"}
+
+        deleted_runs = 0
+        deleted_files = 0
+        deleted_orphans = 0
+        deleted_cache = 0
+        interrupted = False
+        try:
+            # Phase A — victim run ids (cheap read; scan_runs is tiny).
+            with self.get_read_cursor() as cur:
+                cur.execute("SELECT DISTINCT source_id FROM scan_runs")
+                source_ids = [r["source_id"] for r in cur.fetchall()]
+                victims = []
+                for sid in source_ids:
+                    cur.execute("""
+                        SELECT id FROM scan_runs
+                        WHERE source_id=? AND status != 'running'
+                        ORDER BY started_at DESC LIMIT -1 OFFSET ?
+                    """, (sid, keep_last_n))
+                    victims.extend(r["id"] for r in cur.fetchall())
+
+            # Phase B — per victim: drain children in batches, then the
+            # (now cheap) parent delete.
+            for run_id in victims:
+                if stop_event.is_set():
+                    interrupted = True
+                    break
+                n, intr = self._batched_delete(
+                    "scanned_files", "scan_id = ?", (run_id,),
+                    batch_size, stop_event, sleep_between)
+                deleted_files += n
+                if intr:
+                    interrupted = True
+                    break
+                # Pre-drain the other cascading children so the parent
+                # delete's cascade fires on (near-)empty sets. Tables may
+                # be absent on legacy DBs — skip quietly.
+                for child in ("pii_findings", "extension_anomalies",
+                              "file_acl_snapshots"):
+                    try:
+                        _, cintr = self._batched_delete(
+                            child, "scan_id = ?", (run_id,),
+                            batch_size, stop_event, sleep_between)
+                        if cintr:
+                            interrupted = True
+                            break
+                    except sqlite3.OperationalError:
+                        pass
+                if interrupted:
+                    break
+                self._execute_write_with_retry(
+                    "retention_run_delete",
+                    "DELETE FROM scan_runs WHERE id=?", (run_id,))
+                deleted_runs += 1
+
+            # Phase C — orphan sweep. DISTINCT scan_id first (cheap
+            # skip-scan over idx_sf_scan), then per-id index-range
+            # batched deletes — NOT a per-batch full NOT IN rescan.
+            if not interrupted:
+                with self.get_read_cursor() as cur:
+                    cur.execute(
+                        "SELECT DISTINCT scan_id FROM scanned_files "
+                        "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
+                    )
+                    orphan_ids = [r["scan_id"] for r in cur.fetchall()]
+                for oid in orphan_ids:
+                    if stop_event.is_set():
+                        interrupted = True
+                        break
+                    n, intr = self._batched_delete(
+                        "scanned_files", "scan_id = ?", (oid,),
+                        batch_size, stop_event, sleep_between)
+                    deleted_orphans += n
+                    if intr:
+                        interrupted = True
+                        break
+
+            # Phase D — analyzer_cache orphan purge (issue #123), own
+            # small transaction. Table absent on legacy DBs — harmless.
+            if not interrupted:
+                try:
+                    with self.get_cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM analyzer_cache "
+                            "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
+                        )
+                        deleted_cache = cur.rowcount or 0
+                except sqlite3.OperationalError:
+                    pass
+
+            result = {
+                "deleted_runs": deleted_runs,
+                "deleted_files": deleted_files,
+                "deleted_orphans": deleted_orphans,
+                "deleted_cache": deleted_cache,
+            }
+            if interrupted:
+                result["interrupted"] = True
+            return result
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
+            return {"error": str(e)}
+        finally:
+            self._retention_lock.release()
+
     def cleanup_old_scans(self, keep_last_n: int = 5) -> dict:
         """Eski tarama verilerini temizle. Her kaynak icin son N taramayi koru.
 
         Ek olarak: hangi scan_run'a ait olmayan orphan scanned_files
         satirlarini da siler. Eski versiyonlarin bug'i veya elle yapilan
         scan_run silmeleri 1.27M+ orphan birakabiliyordu.
+
+        #337 — artik batched implementasyona delege eder: ayni imza ve
+        ayni donus sekli, ama tek dev transaction yerine per-batch commit
+        (WAL sinirli kalir, kesinti en fazla 1 batch is kaybettirir).
+        NOT: status='running' scan artik ASLA silinmez (keep_last=0 ile
+        bile) — aktif taramayi silmek zaten her zaman hataydi.
         """
-        deleted_runs = 0
-        deleted_files = 0
-        deleted_orphans = 0
+        return self.cleanup_old_scans_batched(keep_last_n=keep_last_n)
+
+    def _startup_retention_worker(self) -> None:
+        """#337 — background startup cleanup + summary backfill.
+
+        Spawned as the last step of connect() so the port binds
+        immediately; the expensive detection queries and the batched
+        delete all run here. Mirrors the Checkpointer daemon pattern.
+        """
         try:
-            with self.get_cursor() as cur:
-                # Her kaynak icin son N tarama disindakileri bul
-                cur.execute("SELECT DISTINCT source_id FROM scan_runs")
-                source_ids = [r["source_id"] for r in cur.fetchall()]
-                for sid in source_ids:
-                    cur.execute("""
-                        SELECT id FROM scan_runs WHERE source_id=?
-                        ORDER BY started_at DESC LIMIT -1 OFFSET ?
-                    """, (sid, keep_last_n))
-                    old_run_ids = [r["id"] for r in cur.fetchall()]
-                    if old_run_ids:
-                        placeholders = ','.join(['?'] * len(old_run_ids))
-                        cur.execute(f"DELETE FROM scanned_files WHERE scan_id IN ({placeholders})", old_run_ids)  # noqa: S608
-                        deleted_files += cur.rowcount
-                        cur.execute(f"DELETE FROM scan_runs WHERE id IN ({placeholders})", old_run_ids)  # noqa: S608
-                        deleted_runs += cur.rowcount
+            retention_cfg = self.config.get("retention", {}) or {}
+            delay = float(retention_cfg.get("cleanup_startup_delay_seconds", 15))
+            # Let uvicorn bind + first dashboard paint finish before any
+            # write load; returns True (=> exit) if close() fired first.
+            if self._retention_stop.wait(delay):
+                return
+            keep_n = int(retention_cfg.get("keep_last_n_scans", 3))
 
-                # Orphan satirlari da temizle (silinmis scan_run'lara ait dosyalar)
-                cur.execute(
-                    "DELETE FROM scanned_files "
+            # Detection — pure reads, MOVED out of connect(): the orphan
+            # COUNT alone scans millions of index entries on a 35 GB DB.
+            with self.get_read_cursor() as cur:
+                orphan_row = cur.execute(
+                    "SELECT COUNT(*) AS cnt FROM scanned_files "
                     "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
-                )
-                deleted_orphans = cur.rowcount
+                ).fetchone()
+                orphan_count = (orphan_row["cnt"] if orphan_row else 0) or 0
+                count_row = cur.execute(
+                    "SELECT COUNT(*) AS cnt FROM scan_runs"
+                ).fetchone()
+                total_scans = (count_row["cnt"] if count_row else 0) or 0
+                source_row = cur.execute(
+                    "SELECT COUNT(DISTINCT source_id) AS cnt FROM scan_runs"
+                ).fetchone()
+                total_sources = (source_row["cnt"] if source_row else 0) or 0
 
-                # Issue #123: analyzer_cache rows for vanished scan_ids
-                # become dead weight - purge alongside scanned_files
-                # orphans. ``IF NOT EXISTS`` on the table guarantees this
-                # is safe even on legacy DBs created before the cache.
-                deleted_cache = 0
-                try:
-                    cur.execute(
-                        "DELETE FROM analyzer_cache "
-                        "WHERE scan_id NOT IN (SELECT id FROM scan_runs)"
+            needs_retention = total_scans > keep_n * max(total_sources, 1)
+            needs_orphan = orphan_count > 0
+            if needs_retention or needs_orphan:
+                if needs_retention:
+                    logger.info(
+                        "Startup retention temizligi (arka plan): %d scan var, "
+                        "her kaynak icin son %d tutuluyor",
+                        total_scans, keep_n,
                     )
-                    deleted_cache = cur.rowcount or 0
-                except sqlite3.OperationalError:
-                    # Table missing on a legacy DB without the cache schema
-                    # yet - harmless, will be created on next connect().
-                    pass
+                if needs_orphan:
+                    logger.info(
+                        "Orphan scanned_files satirlari tespit edildi: %d adet "
+                        "(scan_run'a bagli degil), siliniyor",
+                        orphan_count,
+                    )
+                result = self.cleanup_old_scans_batched(
+                    keep_last_n=keep_n, stop_event=self._retention_stop)
+                if result.get("deleted_runs") or result.get("deleted_orphans") \
+                        or result.get("deleted_files"):
+                    logger.info(
+                        "Temizlendi: %d scan_run, %d dosya kaydi (eski scan), "
+                        "%d orphan satir%s",
+                        result.get("deleted_runs", 0),
+                        result.get("deleted_files", 0),
+                        result.get("deleted_orphans", 0),
+                        " [KESINTIYE UGRADI - sonraki aciliste devam]"
+                        if result.get("interrupted") else "",
+                    )
+                    try:
+                        with self.get_cursor() as cur:
+                            cur.execute("PRAGMA incremental_vacuum(1000)")
+                    except Exception:
+                        pass
+                elif "error" in result:
+                    logger.warning(
+                        "Retention temizligi hatasi: %s", result["error"])
 
-            return {
-                "deleted_runs": deleted_runs,
-                "deleted_files": deleted_files,
-                "deleted_orphans": deleted_orphans,
-                "deleted_cache": deleted_cache,
-            }
+            # Scan summary backfill — summary_json olmayan scan'ler icin
+            # hesapla (connect()'ten buraya tasindi; ayni startup-blokaj
+            # sinifindandir). Dashboard Overview bunu okur.
+            if not self._retention_stop.is_set():
+                try:
+                    self.backfill_missing_summaries()
+                except Exception as e:
+                    logger.warning("Summary backfill hatasi (kritik degil): %s", e)
         except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-            return {"error": str(e)}
+            logger.warning(
+                "Retention temizligi sirasinda hata (kritik degil): %s", e)
+        finally:
+            # Hygiene: a finished worker must not leave an idle writer
+            # handle in the thread-local pool.
+            try:
+                if getattr(self._local, "conn", None):
+                    self._local.conn.close()
+                    self._local.conn = None
+            except Exception:  # pragma: no cover - defensive
+                pass
 
     def optimize_database(self) -> dict:
         """VACUUM ve ANALYZE ile veritabanini optimize et."""
