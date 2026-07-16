@@ -48,46 +48,73 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `20775e9`, 2026-06-28)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `7aa78cd`, 2026-07-16)
 
-The 2026-06-27/28 session was a **Wave 9 + Wave 10 portal-access wave** — 5 PRs shipping
-Docker/CI infrastructure fixes and a full per-user LDAP auth + data-scoping stack.
-burculogo was deployed to `20775e9` on 2026-06-28 via `update.cmd` + service restart.
+The 2026-07-16 session was a **stability + customer-request wave**, driven by a live
+burculogo (prod) diagnosis and a 4-workstream investigation workflow (8 agents:
+design + adversarial verify). 4 PRs shipped; forensic Faz 1 of 3 landed. burculogo
+is on `ad79731` (last deploy 2026-06-28) — **the 4 fixes below are NOT deployed to
+it yet** (see NEXT SESSION #1).
 
 **BRIDGE GOTCHA (burculogo):** heavy/long bridge-spawned **detached** child procs
-get killed mid-op (NOT OOM — 109 GB RAM free). The dashboard's own process is
-unaffected. Validate heavy things post-deploy, not via bridge probes.
-**RUNTIME GOTCHA:** the dashboard runs via NSSM service (switched 2026-06-28). Old
-sessions used manual `python main.py`; `update.cmd` now correctly stops service,
-pulls, restarts. No more 8085 conflict.
+get killed mid-op (NOT OOM — 128 GB RAM). Validate heavy things post-deploy, not
+via bridge probes; quick reads / small UPDATEs are fine.
+**RUNTIME GOTCHA:** currently running as **manual `python main.py … dashboard`**
+(2 procs, one inert stub) — NOT the NSSM service (Stopped) despite the 2026-06-28
+note. Deploy needs the manual proc stopped + restarted; bridge can't drive
+`update.cmd` reliably (interactive Read-Host prompts + snapshot + child-kill) →
+operator runs it on the box (RDP). **App reads `config\config.yaml` (subdir), NOT
+root `config.yaml`.** compliance.pii.enabled is TRUE there (set 2026-06-14).
+**STARTUP:** as of #341 retention cleanup no longer blocks port bind — but the
+FIRST boot after an interrupted giant-txn still checkpoints the leftover multi-GB
+WAL (minutes, one-time). WAL_MB climbing 0→5.9GB during that boot is the old
+cleanup finishing; #341 makes subsequent boots bind in seconds.
 
-**▶ NEXT SESSION — start here (bridge session):**
-1. **Diagnose page-loading slowness on burculogo** (PRIORITY). After deploying
-   `20775e9` + running the first MFT scan (2,899,237 files, 1229s) and starting a
-   PII content scan, pages became slow/unresponsive. Homepage measured 1043ms.
-   Possible causes: (a) PII scan saturating I/O; (b) WAL pressure during MFT scan;
-   (c) regression in Wave 10 auth middleware. Bridge: check WAL size
-   (`ls -la data/file_activity.db-wal`), check if PII scan is still running, check
-   response times. If PII scan finished and pages are still slow → investigate further.
-2. **Kopya Dosyalar (Duplicates) page is empty** — `idx_sf_scan_name_size` may not
-   have been built yet (first-start index, requires scan to complete). After MFT scan
-   finished, try reloading the page. If still empty, check `summary_json` for
-   `dup_groups` key.
-3. **Size = 0 B after MFT scan** — size enrichment pass (`size_enricher.py`) runs
-   after MFT walk. Check if it ran; if not, trigger a new scan or wait for the
-   scheduler.
-4. **PII scan in progress** (as of 2026-06-28 01:43 UTC): 534k/2.9M files (18%),
-   25,677 PII hits. Still running — check progress via log tail.
-5. **scan_started audit bug** — `NOT NULL constraint failed: file_audit_events.file_path`
-   on scan_started event (#285 wave 3 regression). Non-blocking (scan runs) but WARNING
-   in log. Fix: pass `file_path=''` or source path in `insert_audit_event_simple` call
-   for scan events. Small PR.
-6. **PR #310 — MFA/TOTP** (Wave 10 next, not started).
-7. **Weekly digest + AI file classifier** — not scoped yet.
-8. **Research punch-list 2/4/5** (Lynis / Presidio / Sleuth Kit).
-9. **R-6 "later pass"** (optional).
+**▶ NEXT SESSION — start here:**
+1. **Deploy the 4 stability fixes to burculogo + verify** (PRIORITY). Operator runs
+   `update.cmd` (RDP; answer H then E to the setup-source prompts — see the manual
+   RUNTIME GOTCHA above). Then verify via bridge (read-only): growth loads fast
+   (top_creators from summary), health instant, startup binds in seconds, and — if
+   the operator adds an archive dest to a source via the new ✏️ button — archive
+   run advances past the 'Arsiv hedefi tanimli degil' gate. The prod incident that
+   triggered this wave (12-min startup block, WAL 5.9GB) is fixed by #341.
+2. **Forensic Faz 2 + Faz 3 (#340)** — Faz 1 (collector wire-up) shipped in #344.
+   Faz 2: 4656↔4660 handle correlation for full path + 4624→client_ip; USN
+   parent_frn → full path (new frn_resolver, WinAPI OpenFileById, name-only
+   fallback). Faz 3: unified `GET /api/forensic/file-deletions` (file_audit_events
+   UNION user_access_logs, get_read_cursor) + "Dosya Silme Olaylari" page (Guvenlik
+   group, loadAnomalies template, one agent on index.html + node --check). Design
+   verified against master in the workflow — see the amendments (delete-row
+   multiplicity: restrict eventlog branch to 4660; StringInserts index drift needs
+   a first-run diagnostic; anomaly dedup; union id collision key). Faz 4 (VSS
+   recoverable badge) optional after Faz 3.
+3. **Slow-endpoint batch 2** (same class as #338, deferred): /api/db/stats,
+   /api/chargeback/{id}, /api/users/overview, drilldown COUNTs — root queries
+   documented in the #338 PR / workflow output.
+4. **scan_started audit bug** — likely already fixed by #333 (NULL file_path
+   coerced at raw insert); confirm no WARNING remains in the log post-deploy.
+5. **Dependabot queue**: #299/#300/#302/#311/#312/#313 open (plotly/streamlit/
+   checkout/cryptography/elasticsearch/pytest bumps). **PR #310 MFA/TOTP** shipped
+   as #315/#316. **Weekly digest + AI classifier**, **punch-list 2/4/5 (Lynis/
+   Presidio/Sleuth Kit)**, **R-6 later-pass** — still unscoped/optional.
 
-`git log --oneline -10` confirms the real tip.
+`git log --oneline -12` confirms the real tip.
+
+### What shipped 2026-07-16 (stability + customer-request wave)
+- **#341** — **batched background startup retention** (fixes the burculogo 12-min
+  port-bind block: 2.9M-row delete was ONE transaction → 5.9 GB WAL, killed →
+  repeated). Now a daemon worker with per-batch commits, children-before-CASCADE-
+  parent, running-scan exclusion, checkpointer nudges; `cleanup_old_scans` kept as
+  a thin wrapper. Closes #337.
+- **#342** — **archive_dest editable after create** (`PUT /api/sources/{id}` +
+  Database.update_source + ✏️ Arsiv Hedefi prompt UI; unc_path deliberately
+  immutable). Fixes the customer "can't add archive dest later" bug. Closes #339.
+- **#343** — **top_creators from scan summary + O(1) health probe** (growth 18.4s →
+  summary read; /api/system/health timeout → LIMIT-1 probe). Additive v2 key,
+  backfilled in the #341 worker. Closes #338.
+- **#344** — **forensic Faz 1**: EventCollector wire-up (collect-events CLI +
+  config-gated scheduler job + idx_ual_dedup idempotency + time normalization).
+  Off by default (`user_activity.enabled: false`). Refs #340.
 
 ### Where we are
 - **master = `20775e9`**. ci_guards **12/12**; A-AUDIT allowlist = **26** (was 23;
