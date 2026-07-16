@@ -216,6 +216,53 @@ def test_startup_cleanup_purges_orphan_cache_rows(db):
         assert cur.fetchone()["c"] == 1
 
 
+def test_concurrent_misses_compute_once(db):
+    """Cache-stampede guard: N threads that all miss the same key must
+    trigger exactly ONE compute, not N.
+
+    Reproduces the prod symptom (the customer saw "Erisim sikligi analizi"
+    running twice at once on a 2.8M-row scan). Without the per-key in-flight
+    lock, every concurrent miss ran the full aggregate; with it, the first
+    caller computes and the rest read its result.
+    """
+    import threading
+
+    database, _, scan_id = db
+    calls = {"n": 0}
+    lock = threading.Lock()
+    start = threading.Event()
+
+    def slow_compute():
+        with lock:
+            calls["n"] += 1
+        # Hold long enough that every thread is guaranteed to have raced past
+        # the initial (empty) lookup before the first compute finishes.
+        time.sleep(0.1)
+        return {"payload": "x", "call_n": calls["n"]}
+
+    results = []
+    results_lock = threading.Lock()
+
+    def worker():
+        start.wait()
+        env = analyzer_cache.get_or_compute(database, "frequency", scan_id, slow_compute)
+        with results_lock:
+            results.append(env)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    start.set()  # release all workers at once
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1, f"compute ran {calls['n']}× — stampede not deduped"
+    assert len(results) == 8
+    # Exactly one caller reports the cold miss; the rest read a warm entry.
+    cold = [r for r in results if r["cache"]["hit"] is False]
+    assert len(cold) == 1
+
+
 def test_smoke_warm_call_under_50ms(db):
     """Cold call may be slow (compute does real work); warm call must
     short-circuit. Issue #123 acceptance criterion.
