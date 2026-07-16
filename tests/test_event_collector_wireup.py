@@ -47,14 +47,21 @@ def test_parse_access_mask_delete():
 
 def test_build_record_normalizes_datetime(db):
     """pywintypes TimeGenerated (a datetime subclass) must be stored as the
-    schema's TEXT format, local wall-clock."""
+    schema's TEXT format, local wall-clock.
+
+    file_name is asserted via os.path.basename because the collector only
+    ever runs on Windows: on POSIX (Docker CI) basename does not split on
+    backslash — a platform quirk of the TEST environment, not the code.
+    """
+    import os as _os
     c = EventCollector(db, {})
+    path = r"E:\ortak\rapor.xlsx"
     rec = c._build_record(
-        "mehmet", "ITWISE", r"E:\ortak\rapor.xlsx", "0x10000",
+        "mehmet", "ITWISE", path, "0x10000",
         datetime(2026, 7, 16, 13, 26, 17), "10.0.0.5", 4660)
     assert rec["access_time"] == "2026-07-16 13:26:17"
     assert rec["access_type"] == "delete"
-    assert rec["file_name"] == "rapor.xlsx"
+    assert rec["file_name"] == _os.path.basename(path)
 
 
 def test_build_record_filters(db):
