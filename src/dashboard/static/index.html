@@ -2962,6 +2962,7 @@ function renderSources() {
                 <button class="btn btn-sm btn-outline" onclick="stopWatcher(${s.id})">⏹ Izlemeyi Durdur</button>
                 <button class="btn-export" onclick="exportXLS(${s.id}, event)">XLS</button>
                 <button class="btn-export" style="background:var(--danger)" onclick="exportPDF(${s.id}, event)">PDF</button>
+                <button class="btn btn-sm btn-outline" onclick="editSourceArchive(${s.id})">✏️ Arsiv Hedefi</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteSource(${s.id})">🗑️ Sil</button>
             </div>
         </div>
@@ -2989,6 +2990,25 @@ async function deleteSource(id) {
     if (!confirm('Bu kaynagi silmek istediginize emin misiniz?')) return;
     await api(`/sources/${id}`, { method: 'DELETE' });
     notify('Kaynak silindi', 'success');
+    loadSources();
+}
+
+// #339 — kaynak eklendikten SONRA arsiv hedefi ekleme/duzenleme.
+// prompt() tabanli (bu dosyada yerlesik desen); yeni HTML/innerHTML yok.
+// Bos birakip Tamam = arsiv hedefini kaldir (backend NULL'a cevirir).
+async function editSourceArchive(id) {
+    const s = sources.find(x => x.id === id);
+    if (!s) return;
+    const dest = prompt(
+        'Arsiv hedefi (bos birakip Tamam = arsiv hedefini kaldir):',
+        s.archive_dest || ''
+    );
+    if (dest === null) return; // Iptal
+    await api(`/sources/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ archive_dest: dest.trim() || null })
+    });
+    notify('Arsiv hedefi guncellendi', 'success');
     loadSources();
 }
 

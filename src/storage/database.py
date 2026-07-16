@@ -1369,6 +1369,38 @@ class Database:
                 return Source(**row)
             return None
 
+    def update_source(self, source_id: int, fields: dict) -> bool:
+        """#339 — idempotent partial update on a source row.
+
+        Unknown fields are silently ignored. ``unc_path`` is DELIBERATELY
+        not updatable: every scanned_files row and the archive engine's
+        relative-path reconstruction are anchored to the original root —
+        changing it on a source with millions of scanned rows silently
+        corrupts archive/restore mapping. Path change = delete + recreate.
+        ``enabled: None`` is skipped (an explicit null must not silently
+        disable the source). Returns True iff a row actually changed.
+        """
+        allowed = {"name", "archive_dest", "enabled"}
+        sets, vals = [], []
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k == "enabled":
+                if v is None:
+                    continue
+                v = 1 if v else 0
+            sets.append(f"{k} = ?")
+            vals.append(v)
+        if not sets:
+            return False
+        vals.append(source_id)
+        with self.get_cursor() as cur:  # writer pool — mutation (Rule 6)
+            cur.execute(
+                f"UPDATE sources SET {', '.join(sets)} WHERE id = ?",  # noqa: S608
+                vals,
+            )
+            return cur.rowcount > 0
+
     def remove_source(self, name: str) -> bool:
         with self.get_cursor() as cur:
             cur.execute("DELETE FROM sources WHERE name = ?", (name,))
