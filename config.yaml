@@ -156,6 +156,29 @@ watcher:
   # degisikliklerin gorunmesini geciktirir.
   poll_interval_seconds: 60   # varsayilan 60 sn, minimum 10 sn (API zorlar)
 
+user_activity:
+  # #340 — Windows Guvenlik gunlugunden dosya erisim/silme olaylari
+  # (4663/5145/4660/4656) toplayici. Forensic "Dosya Silme Olaylari"
+  # sayfasinin Event Log veri yolu: KIM sildi + NEREDEN (kaynak IP,
+  # yalniz SMB/5145'te). ONKOSUL: dosya sunucusunda audit policy +
+  # klasor SACL'lari acik olmali (bridge runbook: Configure-FileAudit).
+  # Guvenlik gunlugu kisa omurlu olabilir (~16 saat gozlendi) — bu
+  # yuzden scheduler surekli toplar; enabled: false iken hicbir sey
+  # calismaz (CLI 'collect-events' komutu yine manuel kullanilabilir).
+  enabled: false
+  collect_interval_minutes: 30   # scheduler toplama araligi (min 5)
+  collect_hours: 24              # manuel CLI icin varsayilan lookback
+  event_ids: [4663, 5145, 4660, 4656]
+  exclude_users: ["SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE",
+                  "DWM-1", "DWM-2", "UMFD-0", "UMFD-1"]
+  exclude_extensions: ["tmp", "log", "etl", "evtx"]
+  batch_size: 500
+  anomaly:
+    high_access_per_hour: 200    # saatte N+ erisim = anomali
+    high_delete_count: 50        # pencerede N+ silme = mass_delete
+    night_access_threshold: 30   # gece (00-06) N+ erisim
+    large_data_transfer_gb: 5    # pencerede N+ GB okuma
+
 scanner:
   max_workers: 4              # paralel dizin tarayıcı sayısı
   smb_workers: 32             # parallel os.scandir backend thread count (SMB: 32 sweet spot)

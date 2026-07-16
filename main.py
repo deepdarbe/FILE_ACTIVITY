@@ -361,6 +361,42 @@ def scan(ctx, source_name, scan_all):
         click.echo(f"Dosya: {result['total_files']:,} | Boyut: {format_size(result['total_size'])} | Hata: {result['errors']}")
 
 
+@cli.command("collect-events")
+@click.option("--hours", default=None, type=int,
+              help="Kac saatlik olay toplanacak (varsayilan: config user_activity.collect_hours ya da 24)")
+@click.option("--source-id", default=None, type=int, help="Kaynak ID (opsiyonel filtre)")
+@click.option("--server", default=None, help="Uzak sunucu adi (bos = lokal)")
+@click.option("--check-policy", is_flag=True,
+              help="Once mevcut audit policy durumunu goster")
+@click.pass_context
+def collect_events(ctx, hours, source_id, server, check_policy):
+    """Windows Guvenlik gunlugunden dosya erisim/silme olaylarini topla (#340).
+
+    4663/5145/4660/4656 olaylarini user_access_logs tablosuna yazar —
+    forensic 'Dosya Silme Olaylari' sayfasinin Event Log veri yolu.
+    Guvenlik gunlugu kisa omurlu olabilir (~16 saat gozlendi); periyodik
+    toplama icin config user_activity.enabled: true yapin (scheduler
+    30 dk'da bir toplar).
+    """
+    from src.user_activity.event_collector import EventCollector
+    app = ctx.obj
+    if check_policy:
+        policy = EventCollector.check_audit_policy()
+        for k, v in policy.items():
+            click.echo(f"  {k}: {v}")
+    ua_cfg = (app.config or {}).get("user_activity", {}) or {}
+    if hours is None:
+        hours = int(ua_cfg.get("collect_hours", 24))
+    collector = EventCollector(app.db, app.config)
+    click.echo(f"Olaylar toplaniyor (son {hours} saat)...")
+    result = collector.collect(source_id=source_id, hours=hours, server=server)
+    click.echo(
+        f"Toplandi: {result.get('collected', 0)} | "
+        f"Filtrelendi: {result.get('filtered', 0)} | "
+        f"Hata: {result.get('errors', 0)}"
+    )
+
+
 # ═══════════════════════════════════════════════════
 # REPORT KOMUTLARI
 # ═══════════════════════════════════════════════════

@@ -8,6 +8,7 @@ from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger("file_activity.scheduler")
 
@@ -74,6 +75,10 @@ class TaskScheduler:
         # forecast.enabled=false, smtp.enabled=false, or
         # forecast.alarm_email is empty — all three independently disable.
         self._register_capacity_check_job()
+        # #340 Faz 1: periodic Security-log event collection (forensic
+        # deletions data path). Gated on user_activity.enabled (default
+        # false) — no-op unless the operator opts in.
+        self._register_event_collect_job()
         self.scheduler.start()
         logger.info("TaskScheduler başlatıldı")
 
@@ -438,6 +443,92 @@ class TaskScheduler:
             )
         except Exception as e:
             logger.error("Failed to register daily_backup: %s", e)
+
+    def _run_collect_events(self, task=None):
+        """#340 Faz 1 — periodic Windows Event Log collection + anomaly pass.
+
+        The Security log can be short-lived (~16h observed in the Burcu
+        Gida incident), so events must be harvested continuously or
+        they're lost. Overlapping lookback windows are safe: the
+        idx_ual_dedup unique index + INSERT OR IGNORE make collection
+        idempotent. After collecting, runs the anomaly detection pass so
+        _detect_mass_delete goes live on the fresh rows.
+        """
+        ua_cfg = (self.config or {}).get("user_activity") or {}
+        if not ua_cfg.get("enabled", False):
+            return {"status": "skipped", "message": "user_activity.enabled=false"}
+        try:
+            from src.user_activity.event_collector import EventCollector
+        except Exception as e:
+            return {"status": "error", "message": f"event_collector import failed: {e}"}
+
+        interval_min = int(ua_cfg.get("collect_interval_minutes", 30))
+        # Lookback = 2x interval (hours, rounded up) — overlap tolerated
+        # by the dedup index; a missed run never loses events.
+        lookback_hours = max(1, -(-interval_min * 2 // 60))
+        op_id = self._track_op(
+            "collect_events",
+            "Guvenlik gunlugu olay toplama",
+            metadata={"hours": lookback_hours},
+        )
+        try:
+            collector = EventCollector(self.db, self.config)
+            result = collector.collect(hours=lookback_hours)
+            # Anomaly detection over the fresh window. Detection window
+            # matches the collect interval so the same mass-delete burst
+            # isn't re-alerted on every run (insert_anomaly has no dedup).
+            try:
+                from src.user_activity.user_analyzer import AnomalyDetector
+                detector = AnomalyDetector(self.db, self.config)
+                alerts = detector.run_detection(
+                    hours=max(1, interval_min // 60) or 1)
+                result["anomalies"] = len(alerts) if alerts else 0
+            except Exception as e:
+                logger.warning("anomaly detection pass failed: %s", e)
+            logger.info(
+                "collect_events: collected=%s filtered=%s errors=%s anomalies=%s",
+                result.get("collected"), result.get("filtered"),
+                result.get("errors"), result.get("anomalies"),
+            )
+            return {"status": "success", **result}
+        except Exception as e:
+            logger.error("collect_events failed: %s", e, exc_info=True)
+            return {"status": "error", "message": str(e)}
+        finally:
+            self._finish_op(op_id)
+
+    def _register_event_collect_job(self):
+        """#340 Faz 1 — register the periodic event-collection job.
+
+        Gated on ``user_activity.enabled`` (default False — safe on
+        existing boxes; the operator opts in via config).
+        """
+        ua_cfg = (self.config or {}).get("user_activity") or {}
+        if not ua_cfg.get("enabled", False):
+            logger.info(
+                "collect_events not registered: user_activity.enabled=false")
+            return
+        try:
+            interval_min = int(ua_cfg.get("collect_interval_minutes", 30))
+        except (TypeError, ValueError):
+            interval_min = 30
+        if interval_min < 5:
+            logger.warning(
+                "collect_interval_minutes=%r too aggressive — clamping to 5",
+                interval_min)
+            interval_min = 5
+        try:
+            self.scheduler.add_job(
+                self._run_collect_events,
+                trigger=IntervalTrigger(minutes=interval_min),
+                id="collect_events",
+                name="collect_events:security_log",
+                replace_existing=True,
+            )
+            logger.info(
+                "collect_events job registered (every %d min)", interval_min)
+        except Exception as e:
+            logger.error("Failed to register collect_events: %s", e)
 
     def _run_approval_expiry(self):
         """Flip stale pending approvals to ``expired`` (issue #112)."""

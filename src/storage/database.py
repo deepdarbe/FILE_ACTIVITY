@@ -707,6 +707,21 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ual_type ON user_access_logs(access_type)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ual_path ON user_access_logs(file_path)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ual_ext ON user_access_logs(extension)")
+        # #340 Faz 1 — dedup guard: the scheduler's overlapping lookback
+        # windows re-read the same Security-log events; this unique index
+        # + INSERT OR IGNORE in bulk_insert_access_logs make collection
+        # idempotent. try/except: if a legacy box already has duplicate
+        # rows the CREATE UNIQUE would throw — startup must not break on
+        # a uniqueness assertion (collection then stays non-idempotent
+        # until the operator dedupes, which is the pre-#340 status quo).
+        try:
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ual_dedup ON "
+                "user_access_logs(event_id, access_time, username, "
+                "file_path, access_type)")
+        except sqlite3.OperationalError as e:
+            logger.warning(
+                "idx_ual_dedup olusturulamadi (mevcut duplike satirlar?): %s", e)
 
         # Kullanici profilleri
         cur.execute("""
@@ -2261,12 +2276,18 @@ class Database:
     # ──────────────────────────────────────────────
 
     def bulk_insert_access_logs(self, logs: list):
-        """Toplu erisim logu ekleme."""
+        """Toplu erisim logu ekleme.
+
+        #340 Faz 1 — INSERT OR IGNORE + idx_ual_dedup: the event
+        collector's overlapping lookback windows re-read the same
+        events; re-inserts are silently dropped so collection is
+        idempotent.
+        """
         if not logs:
             return
         with self.get_conn() as conn:
             conn.executemany(
-                """INSERT INTO user_access_logs
+                """INSERT OR IGNORE INTO user_access_logs
                    (source_id, username, domain, file_path, file_name,
                     extension, access_type, access_time, client_ip,
                     file_size, event_id)
