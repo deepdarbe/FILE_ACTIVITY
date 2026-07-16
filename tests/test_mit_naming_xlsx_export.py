@@ -19,7 +19,7 @@ import sys
 from typing import Optional
 
 import pytest
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
@@ -29,6 +29,7 @@ if REPO_ROOT not in sys.path:
 
 from openpyxl import load_workbook  # noqa: E402
 from src.storage.database import Database  # noqa: E402
+from src.security.user_scope import get_owner_scope  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -93,14 +94,28 @@ def _build_app(db):
 
     app = FastAPI()
 
+    @app.middleware("http")
+    async def _fake_jwt(request: Request, call_next):
+        # Mirror the production JWT middleware just enough for scoping tests:
+        # an X-Test-User header stands in for an authenticated viewer session.
+        user = request.headers.get("X-Test-User")
+        request.state.jwt_user = (
+            {"role": "viewer", "sub": user} if user else None
+        )
+        return await call_next(request)
+
     @app.get("/api/reports/mit-naming/{source_id}/export.xlsx")
     async def export_mit_naming_xlsx(
+        request: Request,
         source_id: int,
         ids: Optional[str] = Query(None),
     ):
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
             raise HTTPException(404, "Tarama bulunamadi")
+
+        # #308: viewer-role requests are scoped to their own files (bound param).
+        scope_frag, scope_params = get_owner_scope(request)
 
         rules = [
             ("R1", "Bosluk Iceren", "critical",
@@ -144,10 +159,10 @@ def _build_app(db):
         export_rows = []
         with db.get_cursor() as cur:
             cur.execute(
-                """SELECT id, file_path, file_name, owner, last_modify_time, file_size
+                f"""SELECT id, file_path, file_name, owner, last_modify_time, file_size
                    FROM scanned_files
-                   WHERE source_id = ? AND scan_id = ?""",
-                (source_id, scan_id),
+                   WHERE source_id = ? AND scan_id = ? {scope_frag}""",
+                [source_id, scan_id, *scope_params],
             )
             for r in cur:
                 if id_filter is not None and r["id"] not in id_filter:
@@ -275,6 +290,41 @@ def test_xlsx_export_filters_by_ids(seeded):
     assert paths == {"/share/has space.txt"}, (
         f"ids filter leaked other files: {paths!r}"
     )
+
+
+def test_xlsx_export_scoped_to_owner(seeded):
+    """#308: a viewer only exports their OWN files, even via the bulk export.
+
+    The three seeded files are owned by alice / bob / carol. An unauthenticated
+    request exports all owners' violations; a viewer request (X-Test-User) must
+    export only that viewer's rows — otherwise the /files scoping is bypassable
+    through this download URL.
+    """
+    db, source_id, _ = seeded
+    client = TestClient(_build_app(db))
+
+    # Unauthenticated → full export (backwards-compatible).
+    full = client.get(f"/api/reports/mit-naming/{source_id}/export.xlsx")
+    full_owners = {
+        row[1].value
+        for row in load_workbook(io.BytesIO(full.content)).active.iter_rows(min_row=2)
+        if row[1].value and row[1].value != ""
+    }
+    assert {"alice", "bob", "carol"} & full_owners  # multiple owners present
+
+    # Viewer 'alice' → only alice's rows.
+    scoped = client.get(
+        f"/api/reports/mit-naming/{source_id}/export.xlsx",
+        headers={"X-Test-User": "alice"},
+    )
+    assert scoped.status_code == 200
+    rows = [
+        row
+        for row in load_workbook(io.BytesIO(scoped.content)).active.iter_rows(min_row=2)
+        if row[0].value  # skip the trailing TOTAL row (col A empty)
+    ]
+    owners = {r[1].value for r in rows}
+    assert owners == {"alice"}, f"scoped export leaked other owners: {owners!r}"
 
 
 def test_xlsx_export_404_when_no_scan(tmp_path):
