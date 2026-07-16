@@ -133,6 +133,13 @@ def parse_usn_records(buf: bytes, offset: int = 8) -> Iterator[dict]:
         yield {
             "frn": frn,
             "parent_frn": parent_frn,
+            # Raw (unmasked) 64-bit file references. The masked frn/parent_frn
+            # above are the parent-chain dict keys; the raw values keep the
+            # NTFS sequence number (high 16 bits) that OpenFileById(FileIdType)
+            # validates — required by FrnResolver for USN full-path resolution
+            # (#340 Faz 2). Additive keys; existing consumers read frn/parent_frn.
+            "frn_raw": frn_raw,
+            "parent_frn_raw": parent_frn_raw,
             "usn": usn,
             "attributes": attributes,
             "file_name": file_name,

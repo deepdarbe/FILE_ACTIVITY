@@ -168,7 +168,11 @@ user_activity:
   enabled: false
   collect_interval_minutes: 30   # scheduler toplama araligi (min 5)
   collect_hours: 24              # manuel CLI icin varsayilan lookback
-  event_ids: [4663, 5145, 4660, 4656]
+  # #340 Faz 2: 4624 (Logon) eklendi — 4656/4660 silme satirlarina LogonId
+  # uzerinden kaynak IP/workstation baglar. 4624 SATIRLARI YAZILMAZ, yalniz
+  # in-run LogonId->IP eslemesi icin okunur. ONKOSUL: "Logon" alt-kategorisi
+  # audit acik olmali (auditpol /set /subcategory:"Logon" /success:enable).
+  event_ids: [4663, 5145, 4660, 4656, 4624]
   exclude_users: ["SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE",
                   "DWM-1", "DWM-2", "UMFD-0", "UMFD-1"]
   exclude_extensions: ["tmp", "log", "etl", "evtx"]
