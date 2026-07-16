@@ -51,6 +51,18 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger("file_activity.analyzer.cache")
 
 
+def _log_safe(value: Any) -> str:
+    """Neutralise CR/LF before interpolating *value* into a log line.
+
+    ``analyzer_name`` can be derived from a request parameter (e.g. the
+    ``code`` on ``/api/reports/mit-naming/{id}/files``). Endpoints validate
+    it against an allowlist today, but stripping newlines here makes the log
+    path injection-proof regardless of caller — no forged log records even if
+    an unvalidated name ever reaches the cache. (CodeQL py/log-injection.)
+    """
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 # ---------------------------------------------------------------------------
 # In-flight dedup (cache-stampede guard)
 # ---------------------------------------------------------------------------
@@ -335,7 +347,7 @@ def get_or_compute(
         except (TypeError, ValueError) as e:  # pragma: no cover - defensive
             logger.warning(
                 "analyzer_cache: result for %s/%d not JSON-serialisable: %s",
-                analyzer_name, scan_id, e,
+                _log_safe(analyzer_name), scan_id, _log_safe(e),
             )
             # Still return the result; just don't cache it.
             return {
