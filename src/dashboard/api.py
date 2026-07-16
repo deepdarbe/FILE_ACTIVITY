@@ -3992,8 +3992,21 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         # The SQLite path is now index-assisted (idx_sf_scan_name_size) and reads
         # its totals from the precomputed scan summary, so it is the correct
         # primary path here. DuckDB stays available for the other report endpoints.
+        #
+        # Resolve the scan the SAME way as the rest of the dashboard —
+        # include_running=True — instead of letting get_duplicate_groups fall
+        # back to its completed-only lookup. Otherwise this page and its own CSV
+        # export (which already uses include_running) could show different
+        # scans, and the page rendered empty while a running/not-yet-'completed'
+        # scan — the one overview/mit-naming/insights display — had the data.
+        scan_id = db.get_latest_scan_id(source_id, include_running=True)
+        if not scan_id:
+            return {"total_groups": 0, "total_waste_size": 0, "total_files": 0,
+                    "groups": [], "page": page, "page_size": page_size,
+                    "total_pages": 1, "total_waste_size_formatted": format_size(0)}
         result = db.get_duplicate_groups(
-            source_id, min_size=min_size, page=page, page_size=page_size
+            source_id, scan_id=scan_id, min_size=min_size,
+            page=page, page_size=page_size
         )
         # Boyut formatlama
         result["total_waste_size_formatted"] = format_size(result.get("total_waste_size", 0))
