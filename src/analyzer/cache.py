@@ -42,12 +42,44 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger("file_activity.analyzer.cache")
+
+
+# ---------------------------------------------------------------------------
+# In-flight dedup (cache-stampede guard)
+# ---------------------------------------------------------------------------
+#
+# The two-tier cache stops REPEATED calls from recomputing, but not
+# CONCURRENT ones: two requests that both miss (a page opened twice, a
+# scan-progress poll racing a user click) each ran the full aggregate. On a
+# 2.5M+ row scan that meant N simultaneous heavy SQL passes, starving the
+# dashboard's cheap reads. Serialise identical (analyzer, scan_id) computes on
+# a per-key lock so exactly one runs; the rest wait and read the fresh entry.
+_inflight_guard = threading.Lock()
+_inflight_locks: dict[tuple[str, int], threading.Lock] = {}
+
+
+def _inflight_lock(analyzer_name: str, scan_id: int) -> threading.Lock:
+    key = (analyzer_name, scan_id)
+    with _inflight_guard:
+        lk = _inflight_locks.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            _inflight_locks[key] = lk
+        # Soft bound: drop unheld locks if the registry grows large. Scan_ids
+        # are few, but retention churn could accumulate stale keys over time.
+        if len(_inflight_locks) > 512:
+            for k in [k for k, v in _inflight_locks.items()
+                      if k != key and v.acquire(blocking=False)]:
+                _inflight_locks[k].release()
+                _inflight_locks.pop(k, None)
+        return lk
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +253,42 @@ def _parse_timestamp(ts: Any) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _lookup(db, analyzer_name: str, scan_id: int, now: float) -> Optional[dict]:
+    """Return a ready cache envelope from the LRU or DB tier, or None on miss.
+
+    Checks the in-memory LRU first (source="memory"), then the DB tier
+    (source="db", hydrating the LRU on the way back). A None return means
+    neither tier had the entry and the caller must compute it.
+    """
+    hit = _lru_get(analyzer_name, scan_id)
+    if hit is not None:
+        value_json, computed_at = hit
+        return {
+            "results": json.loads(value_json),
+            "cache": {
+                "hit": True,
+                "source": "memory",
+                "age_seconds": int(max(0, now - computed_at)),
+            },
+        }
+
+    db_hit = _db_get(db, analyzer_name, scan_id)
+    if db_hit is not None:
+        value_json, computed_at = db_hit
+        # Hydrate the in-memory tier so subsequent calls are O(1).
+        _lru_set(analyzer_name, scan_id, value_json, computed_at)
+        return {
+            "results": json.loads(value_json),
+            "cache": {
+                "hit": True,
+                "source": "db",
+                "age_seconds": int(max(0, now - computed_at)),
+            },
+        }
+
+    return None
+
+
 def get_or_compute(
     db,
     analyzer_name: str,
@@ -237,56 +305,47 @@ def get_or_compute(
                       "age_seconds": int}
         }
 
-    ``compute()`` is only invoked on full cache miss.
+    ``compute()`` is only invoked on full cache miss, and at most once per
+    ``(analyzer, scan_id)`` even under concurrent misses: the first caller
+    holds the per-key in-flight lock and computes; the rest block, then read
+    the entry it just wrote (double-checked locking).
     """
     now = time.time()
 
-    hit = _lru_get(analyzer_name, scan_id)
-    if hit is not None:
-        value_json, computed_at = hit
-        result = json.loads(value_json)
-        return {
-            "results": result,
-            "cache": {
-                "hit": True,
-                "source": "memory",
-                "age_seconds": int(max(0, now - computed_at)),
-            },
-        }
+    envelope = _lookup(db, analyzer_name, scan_id, now)
+    if envelope is not None:
+        return envelope
 
-    db_hit = _db_get(db, analyzer_name, scan_id)
-    if db_hit is not None:
-        value_json, computed_at = db_hit
-        # Hydrate the in-memory tier so subsequent calls are O(1).
-        _lru_set(analyzer_name, scan_id, value_json, computed_at)
-        result = json.loads(value_json)
-        return {
-            "results": result,
-            "cache": {
-                "hit": True,
-                "source": "db",
-                "age_seconds": int(max(0, now - computed_at)),
-            },
-        }
+    # Full miss. Serialise identical computes on a per-key lock so concurrent
+    # callers don't each run the (expensive) aggregate — see the in-flight
+    # dedup note above.
+    lock = _inflight_lock(analyzer_name, scan_id)
+    with lock:
+        # Re-check under the lock: another caller may have computed and cached
+        # the entry while we were blocked on the lock.
+        now = time.time()
+        envelope = _lookup(db, analyzer_name, scan_id, now)
+        if envelope is not None:
+            return envelope
 
-    # Full miss - compute, persist both tiers.
-    result = compute()
-    try:
-        value_json = json.dumps(result, default=str)
-    except (TypeError, ValueError) as e:  # pragma: no cover - defensive
-        logger.warning(
-            "analyzer_cache: result for %s/%d not JSON-serialisable: %s",
-            analyzer_name, scan_id, e,
-        )
-        # Still return the result; just don't cache it.
+        # Still missing and we hold the lock — we're the single computer.
+        result = compute()
+        try:
+            value_json = json.dumps(result, default=str)
+        except (TypeError, ValueError) as e:  # pragma: no cover - defensive
+            logger.warning(
+                "analyzer_cache: result for %s/%d not JSON-serialisable: %s",
+                analyzer_name, scan_id, e,
+            )
+            # Still return the result; just don't cache it.
+            return {
+                "results": result,
+                "cache": {"hit": False, "source": None, "age_seconds": 0},
+            }
+
+        _lru_set(analyzer_name, scan_id, value_json, now)
+        _db_set(db, analyzer_name, scan_id, value_json)
         return {
             "results": result,
             "cache": {"hit": False, "source": None, "age_seconds": 0},
         }
-
-    _lru_set(analyzer_name, scan_id, value_json, now)
-    _db_set(db, analyzer_name, scan_id, value_json)
-    return {
-        "results": result,
-        "cache": {"hit": False, "source": None, "age_seconds": 0},
-    }
