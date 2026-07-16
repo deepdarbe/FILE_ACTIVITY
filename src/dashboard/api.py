@@ -3789,7 +3789,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         try:
             with db.get_read_cursor() as cur:
                 row = cur.execute(
-                    "SELECT id, partial_summary_json, partial_updated_at "
+                    "SELECT id, partial_summary_json, partial_updated_at, status "
                     "FROM scan_runs WHERE source_id = ? "
                     "ORDER BY started_at DESC LIMIT 1",
                     (source_id,),
@@ -3801,6 +3801,19 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         if not row:
             return None, None
         scan_id_local = row.get("id")
+        scan_status = row.get("status")
+
+        def _finalize(payload):
+            # #347 — scan_runs.status is authoritative. A completed scan
+            # whose rolling partial snapshot was never finalized (e.g. the
+            # process restarted mid-enrichment) leaves scan_state at
+            # 'enrich'/'db_writing', which pins loadFrequency/treemap/sizes
+            # in the partial 0-count view even though the completed data is
+            # available. Force 'completed' so those pages do the full load.
+            # Copy so a shared cached dict isn't mutated.
+            if scan_status == "completed" and payload.get("scan_state") != "completed":
+                payload = {**payload, "scan_state": "completed"}
+            return payload
         # noqa: S-SHAPE - this IS the partial-v2 canonical reader: the
         # v1->v2 migration + (source_id, updated_at) cache live right here,
         # so routing through db.get_scan_partial_summary would lose both.
@@ -3808,17 +3821,22 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         updated_at = row.get("partial_updated_at")
         if not blob:
             # No partial snapshot yet — return an empty v2 envelope so
-            # frontend pages render zeros instead of breaking.
+            # frontend pages render zeros instead of breaking. (#347: if
+            # the scan is completed with no partial, still mark completed
+            # so pages take the full-load path.)
             from src.analyzer.partial_summary_v2 import _empty_v2_payload
             empty = _empty_v2_payload()
             empty["scan_id"] = scan_id_local
-            return empty, updated_at
+            return _finalize(empty), updated_at
 
-        # Cache hit?
+        # Cache hit? (#347 — re-apply _finalize on the cached payload: the
+        # cache is keyed on partial_updated_at, but status can flip to
+        # 'completed' after the last partial write, so the override must
+        # be recomputed on every return, not baked into the cache.)
         cache_key = (source_id, updated_at)
         cached = _v2_cache_get(cache_key)
         if cached is not None:
-            return cached, updated_at
+            return _finalize(cached), updated_at
 
         try:
             d = json.loads(blob)
@@ -3831,8 +3849,10 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             d = _v1_to_v2(d)
         d["scan_id"] = scan_id_local
         d["partial_updated_at"] = updated_at
+        # Cache the RAW payload (pre-_finalize) so the status override is
+        # always recomputed with the current scan_runs.status.
         _v2_cache_put(cache_key, d)
-        return d, updated_at
+        return _finalize(d), updated_at
 
     @app.get("/api/sources/{source_id}/partial-summary")
     def partial_summary_v2_for_source(source_id: int):
