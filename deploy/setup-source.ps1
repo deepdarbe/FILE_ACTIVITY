@@ -392,15 +392,30 @@ Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 #
 # Branch'i koru: install.ps1 -Branch parametresi alir, scriptblock-Create
 # pattern ile thread eder (eski temp-file dance gerekmez).
+# #351: 2-3 GB'lik snapshot her update'te operator'i bekletiyordu. Artik
+# update.cmd basinda bir E/H sorusu var. GUVENLI VARSAYILAN: sadece
+# EXPLICIT "H" yedegi atlar; Enter / 30sn timeout / choice.exe eksikligi /
+# beklenmedik her hata GUVENLI tarafa (yedek AL) duser -> bu yuzden
+# `if "%errorlevel%"=="2"` (tam esitlik), `if errorlevel 2` DEGIL: ikincisi
+# choice.exe bulunamazsa donen 9009'u da yakalayip yanlislikla atlardi.
+# Snapshot zaten --skip-if-recent-minutes 30 ile son 30dk icinde alinmissa
+# kendiliginden ~aninda gecer; soru yine sorulur ama maliyeti dusuktur.
 $updateCmd = @"
 @echo off
 echo FILE ACTIVITY guncelleniyor ($Branch branch)...
-echo  - Pre-update SQLite snapshot kontrol ediliyor (son 30dk icindeyse atlanir)...
 cd /d "$InstallDir"
+echo.
+choice /C EH /N /T 30 /D E /M "Update oncesi SQLite yedegi alinsin mi? (E=Evet [varsayilan, 30sn] / H=Hayir, atla): "
+if "%errorlevel%"=="2" goto fa_skipbackup
+echo  - Pre-update SQLite snapshot aliniyor (son 30dk icindeyse atlanir)...
 "$InstallDir\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update" --skip-if-recent-minutes 30
 if errorlevel 1 (
     echo  [!] Snapshot basarisiz - update yine de devam ediyor
 )
+goto fa_doupdate
+:fa_skipbackup
+echo  - [ATLANDI] Yedek alinmadan devam ediliyor (secim: Hayir).
+:fa_doupdate
 powershell -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/deploy/install.ps1))) -Branch $Branch"
 "@
 Set-Content "$InstallDir\update.cmd" $updateCmd
