@@ -60,13 +60,18 @@ backup:
 database:
   path: "data/file_activity.db"    # SQLite veritabani dosyasi
   retention:
-    # Her kaynak icin kac eski scan tutulacak. Uygulamayi her baslattigimda
-    # (Dashboard acilmadan once) eski scan'ler + ilgili scanned_files
-    # silinir. Dashboard'un ilk acilista asili kalmamasi icin sart;
-    # Overview sorgulari scan_runs x scanned_files cartesian yuku olusturur.
+    # Her kaynak icin kac eski scan tutulacak.
+    # #337 — temizlik artik ARKA PLAN daemon thread'inde, kucuk
+    # per-batch-commit'li parcalarla calisir: dashboard acilisini
+    # bloklamaz, WAL sinirli kalir, kesinti en fazla 1 batch is
+    # kaybettirir ve status='running' scan asla silinmez.
     # 0 = hic scan tutma (sadece en son), N = son N + guncel
     auto_cleanup_on_startup: true
     keep_last_n_scans: 3
+    # Opsiyonel ince ayar (kod ici varsayilanlar):
+    # cleanup_batch_rows: 10000                    # batch basina satir
+    # cleanup_sleep_between_batches_seconds: 0.5   # batch'ler arasi bekleme
+    # cleanup_startup_delay_seconds: 15            # acilis sonrasi gecikme
 
 # Issue #114 — pluggable storage backend.
 # Phase 1 lands the SqliteBackend wrapper + StorageManager factory but
