@@ -3311,13 +3311,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         }
 
     @app.get("/api/reports/mit-naming/{source_id}/export")
-    def mit_naming_export(source_id: int):
+    def mit_naming_export(request: Request, source_id: int):
         """MIT ihlal raporunu CSV olarak export et.
 
         Cached per scan_id — the full-scan iteration over 2.89M rows
         otherwise re-pays the cost on every download. Cache stores the
         per-code violation lists; CSV serialisation is cheap once the
         dict is in memory.
+
+        Wave 10 #308: viewer-role requests are scoped to their own files, so
+        the export can't be used to exfiltrate every owner's rows — otherwise
+        the scoping on /files (the list view) would be trivially bypassable via
+        this download URL.
         """
         import re as re_mod
         from fastapi.responses import StreamingResponse
@@ -3357,6 +3362,17 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
         violations = envelope.get("results", {}) or {code: [] for code in checks}
 
+        # #308: narrow the shared cached lists to the viewer's own files. The
+        # cache stays global (computed once for everyone); the per-owner cut
+        # happens here before serialisation.
+        scope_user = get_scope_username(request)
+        if scope_user:
+            violations = {
+                code: [f for f in (flist or [])
+                       if scope_user in (f.get("owner") or "").lower()]
+                for code, flist in violations.items()
+            }
+
         # CSV olustur (Excel uyumlu)
         output = io.StringIO()
         output.write('\ufeff')  # BOM for Excel UTF-8
@@ -3379,6 +3395,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     @app.get("/api/reports/mit-naming/{source_id}/export.xlsx")
     def export_mit_naming_xlsx(
+        request: Request,
         source_id: int,
         ids: Optional[str] = Query(
             None,
@@ -3411,6 +3428,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         scan_id = db.get_latest_scan_id(source_id, include_running=True)
         if not scan_id:
             raise HTTPException(404, "Tarama bulunamadi")
+
+        # Wave 10 #308: viewer-role requests are scoped to their own files.
+        # Injected into the streaming query below as a bound LIKE param so this
+        # bulk export can't exfiltrate every owner's rows.
+        scope_frag, scope_params = get_owner_scope(request)
 
         # Rule definitions: code -> (label, severity, predicate(path, name))
         # severity matches MITNamingAnalyzer.get_report() conventions.
@@ -3472,11 +3494,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         def _violation_rows():
             with db.get_read_cursor() as cur:
                 cur.execute(
-                    """SELECT id, file_path, file_name, owner,
+                    f"""SELECT id, file_path, file_name, owner,
                               last_modify_time, file_size
                        FROM scanned_files
-                       WHERE source_id = ? AND scan_id = ?""",
-                    (source_id, scan_id),
+                       WHERE source_id = ? AND scan_id = ? {scope_frag}""",
+                    [source_id, scan_id, *scope_params],
                 )
                 for r in cur:
                     if id_filter is not None and r["id"] not in id_filter:
