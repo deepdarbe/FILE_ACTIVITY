@@ -2479,17 +2479,30 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         return result
 
     @app.get("/api/drilldown/size/{source_id}")
-    def drilldown_size(source_id: int, min_bytes: int = 0,
+    def drilldown_size(request: Request, source_id: int, min_bytes: int = 0,
                               max_bytes: Optional[int] = None,
                               page: int = Query(1, ge=1, le=10000),
                               limit: int = Query(100, ge=1, le=500)):
+        """Wave 10 #308: viewer-role requests are scoped to their own files.
+
+        (This drilldown was missed by the original #308 sweep — its siblings
+        frequency/type/owner were scoped but size was not, so a viewer could
+        enumerate every owner's files by size. Fixed to match.)
+        """
+        owner_scope = get_owner_scope(request)
         src = _get_source(db, source_id)
         scan_id = db.get_latest_scan_id(src.id, include_running=True)
         if not scan_id:
             raise HTTPException(400, "Tarama verisi bulunamadi")
         offset = (page - 1) * limit
-        run = _run_drilldown(analytics.get_files_by_size_range, db.get_files_by_size_range)
-        result = run(src.id, scan_id, min_bytes, max_bytes, limit, offset)
+        if scope_is_restricted(request):
+            result = db.get_files_by_size_range(
+                src.id, scan_id, min_bytes, max_bytes, limit, offset,
+                owner_scope=owner_scope,
+            )
+        else:
+            run = _run_drilldown(analytics.get_files_by_size_range, db.get_files_by_size_range)
+            result = run(src.id, scan_id, min_bytes, max_bytes, limit, offset)
         result["page"] = page
         result["limit"] = limit
         return result
@@ -2596,8 +2609,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             f_args = (extension,)
             sheet_title = f"type_{extension}" if extension else "type_all"
         elif filter_type == "size":
-            run = _run_drilldown(analytics.get_files_by_size_range,
-                                 db.get_files_by_size_range)
+            if _restricted:
+                def run(sid, scid, mnb, mxb, lim, off):
+                    return db.get_files_by_size_range(
+                        sid, scid, mnb, mxb, lim, off, owner_scope=owner_scope)
+            else:
+                run = _run_drilldown(analytics.get_files_by_size_range,
+                                     db.get_files_by_size_range)
             f_args = (min_bytes, max_bytes)
             sheet_title = f"size_{min_bytes}-{max_bytes or 'inf'}"
         elif filter_type == "owner":
