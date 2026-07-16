@@ -472,12 +472,20 @@ class AnalyticsEngine:
         if self._init_error:
             info["init_error"] = self._init_error
         if self.available:
+            # #338 — the probe's job is to prove ATTACH + table
+            # readability, not to count 8.7M rows through the sqlite
+            # scanner (that COUNT(*) took 8-9s on the 35 GB prod DB and
+            # timed out /api/system/health). LIMIT 1 stops after the
+            # first row -> O(1). ``scanned_files_rows`` is dropped —
+            # repo-wide grep shows zero consumers; if a count is ever
+            # wanted, serve SUM(scan_runs.total_files) from SQLite.
             try:
                 with self._cursor() as cur:
                     row = cur.execute(
-                        "SELECT COUNT(*) FROM sqlite_db.scanned_files"
+                        "SELECT 1 FROM sqlite_db.scanned_files LIMIT 1"
                     ).fetchone()
-                    info["scanned_files_rows"] = int(row[0] or 0)
+                    info["probe_ok"] = True
+                    info["has_rows"] = row is not None
             except Exception as e:
                 info["probe_error"] = str(e)
         return info
