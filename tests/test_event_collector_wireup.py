@@ -119,8 +119,17 @@ def test_run_collect_events_skips_when_disabled(db):
     assert res == {"status": "skipped", "message": "user_activity.enabled=false"}
 
 
-@requires_apscheduler
 def test_cli_command_registered():
-    """main.py exposes collect-events."""
-    import main as main_mod
-    assert "collect-events" in main_mod.cli.commands
+    """main.py exposes collect-events.
+
+    Deliberately a SOURCE-TEXT pin, not an import: main.py replaces
+    sys.stdout at import time (utf-8 TextIOWrapper, main.py:10-11),
+    which destroys pytest's capture streams and cascades
+    'I/O operation on closed file' into every later test's
+    setup/teardown (observed in Docker CI).
+    """
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parent.parent / "main.py"
+    text = src.read_text(encoding="utf-8")
+    assert '@cli.command("collect-events")' in text
+    assert "EventCollector(app.db, app.config)" in text
