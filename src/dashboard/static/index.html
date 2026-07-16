@@ -8075,17 +8075,51 @@ async function executeApproval(id, btn) {
         })
         .catch(() => {}); // Endpoint yoksa sessizce atla
 
-    // Sidebar sürümünü dinamik cek (VERSION dosyasindan)
-    fetch('/api/system/version')
-        .then(r => r.ok ? r.json() : null)
-        .then(d => {
-            const el = document.getElementById('app-version');
-            if (el && d && d.version) el.textContent = 'v' + d.version;
-        })
-        .catch(() => {
-            const el = document.getElementById('app-version');
-            if (el) el.textContent = '';
-        });
+    // #349 — stale-tab detector. The inline JS travels inside index.html;
+    // a browser that keeps an old tab open (SPA navigation never refetches
+    // the document, and heuristic disk cache can outlive a soft reload)
+    // runs OLD code against a freshly-deployed backend, so buttons/pages
+    // "disappear" after a deploy. Compare the build version baked into the
+    // page (<meta name="app-version">) against the server's live version;
+    // on mismatch show a click-to-reload banner. createElement/textContent
+    // only — no innerHTML (D-CHAIN / HTML-BUDGET untouched).
+    function _checkVersionFreshness(serverVersion) {
+        if (!serverVersion) return;
+        const meta = document.querySelector('meta[name="app-version"]');
+        const loaded = meta ? (meta.getAttribute('content') || '') : '';
+        // '__APP_VERSION__' = placeholder not substituted (dev/static open).
+        if (!loaded || loaded.indexOf('__') === 0) return;
+        if (loaded === serverVersion) return;
+        if (document.getElementById('fa-stale-banner')) return;
+        const bar = document.createElement('div');
+        bar.id = 'fa-stale-banner';
+        bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#f59e0b;color:#111;padding:11px 16px;text-align:center;font-size:14px;font-weight:700;box-shadow:0 2px 10px rgba(0,0,0,.35);cursor:pointer';
+        bar.textContent = '🔄 Yeni surum yuklendi (v' + serverVersion + '). Guncel arayuz icin buraya tiklayip yenileyin.';
+        bar.onclick = function () { location.reload(); };
+        document.body.appendChild(bar);
+    }
+
+    function _fetchVersion() {
+        return fetch('/api/system/version')
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+                const el = document.getElementById('app-version');
+                if (el && d && d.version) el.textContent = 'v' + d.version;
+                if (d && d.version) _checkVersionFreshness(d.version);
+            })
+            .catch(() => {
+                const el = document.getElementById('app-version');
+                if (el) el.textContent = '';
+            });
+    }
+
+    // Sidebar sürümünü dinamik cek (VERSION dosyasindan) + stale-tab kontrolu
+    _fetchVersion();
+    // Long-open tab: re-check when the user returns to the tab so a deploy
+    // that happened while they were away surfaces the reload banner.
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') _fetchVersion();
+    });
 
     // GitHub'da yeni release var mi kontrol et - varsa sidebar'da banner goster
     fetch('/api/system/version-check')
