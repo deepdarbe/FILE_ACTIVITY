@@ -3478,9 +3478,9 @@ class Database:
         """
         scope_frag, scope_params = owner_scope
         scope_params = list(scope_params)
-        # Son scan_id'yi bul
+        # Son scan_id'yi bul (pure read -> read-only pool, Rule 6 / #338)
         if not scan_id:
-            with self.get_cursor() as cur:
+            with self.get_read_cursor() as cur:
                 cur.execute("""
                     SELECT id FROM scan_runs WHERE source_id=? AND status='completed'
                     ORDER BY started_at DESC LIMIT 1
@@ -3490,7 +3490,20 @@ class Database:
                     return []
                 scan_id = row["id"]
 
-        with self.get_cursor() as cur:
+        # #338 (#290 pattern): the unscoped default-window request is what
+        # the dashboard sends — serve it from the precomputed summary and
+        # skip the live 15-18s GROUP BY over millions of rows. Called
+        # OUTSIDE any open cursor block (get_scan_summary uses the writer
+        # pool internally; never mix pools in one with-block). Scoped
+        # viewers (Wave 10 #308), limit>20 and pre-upgrade summaries fall
+        # through to the live path below. Staleness contract matches
+        # get_duplicate_groups: summary is a scan-end snapshot.
+        if not scope_frag and limit <= 20:
+            summ = self.get_scan_summary(scan_id)
+            if summ and isinstance(summ.get("top_creators"), list):
+                return summ["top_creators"][:limit]
+
+        with self.get_read_cursor() as cur:
             # Toplam dosya sayisi (scoped identically so percentage stays sane)
             cur.execute(
                 f"SELECT COUNT(*) as total FROM scanned_files "
@@ -3667,6 +3680,33 @@ class Database:
             summary["top_owners"] = [
                 {"owner": r["owner"], "count": r["c"], "size": r["s"]}
                 for r in owner_rows
+            ]
+
+            # #338 — top_creators (count-sorted, limit 20): the exact
+            # aggregate get_top_file_creators needs, precomputed here so
+            # /api/growth and /api/reports/top-creators stop paying a live
+            # 15-18s GROUP BY over millions of rows per request (#290
+            # pattern). Field names match the live path's dict shape.
+            # ADDITIVE key — summary_json_version stays 2; v2 readers
+            # ignore unknown keys (normalize_summary passes them through).
+            # NOTE (WAL): this adds one more full-scan aggregate inside
+            # this method's long-lived read snapshot — bounded (once per
+            # scan completion) and marginal next to the ~12 aggregates
+            # already here, but it IS a checkpoint-delaying reader while
+            # it runs (#132/#174/#181/#185 class; accepted, documented).
+            creator_rows = cur.execute(
+                "SELECT owner, COUNT(*) c, COALESCE(SUM(file_size),0) s "
+                "FROM scanned_files WHERE scan_id=? "
+                "AND owner IS NOT NULL AND owner != '' "
+                "GROUP BY owner ORDER BY c DESC LIMIT 20",
+                (scan_id,),
+            ).fetchall()
+            _tf = summary.get("total_files") or 0
+            summary["top_creators"] = [
+                {"owner": r["owner"], "file_count": r["c"],
+                 "total_size": r["s"],
+                 "percentage": (r["c"] / _tf * 100) if _tf else 0}
+                for r in creator_rows
             ]
 
             # --- v2: Yeni aggregate'ler ---
@@ -4023,6 +4063,7 @@ class Database:
                 "WHERE status='completed'"
             ).fetchall()
         pending = []
+        pending_creators = []  # #338 — v2 summaries missing top_creators
         for r in rows:
             sj = r["summary_json"]
             if not sj:
@@ -4033,19 +4074,57 @@ class Database:
                 ver = parsed.get("summary_json_version")
                 if not isinstance(ver, int) or ver < current_version:
                     pending.append(r["id"])
+                elif "top_creators" not in parsed:
+                    # #338 — additive-key backfill: run ONLY the single
+                    # top_creators GROUP BY and merge it, instead of a
+                    # full 12-aggregate recompute per legacy scan.
+                    pending_creators.append((r["id"], parsed))
             except Exception:
                 # Bozuk JSON — yeniden hesapla
                 pending.append(r["id"])
-        if not pending:
+        if not pending and not pending_creators:
             return 0
-        logger.info("Backfill: %d scan icin summary hesaplanacak", len(pending))
-        for sid in pending:
+        if pending:
+            logger.info(
+                "Backfill: %d scan icin summary hesaplanacak", len(pending))
+            for sid in pending:
+                try:
+                    self.compute_scan_summary(sid)
+                except Exception as e:
+                    logger.warning(
+                        "Summary backfill hatasi scan %s: %s", sid, e)
+        for sid, parsed in pending_creators:
             try:
-                self.compute_scan_summary(sid)
+                with self.get_read_cursor() as cur:
+                    creator_rows = cur.execute(
+                        "SELECT owner, COUNT(*) c, COALESCE(SUM(file_size),0) s "
+                        "FROM scanned_files WHERE scan_id=? "
+                        "AND owner IS NOT NULL AND owner != '' "
+                        "GROUP BY owner ORDER BY c DESC LIMIT 20",
+                        (sid,),
+                    ).fetchall()
+                _tf = parsed.get("total_files") or 0
+                parsed["top_creators"] = [
+                    {"owner": r["owner"], "file_count": r["c"],
+                     "total_size": r["s"],
+                     "percentage": (r["c"] / _tf * 100) if _tf else 0}
+                    for r in creator_rows
+                ]
+                self._execute_write_with_retry(
+                    "backfill_top_creators.UPDATE",
+                    "UPDATE scan_runs SET summary_json=? WHERE id=?",
+                    (json.dumps(parsed, ensure_ascii=False,
+                                separators=(",", ":")), sid),
+                )
+                logger.info(
+                    "Backfill: scan %s icin top_creators eklendi", sid)
             except Exception as e:
-                logger.warning("Summary backfill hatasi scan %s: %s", sid, e)
-        logger.info("Backfill tamamlandi: %d scan", len(pending))
-        return len(pending)
+                logger.warning(
+                    "top_creators backfill hatasi scan %s: %s", sid, e)
+        logger.info(
+            "Backfill tamamlandi: %d tam hesap + %d top_creators merge",
+            len(pending), len(pending_creators))
+        return len(pending) + len(pending_creators)
 
     # ──────────────────────────────────────────────
     # Extension/MIME mismatch findings (issue #144 Phase 1)
