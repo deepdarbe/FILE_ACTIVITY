@@ -31,7 +31,7 @@ from src.dashboard._endpoint_helpers import PaginationParams
 from src.security.ldap_auth import LDAPAuthenticator
 from src.security.session import SessionManager
 # Wave 10 #308 — per-user data scoping (viewer role filters by owner)
-from src.security.user_scope import get_owner_scope, scope_is_restricted
+from src.security.user_scope import get_owner_scope, scope_is_restricted, get_scope_username
 # Wave 10 #311 — TOTP/MFA second-factor enrollment and verification
 from src.security.totp_auth import TOTPManager
 # #319 — login brute-force / password-spraying throttle (per-username + per-IP)
@@ -3233,7 +3233,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/reports/mit-naming/{source_id}/files")
-    def mit_naming_files(source_id: int, code: str = "R1",
+    def mit_naming_files(request: Request, source_id: int, code: str = "R1",
                                 page: int = Query(1, ge=1, le=10000),
                                 page_size: int = Query(100, ge=1, le=500)):
         """MIT ihlal koduna gore dosya listesi (R1,R2,R3,R4,B1,B2,B3,B4,B5,B6).
@@ -3292,6 +3292,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             db, f"mit_naming_files:{code_upper}", scan_id, _compute_matching,
         )
         matching = envelope.get("results", []) or []
+
+        # Wave 10 #308: a viewer sees only their own files. The cache holds the
+        # full (shared) violation list so it's computed once for everyone; the
+        # per-owner narrowing happens here, in memory, before pagination.
+        scope_user = get_scope_username(request)
+        if scope_user:
+            matching = [f for f in matching
+                        if scope_user in (f.get("owner") or "").lower()]
 
         total = len(matching)
         offset = (page - 1) * page_size
@@ -3535,7 +3543,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         )
 
     @app.get("/api/insights/{source_id}/files")
-    def insight_files(source_id: int, insight_type: str = "stale_1year",
+    def insight_files(request: Request, source_id: int, insight_type: str = "stale_1year",
                             page: int = Query(1, ge=1, le=10000),
                             limit: int = Query(100, ge=1, le=500)):
         """AI insight tipine gore dosya listesi.
@@ -3557,6 +3565,13 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             files = get_insight_files(db, scan_id, insight_type)
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+        # Wave 10 #308: viewer-role requests are scoped to their own files.
+        scope_user = get_scope_username(request)
+        if scope_user:
+            files = [f for f in files
+                     if scope_user in (f.get("owner") or "").lower()]
+
         total = len(files)
         offset = (page - 1) * limit
         page_files = files[offset:offset + limit]
@@ -4899,8 +4914,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- BUYUME ANALIZI ---
 
     @app.get("/api/growth/{source_id}")
-    def growth_stats(source_id: int):
-        """Yillik/aylik/gunluk buyume istatistikleri."""
+    def growth_stats(request: Request, source_id: int):
+        """Yillik/aylik/gunluk buyume istatistikleri.
+
+        The growth trend itself is a share-wide size-over-time series (not
+        per-owner), but the embedded ``top_creators`` list is owner data, so it
+        is scoped like /api/reports/top-creators — a viewer only sees their own
+        creator row (Wave 10 #308).
+        """
         stats = None
         if analytics.available:
             try:
@@ -4909,14 +4930,22 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 logger.warning("DuckDB growth sorgusu basarisiz, SQLite fallback: %s", e)
         if stats is None:
             stats = db.get_growth_stats(source_id)
-        creators = db.get_top_file_creators(source_id)
+        creators = db.get_top_file_creators(
+            source_id, owner_scope=get_owner_scope(request))
         stats["top_creators"] = creators
         return stats
 
     @app.get("/api/reports/top-creators/{source_id}")
-    def top_creators(source_id: int, limit: int = 20):
-        """En cok dosya olusturan kullanicilar."""
-        return db.get_top_file_creators(source_id, limit=limit)
+    def top_creators(request: Request, source_id: int, limit: int = 20):
+        """En cok dosya olusturan kullanicilar.
+
+        Wave 10 #308: viewer-role requests are scoped to their own files, so a
+        viewer only ever sees their own creator row — the aggregate can't be
+        used to enumerate other owners. Scope is a bound LIKE param.
+        """
+        return db.get_top_file_creators(
+            source_id, limit=limit, owner_scope=get_owner_scope(request),
+        )
 
     # --- ARCHIVE BY INSIGHT API ---
 
