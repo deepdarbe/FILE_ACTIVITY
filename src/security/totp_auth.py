@@ -52,12 +52,25 @@ def _render_qr_svg(uri: str) -> str | None:
 class TOTPManager:
     """Manages TOTP secrets and verification for per-user MFA enrollment."""
 
-    def __init__(self, db):
-        """db: Database instance (must expose get_cursor / get_read_cursor)."""
+    def __init__(self, db, secret_box=None):
+        """db: Database instance (must expose get_cursor / get_read_cursor).
+
+        secret_box: optional ``SecretBox`` (#318) — when provided, TOTP seeds are
+        encrypted at rest and decrypted on read. None keeps the previous
+        plaintext behaviour (fully backwards-compatible; legacy plaintext rows
+        keep working even once a box is wired, via the ``enc:`` prefix tag).
+        """
         self.db = db
+        self._box = secret_box
         # Shared, process-wide brute-force throttle for the code-verify path.
         self._throttle = _AttemptThrottle(name="TOTP throttle")
         self._ensure_table()
+
+    def _enc_secret(self, secret: str) -> str:
+        return self._box.encrypt(secret) if self._box else secret
+
+    def _dec_secret(self, stored: str) -> str:
+        return self._box.decrypt(stored) if self._box else stored
 
     @staticmethod
     def _norm(username: str) -> str:
@@ -181,7 +194,7 @@ class TOTPManager:
                 ON CONFLICT(username) DO UPDATE
                     SET secret=excluded.secret, enabled=0
                 """,
-                (self._norm(username), secret),
+                (self._norm(username), self._enc_secret(secret)),
             )
 
         logger.info("TOTP setup generated for user %s", username)
@@ -211,7 +224,7 @@ class TOTPManager:
             logger.warning("TOTP verify_and_enable: no secret for user %s", username)
             return False
 
-        totp = pyotp.TOTP(row["secret"])
+        totp = pyotp.TOTP(self._dec_secret(row["secret"]))
         if not totp.verify(code, valid_window=1):
             logger.info("TOTP verify_and_enable: wrong code for user %s", username)
             return False
@@ -272,7 +285,7 @@ class TOTPManager:
             )
             return False
 
-        step = self._match_step(row["secret"], code)
+        step = self._match_step(self._dec_secret(row["secret"]), code)
         if step is None:
             return False
         if step <= (row["last_used_step"] or 0):
