@@ -3741,6 +3741,90 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             "files": page_files
         }
 
+    @app.get("/api/insights/{source_id}/files/export.xlsx")
+    def insight_files_export(request: Request, source_id: int,
+                             insight_type: str = "stale_1year",
+                             format: str = "xlsx"):
+        """#362 — XLSX/CSV export of an AI-insight file list.
+
+        The insights overlay shares the drilldown modal but its JSON URL is
+        ``/insights/{sid}/files`` (not ``/drilldown/...``), so the shared export
+        helper had no matching ``/api/.../export.xlsx`` to hit and the XLS/CSV
+        buttons errored "Drilldown URL bulunamadi". This mirrors
+        ``/api/drilldown/.../export.xlsx``: ``format=csv`` streams every row
+        uncapped; XLSX is capped at 100k (openpyxl in-memory). Read-only.
+        """
+        from io import BytesIO
+
+        from fastapi.responses import StreamingResponse
+
+        from src.analyzer.ai_insights import get_insight_files
+        from src.analyzer.report_exporter_v2 import XLSExporter
+
+        src = _get_source(db, source_id)
+        scan_id = db.get_latest_scan_id(src.id, include_running=True)
+        if not scan_id:
+            raise HTTPException(404, "Tarama verisi bulunamadi")
+        try:
+            files = get_insight_files(db, scan_id, insight_type)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        # Wave 10 #308: viewer-role requests see only their own files.
+        scope_user = get_scope_username(request)
+        if scope_user:
+            files = [f for f in files
+                     if scope_user in (f.get("owner") or "").lower()]
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_type = "".join(c for c in insight_type if c.isalnum() or c == "_")[:40] or "insight"
+
+        if (format or "").lower() == "csv":
+            from src.utils.xlsx_writer import stream_csv
+            columns = [
+                {"key": "file_path", "header": "file_path", "width": 60},
+                {"key": "file_name", "header": "file_name", "width": 30},
+                {"key": "owner", "header": "owner", "width": 24},
+                {"key": "file_size", "header": "file_size", "width": 14},
+                {"key": "last_modify_time", "header": "last_modify_time", "width": 22},
+                {"key": "last_access_time", "header": "last_access_time", "width": 22},
+            ]
+
+            def _rows():
+                for f in files:
+                    yield {
+                        "file_path": f.get("file_path", "") or "",
+                        "file_name": f.get("file_name", "") or "",
+                        "owner": f.get("owner", "") or "",
+                        "file_size": f.get("file_size", 0) or 0,
+                        "last_modify_time": f.get("last_modify_time", "") or "",
+                        "last_access_time": f.get("last_access_time", "") or "",
+                    }
+
+            return StreamingResponse(
+                stream_csv(_rows(), columns),
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition":
+                         f'attachment; filename="insights_{safe_type}_{src.name}_{ts}.csv"'},
+            )
+
+        MAX_ROWS = 100_000
+        try:
+            data = XLSExporter(db, config).export_drilldown(
+                files[:MAX_ROWS], f"insight_{safe_type}")
+        except ImportError:
+            raise HTTPException(501, "openpyxl kurulu degil. pip install openpyxl")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error("insight XLSX export error: %s", e)
+            raise HTTPException(500, str(e))
+
+        return StreamingResponse(
+            BytesIO(data),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition":
+                     f'attachment; filename="insights_{safe_type}_{src.name}_{ts}.xlsx"'},
+        )
+
     @app.get("/api/overview/{source_id}")
     def overview(source_id: int):
         """Instant Overview: pre-computed summary'den okur, scanned_files

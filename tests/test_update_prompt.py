@@ -2,19 +2,21 @@
 
 setup-source.ps1 writes an update.cmd here-string on the box. Before #351 that
 script ALWAYS ran the 2-3 GB SQLite snapshot, making the operator wait on every
-update. #351 puts an E/H prompt in front of it with a deliberately SAFE default:
-only an explicit "H" skips the backup; Enter, the 30s timeout, a missing
-choice.exe (errorlevel 9009), and any unexpected error all fall through to the
-backup path.
+update. #351 put an E/H prompt in front of it; #362 flips the default to a
+FAST one (operator asked for a no-wait update): the 10s timeout and an explicit
+"H" both SKIP the backup — press "E" to take one. The one invariant that must
+NOT change: a missing choice.exe (errorlevel 9009) or any unexpected error still
+BACKS UP (exact-equality `=="2"`), so "prompt works → fast skip, prompt broken →
+safe backup".
 
 This is a SOURCE-TEXT pin (no PowerShell interpreter in CI): the here-string is
-matched in deploy/setup-source.ps1. It guards two ways of getting it wrong that
-were reasoned through and empirically tested when the change landed:
+matched in deploy/setup-source.ps1. It guards the way of getting it wrong that
+was reasoned through when the change landed:
 
-  1. Using `if errorlevel 2` instead of `if "%errorlevel%"=="2"` — the former
-     also matches 9009 (choice.exe absent) and would SKIP the backup, the unsafe
-     direction. The exact-equality form skips only on a real "H".
-  2. Dropping the snapshot line entirely, or flipping the default to H.
+  - Using `if errorlevel 2` instead of `if "%errorlevel%"=="2"` — the former
+    also matches 9009 (choice.exe absent) and would SKIP the backup even when
+    the prompt tool is broken (unsafe). The exact-equality form skips only on a
+    real "H" (or the `/D H` timeout), never on a tooling failure.
 """
 
 from __future__ import annotations
@@ -28,10 +30,12 @@ def _text() -> str:
     return SETUP.read_text(encoding="utf-8")
 
 
-def test_prompt_present_with_safe_default():
-    """choice prompt exists and defaults to E (backup) on timeout."""
+def test_prompt_present_with_fast_default():
+    """#362: choice prompt exists and defaults to H (skip) on timeout — the
+    operator asked for a no-wait update. choice.exe-missing still backs up (see
+    the exact-equality test)."""
     t = _text()
-    assert "choice /C EH /N /T 30 /D E" in t, "E/H prompt with /D E safe default missing"
+    assert "choice /C EH /N /T 10 /D H" in t, "E/H prompt with /D H fast default missing"
 
 
 def test_skip_uses_exact_equality_not_errorlevel_ge():

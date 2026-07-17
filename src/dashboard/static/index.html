@@ -308,7 +308,7 @@ label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; display: 
 .source-card-body .info-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 12px; }
 .source-card-body .info-row .label { color: var(--text-muted); }
 .source-card-body .info-row .value { color: var(--text-secondary); font-weight: 500; word-break: break-all; }
-.source-card-actions { padding: 12px 20px; background: var(--bg-secondary); display: flex; gap: 8px; border-top: 1px solid var(--border); }
+.source-card-actions { padding: 12px 20px; background: var(--bg-secondary); display: flex; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--border); }
 
 /* === RESPONSIVE === */
 @media (max-width: 1200px) { .chart-grid { grid-template-columns: 1fr; } .progress-stats { grid-template-columns: repeat(3, 1fr); } }
@@ -5463,7 +5463,7 @@ async function downloadDrilldownXLS(event) {
     //
     // ddCurrentUrl is something like '/drilldown/frequency/1?min_days=30'.
     // Convert to '/api/drilldown/frequency/1/export.xlsx?min_days=30'.
-    if (!ddCurrentUrl || !ddCurrentUrl.startsWith('/drilldown/')) {
+    if (!ddCurrentUrl || !(ddCurrentUrl.startsWith('/drilldown/') || ddCurrentUrl.startsWith('/insights/'))) {
         notify('Drilldown URL bulunamadi', 'warning');
         return;
     }
@@ -5480,7 +5480,7 @@ async function downloadDrilldownXLS(event) {
 async function downloadDrilldownCSV(event) {
     // Same drilldown filter as XLS, but ?format=csv streams every matching row
     // (no 100k Excel cap) — for owners/types/sizes with millions of files.
-    if (!ddCurrentUrl || !ddCurrentUrl.startsWith('/drilldown/')) {
+    if (!ddCurrentUrl || !(ddCurrentUrl.startsWith('/drilldown/') || ddCurrentUrl.startsWith('/insights/'))) {
         notify('Drilldown URL bulunamadi', 'warning');
         return;
     }
