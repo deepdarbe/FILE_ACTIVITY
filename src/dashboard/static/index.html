@@ -4901,7 +4901,7 @@ async function loadForensicDeletions() {
         const s = (data && data.summary) || {};
         const bySrc = s.by_source || {};
         const truncNote = (s.total || 0) > events.length
-            ? `<tr><td colspan="7" style="padding:8px 12px;background:rgba(245,158,11,.12);color:var(--text-secondary);font-size:12px">⚠️ En yeni ${formatNum(events.length)} / toplam ${formatNum(s.total)} kayit gosteriliyor — daraltmak icin zaman araligini kisaltin veya kullanici filtreleyin.</td></tr>`
+            ? `<tr><td colspan="8" style="padding:8px 12px;background:rgba(245,158,11,.12);color:var(--text-secondary);font-size:12px">⚠️ En yeni ${formatNum(events.length)} / toplam ${formatNum(s.total)} kayit gosteriliyor — daraltmak icin zaman araligini kisaltin veya kullanici filtreleyin.</td></tr>`
             : '';
         _setHtmlSafe('fdel-cards', `
             <div class="card accent"><div class="card-label">Toplam Silme</div><div class="card-value">${formatNum(s.total || 0)}</div><div class="card-sub">Son ${escapeHtml(String(s.window_days || days))} gun</div></div>
@@ -4910,7 +4910,7 @@ async function loadForensicDeletions() {
             <div class="card success"><div class="card-label">Kaynak IP'li</div><div class="card-value">${formatNum(s.with_client_ip || 0)}</div><div class="card-sub">USN ${formatNum(bySrc.USN || 0)} &middot; EventLog ${formatNum(bySrc.EventLog || 0)}</div></div>
         `);
         _setHtmlSafe('fdel-table', `
-            <thead><tr><th>Zaman</th><th>Kullanici</th><th>Tam Yol</th><th>Kaynak IP</th><th>Boyut</th><th>Tespit</th><th></th></tr></thead>
+            <thead><tr><th>Zaman</th><th>Kullanici</th><th>Tam Yol</th><th>Kaynak IP</th><th>Boyut</th><th>Tespit</th><th>Kurtarilabilir</th><th></th></tr></thead>
             <tbody>${truncNote}${events.length ? events.map(e => {
                 const userEsc = escapeHtml(e.username || '');
                 const rowStyle = e.severity === 'high' ? ' style="background:rgba(239,68,68,.08)"' : '';
@@ -4923,12 +4923,38 @@ async function loadForensicDeletions() {
                 return `<tr${rowStyle}><td style="white-space:nowrap">${escapeHtml(e.ts || '')}</td>` +
                     `<td><a href="#" onclick="loadUserDetail('${userEsc}');return false">${userEsc || '-'}</a></td>` +
                     `<td style="font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(e.file_path || '')}</td>` +
-                    `<td style="white-space:nowrap">${ip}</td><td style="white-space:nowrap">${sz}</td><td>${det}</td><td>${tag}</td></tr>`;
-            }).join('') : '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">Silme olayi bulunamadi ✅ (Event Log toplayici kapaliysa yalniz USN gorunur — user_activity.enabled)</td></tr>'}</tbody>
+                    `<td style="white-space:nowrap">${ip}</td><td style="white-space:nowrap">${sz}</td><td>${det}</td>` +
+                    `<td id="rec-${escapeHtml(e.uid || '')}"><button class="btn btn-sm btn-outline" data-uid="${escapeHtml(e.uid || '')}" data-path="${escapeHtml(e.file_path || '')}" onclick="checkRecoverable(this)" title="VSS golge kopyada onceki surumu var mi?">🛡️ Kontrol</button></td>` +
+                    `<td>${tag}</td></tr>`;
+            }).join('') : '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-muted)">Silme olayi bulunamadi ✅ (Event Log toplayici kapaliysa yalniz USN gorunur — user_activity.enabled)</td></tr>'}</tbody>
         `);
     } catch (e) {
         console.error(e);
         _setHtmlSafe('fdel-table', '<tbody><tr><td style="padding:24px;color:var(--text-muted)">Yuklenemedi</td></tr></tbody>');
+    }
+}
+
+// #340 Faz 4 — on-demand VSS "kurtarilabilir mi?" check for one deleted file.
+// Windows-admin-gated + best-effort; null => bilinmiyor (VSS yok / admin yok).
+async function checkRecoverable(btn) {
+    const path = btn.getAttribute('data-path') || '';
+    const cellId = 'rec-' + (btn.getAttribute('data-uid') || '');
+    if (!path) { _setHtmlSafe(cellId, '<span style="color:var(--text-muted)">-</span>'); return; }
+    _setHtmlSafe(cellId, '<span style="color:var(--text-muted)">⏳ ...</span>');
+    try {
+        const r = await api('/forensic/recoverable?path=' + encodeURIComponent(path), { silent: true });
+        let html;
+        if (r && r.recoverable === true) {
+            const tip = escapeHtml((r.shadow_path || '') + (r.shadow_created ? ' @ ' + r.shadow_created : ''));
+            html = `<span class="badge badge-success" title="${tip}">✅ Golgede var</span>`;
+        } else if (r && r.recoverable === false) {
+            html = '<span class="badge badge-warning">❌ Golgede yok</span>';
+        } else {
+            html = '<span class="badge" title="VSS erisimi yok, admin gerekli veya UNC yol">⚠️ Bilinmiyor</span>';
+        }
+        _setHtmlSafe(cellId, html);
+    } catch (e) {
+        _setHtmlSafe(cellId, '<span class="badge" title="Kontrol basarisiz">⚠️ Bilinmiyor</span>');
     }
 }
 

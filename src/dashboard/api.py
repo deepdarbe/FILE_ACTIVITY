@@ -3205,6 +3205,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             severity=severity, page=p.page, page_size=p.page_size,
             mass_delete_threshold=threshold)
 
+    @app.get("/api/forensic/recoverable")
+    def forensic_recoverable(path: str):
+        """#340 Faz 4 — is a deleted file still recoverable from a VSS snapshot?
+
+        Best-effort, Windows-admin-gated, on-demand (the UI calls it per row).
+        Returns ``{recoverable: true|false|null, shadow_path, shadow_created}``;
+        ``null`` = unknown (no VSS / no admin / non-Windows / UNC path), never a
+        false negative. No DB, no state change → read-only, no audit.
+        """
+        from src.scanner.vss_checker import VssChecker
+        return VssChecker().find_recoverable(path)
+
     # --- AUDIT CHAIN API (issue #38) ---
 
     @app.get("/api/audit/verify")
