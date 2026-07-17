@@ -48,13 +48,20 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `7aa78cd`, 2026-07-16)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `4c6a064`, 2026-07-17)
 
-The 2026-07-16 session was a **stability + customer-request wave**, driven by a live
-burculogo (prod) diagnosis and a 4-workstream investigation workflow (8 agents:
-design + adversarial verify). 4 PRs shipped; forensic Faz 1 of 3 landed. burculogo
-is on `ad79731` (last deploy 2026-06-28) — **the 4 fixes below are NOT deployed to
-it yet** (see NEXT SESSION #1).
+The 2026-07-17 session continued the stability + customer-request wave and
+**completed forensic Faz 1–3**. Root-caused the recurring "buttons/pages disappear
+after deploy" as a **browser stale-tab** problem (the served HTML always had the
+features; the fix is a fresh load — `#350` now self-heals it). 8 PRs shipped across
+the two-day wave: **#341–344** (batched startup retention, archive_dest editable,
+top_creators-from-summary + O(1) health, forensic Faz 1), **#348** (completed scan
+overrides stale partial scan_state), **#350** (stale-tab reload banner), **#352**
+(E/H prompt to skip the pre-update SQLite snapshot), **#354** (self-host d3+chart.js,
+drop cdn.jsdelivr.net), **#346** (forensic Faz 2), **#356** (forensic Faz 3).
+burculogo was deployed to `20775e9` (has #341–344) and remediated live during the
+session — **the newer fixes (#348/#350/#352/#354/#346/#356) are NOT on it yet**
+(see NEXT SESSION #1).
 
 **BRIDGE GOTCHA (burculogo):** heavy/long bridge-spawned **detached** child procs
 get killed mid-op (NOT OOM — 128 GB RAM). Validate heavy things post-deploy, not
@@ -71,23 +78,25 @@ WAL (minutes, one-time). WAL_MB climbing 0→5.9GB during that boot is the old
 cleanup finishing; #341 makes subsequent boots bind in seconds.
 
 **▶ NEXT SESSION — start here:**
-1. **Deploy the 4 stability fixes to burculogo + verify** (PRIORITY). Operator runs
-   `update.cmd` (RDP; answer H then E to the setup-source prompts — see the manual
-   RUNTIME GOTCHA above). Then verify via bridge (read-only): growth loads fast
-   (top_creators from summary), health instant, startup binds in seconds, and — if
-   the operator adds an archive dest to a source via the new ✏️ button — archive
-   run advances past the 'Arsiv hedefi tanimli degil' gate. The prod incident that
-   triggered this wave (12-min startup block, WAL 5.9GB) is fixed by #341.
-2. **Forensic Faz 2 + Faz 3 (#340)** — Faz 1 (collector wire-up) shipped in #344.
-   Faz 2: 4656↔4660 handle correlation for full path + 4624→client_ip; USN
-   parent_frn → full path (new frn_resolver, WinAPI OpenFileById, name-only
-   fallback). Faz 3: unified `GET /api/forensic/file-deletions` (file_audit_events
-   UNION user_access_logs, get_read_cursor) + "Dosya Silme Olaylari" page (Guvenlik
-   group, loadAnomalies template, one agent on index.html + node --check). Design
-   verified against master in the workflow — see the amendments (delete-row
-   multiplicity: restrict eventlog branch to 4660; StringInserts index drift needs
-   a first-run diagnostic; anomaly dedup; union id collision key). Faz 4 (VSS
-   recoverable badge) optional after Faz 3.
+1. **Deploy the newer fixes to burculogo + verify** (PRIORITY). burculogo has
+   #341–344 (`20775e9`); NOT #348/#350/#352/#354/#346/#356. Operator runs
+   `update.cmd` on the box (RDP). As of #352 update.cmd asks **E/H before the
+   2–3 GB snapshot** — H skips it (safe default = take backup). After deploy do ONE
+   fresh load (`http://localhost:8085/?yeni=1` or hard refresh) so the #350 stale-tab
+   banner is armed for all future deploys. Verify via bridge (read-only): charts
+   render from `/static/vendor/` with no CDN (#354), the ✏️ Arsiv Hedefi button
+   shows on a fresh load (#342), Erisim Sikligi/frequency loads for the completed
+   scan (#348), and the new **Guvenlik ▸ Dosya Silme Olaylari** page loads (#356).
+2. **Forensic Faz 1–3 SHIPPED** (#344/#346/#356). Faz 1 = EventCollector wire-up;
+   Faz 2 = 4656↔4660 full-path + 4624→client_ip + USN FrnResolver; Faz 3 = unified
+   `GET /api/forensic/file-deletions` (file_audit_events ∪ user_access_logs@4660,
+   get_read_cursor, uid collision key, MAX-per-source mass-delete) + the "Dosya
+   Silme Olaylari" page. **To populate the EventLog path on burculogo:** run
+   `scripts/Configure-FileAudit.ps1` (SACL/auditpol/4 GB Security log) + set
+   `user_activity.enabled: true` in `config\config.yaml` (default off). **#355**
+   tracks row-level cross-source dedup (deferred — needs the live 4660 ObjectName
+   format). **Faz 4** (VSS "Kurtarilabilir" badge) + **Faz 5** (Synology sync dir,
+   audit.chain_enabled) optional — see `docs/PLAN-silme-forensik-menu.md`.
 3. **Slow-endpoint batch 2** (same class as #338, deferred): /api/db/stats,
    /api/chargeback/{id}, /api/users/overview, drilldown COUNTs — root queries
    documented in the #338 PR / workflow output.
@@ -99,6 +108,30 @@ cleanup finishing; #341 makes subsequent boots bind in seconds.
    Presidio/Sleuth Kit)**, **R-6 later-pass** — still unscoped/optional.
 
 `git log --oneline -12` confirms the real tip.
+
+### What shipped 2026-07-17 (stale-tab root-cause + forensic Faz 2–3)
+- **#348** — completed scan overrides a stale partial `scan_state`
+  (`_load_partial_summary_v2_for_source` forces `scan_state='completed'` when
+  `scan_runs.status='completed'`). Fixed Erisim Sikligi/frequency going blank when a
+  restart froze the rolling snapshot at `scan_state='enrich'`.
+- **#350** — **stale-tab reload banner**. Compares baked-in `<meta app-version>` vs
+  `/api/system/version` on load + tab-focus; click-to-reload banner on mismatch.
+  Ends the recurring "buttons/pages disappear after deploy" cache class (self-heals
+  every future deploy once one version carrying it has loaded).
+- **#352** — `update.cmd` **E/H prompt** to skip the 2–3 GB pre-update SQLite
+  snapshot. SAFE DEFAULT: only explicit H skips; Enter/timeout/error → backup.
+- **#354** — **self-host d3 + chart.js** under `/static/vendor/` (d3 v7.9.0, chart.js
+  v4.5.1); CSP `script-src` tightened to `'self'` (jsdelivr removed). Charts render
+  air-gapped; console clean (sourcemap ref stripped). Verified end-to-end in-browser.
+- **#346** — **forensic Faz 2**: 4656↔4660 handle correlation (real full path) +
+  4624 LogonId→client_ip; USN raw frn/parent_frn + new POSIX-safe `FrnResolver`
+  (OpenFileById) for full path. Refs #340.
+- **#356** — **forensic Faz 3**: `Database.get_file_deletion_events` (file_audit_events
+  ∪ user_access_logs@4660, get_read_cursor, `uid='<src>:<id>'`, MAX-per-source
+  mass-delete) + `GET /api/forensic/file-deletions` + Guvenlik ▸ "Dosya Silme
+  Olaylari" page. Hardened after a 4-agent adversarial review (COALESCE NULL watcher
+  username → no `sorted()` 500; MAX-per-source → no cross-source double-count;
+  defensive threshold; page_size 500 + truncation notice). #355 tracks row dedup.
 
 ### What shipped 2026-07-16 (stability + customer-request wave)
 - **#341** — **batched background startup retention** (fixes the burculogo 12-min
@@ -117,7 +150,7 @@ cleanup finishing; #341 makes subsequent boots bind in seconds.
   Off by default (`user_activity.enabled: false`). Refs #340.
 
 ### Where we are
-- **master = `20775e9`**. ci_guards **12/12**; A-AUDIT allowlist = **26** (was 23;
+- **master = `4c6a064`**. ci_guards **12/12**; A-AUDIT allowlist = **25** (was 23;
   +3 for `auth_refresh`/`auth_me`/`auth_logout` in #307).
 - **burculogo**: running `20775e9`, NSSM service mode, MFT scan done (2.9M files),
   PII scan in progress (~18% as of last check).
