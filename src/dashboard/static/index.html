@@ -678,6 +678,7 @@ body.sidebar-open { overflow: hidden; }
         <div class="nav-item" onclick="showPage('ransomware')" title="Ransomware Uyarilari"><span class="icon">🛡️</span> <span>Ransomware Uyarilari</span></div>
         <div class="nav-item" onclick="showPage('acl')" title="ACL Analizi"><span class="icon">🔐</span> <span>ACL Analizi</span></div>
         <div class="nav-item" onclick="showPage('extension-anomalies')" title="Yanlis Uzantili Dosyalar"><span class="icon">⚠️</span> <span>Yanlis Uzantili Dosyalar</span></div>
+        <div class="nav-item" onclick="showPage('forensic-file-deletions')" title="Dosya Silme Olaylari"><span class="icon">🗑️</span> <span>Dosya Silme Olaylari</span></div>
     </div>
     <div class="nav-section" data-group="Islemler">
         <div class="nav-label">Islemler <span class="chev">&#9660;</span></div>
@@ -961,6 +962,34 @@ body.sidebar-open { overflow: hidden; }
     <div id="anomalies-partial-banner" class="partial-scan-banner"></div>
     <div class="cards" id="anomaly-cards"></div>
     <div class="table-wrap"><table id="anomaly-table"></table></div>
+</div>
+
+<!-- ============ FORENSIC — DOSYA SILME OLAYLARI (#340 Faz 3) ============ -->
+<div class="page" id="page-forensic-file-deletions">
+    <div class="page-header">
+        <div><h2>Dosya Silme Olaylari</h2><div class="desc">Guvenlik &rsaquo; Kim / ne (tam yol) / ne zaman / nereden (IP) — USN + Guvenlik gunlugu birlesik</div></div>
+    </div>
+    <div class="form-row" style="margin-bottom:16px">
+        <div class="form-group"><label>Zaman</label>
+            <select id="fdel-days" onchange="loadForensicDeletions()">
+                <option value="7">Son 7 gun</option>
+                <option value="30" selected>Son 30 gun</option>
+                <option value="90">Son 90 gun</option>
+                <option value="365">Son 1 yil</option>
+            </select>
+        </div>
+        <div class="form-group"><label>Ciddiyet</label>
+            <select id="fdel-severity" onchange="loadForensicDeletions()">
+                <option value="">Tumu</option>
+                <option value="high">Sadece toplu silme</option>
+            </select>
+        </div>
+        <div class="form-group"><label>Kullanici (opsiyonel)</label>
+            <input id="fdel-user" placeholder="kullanici adi" onkeyup="if(event.key==='Enter')loadForensicDeletions()">
+        </div>
+    </div>
+    <div class="cards" id="fdel-cards"></div>
+    <div class="table-wrap"><table id="fdel-table"></table></div>
 </div>
 
 <!-- ============ ARCHIVE ============ -->
@@ -2847,7 +2876,7 @@ function showPage(name) {
     // Find and activate nav item
     document.querySelectorAll('.nav-item').forEach(n => { if (n.getAttribute('onclick')?.includes(name)) n.classList.add('active'); });
     // Auto-load data
-    const loaders = { overview: loadOverview, sources: loadSources, search: loadFileSearch, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, 'image-duplicates': loadImageDuplicates, 'text-neardup': loadTextNearDup, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
+    const loaders = { overview: loadOverview, sources: loadSources, search: loadFileSearch, frequency: loadFrequency, types: loadTypes, sizes: loadSizes, users: loadUsers, anomalies: loadAnomalies, 'forensic-file-deletions': loadForensicDeletions, archive: loadArchive, 'archive-history': loadArchiveHistory, duplicates: loadDuplicates, growth: loadGrowth, naming: loadNaming, policies: loadPolicies, schedules: loadSchedules, treemap: loadTreemap, insights: loadInsights, sqlquery: sqlqInit, 'legal-holds': loadLegalHolds, standards: loadStandards, 'orphan-sids': loadOrphanSids, ransomware: loadRansomwareAlerts, acl: loadAclAnalyzer, 'extension-anomalies': loadExtensionAnomalies, 'image-duplicates': loadImageDuplicates, 'text-neardup': loadTextNearDup, pii: loadPii, retention: loadRetention, syslog: loadSyslog, mcp: loadMcp, backups: loadBackups, operations: loadOperations, approvals: loadApprovalsAll, chargeback: loadChargeback, quarantine: loadQuarantine, forecast: loadForecast };
     // Issue #79: route through loadWithProgress so slow pages get a top
     // progress bar, ETA from p50 history, and a retry path on failure.
     if (loaders[name]) loadWithProgress(name, loaders[name]).catch(() => { /* widget surfaces error */ });
@@ -4853,6 +4882,54 @@ async function loadAnomalies() {
             <tbody>${alerts.length ? alerts.map(a => `<tr><td>${escapeHtml(a.alert_type||a.type||'')}</td><td><span class="badge badge-${a.severity==='critical'?'danger':'warning'}">${escapeHtml(a.severity||'')}</span></td><td>${escapeHtml(a.username||'-')}</td><td>${escapeHtml(a.description||'')}</td></tr>`).join('') : '<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-muted)">Anomali bulunamadi ✅</td></tr>'}</tbody>
         `);
     } catch(e) { console.error(e); }
+}
+
+// ═══════════════════════════════════════════════════
+// FORENSIC — DOSYA SILME OLAYLARI (#340 Faz 3)
+// USN (file_audit_events) + Guvenlik gunlugu (user_access_logs) birlesik feed.
+// ═══════════════════════════════════════════════════
+async function loadForensicDeletions() {
+    const days = (document.getElementById('fdel-days') || {}).value || '30';
+    const severity = (document.getElementById('fdel-severity') || {}).value || '';
+    const user = ((document.getElementById('fdel-user') || {}).value || '').trim();
+    const qs = new URLSearchParams({ days: days, page_size: '500' });
+    if (severity) qs.set('severity', severity);
+    if (user) qs.set('username', user);
+    try {
+        const data = await api('/forensic/file-deletions?' + qs.toString(), { silent: true });
+        const events = (data && data.events) || [];
+        const s = (data && data.summary) || {};
+        const bySrc = s.by_source || {};
+        const truncNote = (s.total || 0) > events.length
+            ? `<tr><td colspan="7" style="padding:8px 12px;background:rgba(245,158,11,.12);color:var(--text-secondary);font-size:12px">⚠️ En yeni ${formatNum(events.length)} / toplam ${formatNum(s.total)} kayit gosteriliyor — daraltmak icin zaman araligini kisaltin veya kullanici filtreleyin.</td></tr>`
+            : '';
+        _setHtmlSafe('fdel-cards', `
+            <div class="card accent"><div class="card-label">Toplam Silme</div><div class="card-value">${formatNum(s.total || 0)}</div><div class="card-sub">Son ${escapeHtml(String(s.window_days || days))} gun</div></div>
+            <div class="card warning"><div class="card-label">Farkli Kullanici</div><div class="card-value">${formatNum(s.distinct_users || 0)}</div></div>
+            <div class="card danger"><div class="card-label">Toplu Silme (kullanici)</div><div class="card-value">${formatNum((s.mass_delete_users || []).length)}</div><div class="card-sub">esik: ${formatNum(s.mass_delete_threshold || 0)}</div></div>
+            <div class="card success"><div class="card-label">Kaynak IP'li</div><div class="card-value">${formatNum(s.with_client_ip || 0)}</div><div class="card-sub">USN ${formatNum(bySrc.USN || 0)} &middot; EventLog ${formatNum(bySrc.EventLog || 0)}</div></div>
+        `);
+        _setHtmlSafe('fdel-table', `
+            <thead><tr><th>Zaman</th><th>Kullanici</th><th>Tam Yol</th><th>Kaynak IP</th><th>Boyut</th><th>Tespit</th><th></th></tr></thead>
+            <tbody>${truncNote}${events.length ? events.map(e => {
+                const userEsc = escapeHtml(e.username || '');
+                const rowStyle = e.severity === 'high' ? ' style="background:rgba(239,68,68,.08)"' : '';
+                const det = e.detected_by === 'EventLog'
+                    ? '<span class="badge badge-info">EventLog</span>'
+                    : '<span class="badge badge-accent">USN</span>';
+                const ip = e.client_ip ? escapeHtml(e.client_ip) : '<span style="color:var(--text-muted)">-</span>';
+                const sz = (e.file_size != null && e.file_size > 0) ? formatSize(e.file_size) : '-';
+                const tag = e.severity === 'high' ? '<span class="badge badge-danger">toplu</span>' : '';
+                return `<tr${rowStyle}><td style="white-space:nowrap">${escapeHtml(e.ts || '')}</td>` +
+                    `<td><a href="#" onclick="loadUserDetail('${userEsc}');return false">${userEsc || '-'}</a></td>` +
+                    `<td style="font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(e.file_path || '')}</td>` +
+                    `<td style="white-space:nowrap">${ip}</td><td style="white-space:nowrap">${sz}</td><td>${det}</td><td>${tag}</td></tr>`;
+            }).join('') : '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-muted)">Silme olayi bulunamadi ✅ (Event Log toplayici kapaliysa yalniz USN gorunur — user_activity.enabled)</td></tr>'}</tbody>
+        `);
+    } catch (e) {
+        console.error(e);
+        _setHtmlSafe('fdel-table', '<tbody><tr><td style="padding:24px;color:var(--text-muted)">Yuklenemedi</td></tr></tbody>');
+    }
 }
 
 // ═══════════════════════════════════════════════════

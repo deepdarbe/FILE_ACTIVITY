@@ -3176,6 +3176,35 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     def audit_summary(source_id: int = None, days: int = 7):
         return db.get_audit_summary(source_id, days)
 
+    @app.get("/api/forensic/file-deletions")
+    def forensic_file_deletions(source_id: int = None, username: str = None,
+                                days: int = Query(30, ge=1, le=365),
+                                severity: str = None,
+                                p: PaginationParams = Depends()):
+        """Unified deletion-forensics feed (#340 Faz 3): USN ∪ EventLog.
+
+        Merges ``file_audit_events`` (USN, event_type='delete') with
+        ``user_access_logs`` (EventLog, access_type='delete' AND event_id=4660)
+        so a deletion caught by only one collector still surfaces. Read-only
+        (``get_read_cursor``); ``severity='high'`` filters to mass-delete users.
+        The mass-delete threshold comes from ``user_activity.anomaly
+        .high_delete_count`` (falls back to 20 if unset).
+        """
+        ua_cfg = config.get("user_activity") if isinstance(config, dict) else None
+        anomaly_cfg = (ua_cfg or {}).get("anomaly") or {}
+        # Default 50 matches user_analyzer.py's mass-delete threshold. Coerce
+        # defensively: a present-but-null / blank / non-numeric config value
+        # must not 500 the whole page (dict.get's default only fills a MISSING
+        # key, not a null one).
+        try:
+            threshold = int(anomaly_cfg.get("high_delete_count", 50))
+        except (TypeError, ValueError):
+            threshold = 50
+        return db.get_file_deletion_events(
+            source_id=source_id, username=username, days=days,
+            severity=severity, page=p.page, page_size=p.page_size,
+            mass_delete_threshold=threshold)
+
     # --- AUDIT CHAIN API (issue #38) ---
 
     @app.get("/api/audit/verify")

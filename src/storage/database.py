@@ -2870,6 +2870,160 @@ class Database:
 
         return {"total": total, "by_type": by_type, "by_user": by_user}
 
+    def get_file_deletion_events(self, source_id=None, username=None, days=30,
+                                 severity=None, page=1, page_size=100,
+                                 mass_delete_threshold=50):
+        """Unified deletion-forensics feed (#340 Faz 3): USN UNION EventLog.
+
+        The two collectors write to two tables, so a deletion visible to only
+        one path (local NTFS → ``file_audit_events``; SMB/EventLog →
+        ``user_access_logs``) would never surface on a single screen. This
+        merges them, newest first, with pagination.
+
+        Branches
+        --------
+        * **USN** — ``file_audit_events WHERE event_type='delete'``. Local
+          NTFS deletes carry no source IP (expected → ``client_ip`` NULL).
+        * **EventLog** — ``user_access_logs WHERE access_type='delete' AND
+          event_id=4660``. Restricted to **4660** (object-deleted): a single
+          deletion also emits 4656 (handle-open) and 4663, and the Faz 2
+          collector already correlates 4656→4660, so 4660 is the one
+          authoritative, fully-resolved (full path + client_ip via 4624) row
+          per deletion. Counting 4656/4663 too would multiply each delete.
+
+        ``severity='high'`` narrows to *mass-delete* users (≥
+        ``mass_delete_threshold`` deletions in the window); every returned row
+        is also tagged with a computed ``severity`` so the UI can highlight
+        bursts without a second round-trip. ``uid`` = ``"<src>:<id>"`` keeps
+        row keys unique across the two source tables (their ``id`` spaces
+        overlap). Read-only → ``get_read_cursor`` (Rule 6).
+        """
+        time_mod = f"-{int(days)} days"
+
+        # Per-branch WHERE built symmetrically so the same filters bind to both.
+        fae_conds = ["event_type = 'delete'",
+                     "event_time >= datetime('now','localtime', ?)"]
+        fae_params = [time_mod]
+        ual_conds = ["access_type = 'delete'", "event_id = 4660",
+                     "access_time >= datetime('now','localtime', ?)"]
+        ual_params = [time_mod]
+        if source_id:
+            fae_conds.append("source_id = ?"); fae_params.append(source_id)
+            ual_conds.append("source_id = ?"); ual_params.append(source_id)
+        if username:
+            fae_conds.append("username = ?"); fae_params.append(username)
+            ual_conds.append("username = ?"); ual_params.append(username)
+        fae_where = " AND ".join(fae_conds)
+        ual_where = " AND ".join(ual_conds)
+
+        # Normalised UNION ALL projection shared by every query below.
+        union_sql = f"""
+            SELECT 'fae' AS src, id, event_time AS ts,
+                   COALESCE(username, '(bilinmiyor)') AS username,
+                   NULL AS domain, file_path, file_name,
+                   NULL AS client_ip, NULL AS file_size,
+                   COALESCE(detected_by, 'USN') AS detected_by,
+                   NULL AS event_id, details
+            FROM file_audit_events WHERE {fae_where}
+            UNION ALL
+            SELECT 'ual' AS src, id, access_time AS ts,
+                   COALESCE(username, '(bilinmiyor)') AS username,
+                   domain, file_path, file_name,
+                   client_ip, file_size,
+                   'EventLog' AS detected_by,
+                   event_id, NULL AS details
+            FROM user_access_logs WHERE {ual_where}
+        """  # noqa: S608 — all interpolation is fixed column/clause text; values bind via ?
+        union_params = fae_params + ual_params
+
+        offset = (page - 1) * page_size
+        with self.get_read_cursor() as cur:
+            # Mass-delete users: counted PER SOURCE and MAX-ed, NOT summed over
+            # the union. A single deletion caught by BOTH collectors (USN +
+            # EventLog on one SMB-shared NTFS volume) would otherwise
+            # double-count and trip the threshold at half the real deletions
+            # (#340 review — amendment "anomaly dedup"). MAX(per-source count)
+            # is dedup-free and conservative. The row feed below still lists
+            # every detection; the "Tespit" column distinguishes USN vs
+            # EventLog (corroboration, not a duplicate bug). COALESCE keeps a
+            # NULL watcher username (USN deletes carry none) from crashing
+            # sorted(mass_set) and from vanishing under `username IN (NULL)`.
+            cur.execute(
+                f"""SELECT username, MAX(c) AS c FROM (
+                        SELECT COALESCE(username, '(bilinmiyor)') AS username,
+                               COUNT(*) AS c
+                        FROM file_audit_events WHERE {fae_where} GROUP BY 1
+                        UNION ALL
+                        SELECT COALESCE(username, '(bilinmiyor)') AS username,
+                               COUNT(*) AS c
+                        FROM user_access_logs WHERE {ual_where} GROUP BY 1
+                    ) GROUP BY username HAVING MAX(c) >= ?""",  # noqa: S608
+                fae_params + ual_params + [mass_delete_threshold])
+            mass_users = [r["username"] for r in cur.fetchall()]
+            mass_set = set(mass_users)
+
+            # severity='high' → only mass-delete users. Empty set short-circuits.
+            sev_where, sev_params = "", []
+            if severity == "high":
+                if not mass_set:
+                    return {"total": 0, "events": [], "page": page,
+                            "summary": {"window_days": days, "total": 0,
+                                        "by_source": {}, "with_client_ip": 0,
+                                        "distinct_users": 0,
+                                        "mass_delete_users": [],
+                                        "mass_delete_threshold": mass_delete_threshold}}
+                ph = ",".join("?" * len(mass_users))
+                sev_where = f"WHERE username IN ({ph})"
+                sev_params = list(mass_users)
+
+            cur.execute(
+                f"SELECT COUNT(*) AS cnt FROM ({union_sql}) {sev_where}",  # noqa: S608
+                union_params + sev_params)
+            total = cur.fetchone()["cnt"]
+
+            cur.execute(
+                f"SELECT * FROM ({union_sql}) {sev_where} "  # noqa: S608
+                f"ORDER BY ts DESC LIMIT ? OFFSET ?",
+                union_params + sev_params + [page_size, offset])
+            events = []
+            for r in cur.fetchall():
+                row = dict(r)
+                row["uid"] = f"{row['src']}:{row['id']}"
+                row["severity"] = "high" if row["username"] in mass_set else "normal"
+                events.append(row)
+
+            # Summary aggregates over the whole window (unpaginated).
+            cur.execute(
+                f"""SELECT src, COUNT(*) AS c,
+                           SUM(CASE WHEN client_ip IS NOT NULL AND client_ip <> ''
+                                    THEN 1 ELSE 0 END) AS ips
+                    FROM ({union_sql}) GROUP BY src""",  # noqa: S608
+                union_params)
+            by_source, with_ip = {}, 0
+            for r in cur.fetchall():
+                label = "USN" if r["src"] == "fae" else "EventLog"
+                by_source[label] = r["c"]
+                with_ip += r["ips"] or 0
+            cur.execute(
+                f"SELECT COUNT(DISTINCT username) AS u, COUNT(*) AS t "  # noqa: S608
+                f"FROM ({union_sql})", union_params)
+            agg = cur.fetchone()
+
+        return {
+            "total": total,
+            "events": events,
+            "page": page,
+            "summary": {
+                "window_days": days,
+                "total": agg["t"],
+                "by_source": by_source,
+                "with_client_ip": with_ip,
+                "distinct_users": agg["u"],
+                "mass_delete_users": sorted(mass_set),
+                "mass_delete_threshold": mass_delete_threshold,
+            },
+        }
+
     # ──────────────────────────────────────────────
     # Archive Operations
     # ──────────────────────────────────────────────
