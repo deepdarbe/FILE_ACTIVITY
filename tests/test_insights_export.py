@@ -30,11 +30,12 @@ def seeded(tmp_path):
         cur.execute("UPDATE scan_runs SET status='completed' WHERE id=?", (sid,))
         # A stale (>1yr un-accessed) file — matches insight_type=stale_1year.
         cur.execute(
-            "INSERT INTO scanned_files(source_id, scan_id, file_path, file_name,"
-            " extension, file_size, last_access_time, last_modify_time, owner) "
-            "VALUES(1, ?, ?, ?, 'txt', 1024, datetime('now','-800 days'),"
+            "INSERT INTO scanned_files(source_id, scan_id, file_path,"
+            " relative_path, file_name, extension, file_size, last_access_time,"
+            " last_modify_time, owner) "
+            "VALUES(1, ?, ?, ?, ?, 'txt', 1024, datetime('now','-800 days'),"
             " datetime('now','-800 days'), 'BURCU\\grafik')",
-            (sid, r"E:\old\rapor.txt", "rapor.txt"))
+            (sid, r"E:\old\rapor.txt", r"old\rapor.txt", "rapor.txt"))
     yield db
     db.close()
 
