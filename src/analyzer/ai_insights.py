@@ -139,6 +139,7 @@ class InsightsEngine:
                 severity = "critical" if pct > 50 else "warning" if pct > 25 else "info"
                 insights.append({
                     "category": "stale",
+                    "insight_type": "stale_1year",
                     "severity": severity,
                     "title": f"1 Yildan Eski Erisim: %{pct:.0f}",
                     "description": f"{r['cnt']:,} dosya ({format_size(r['size'])}) 1 yildir erisilmemis. Toplam dosyalarin %{pct:.0f}'i.",
@@ -159,6 +160,7 @@ class InsightsEngine:
             if r["cnt"] > 0:
                 insights.append({
                     "category": "stale",
+                    "insight_type": "stale_3year",
                     "severity": "critical",
                     "title": f"3+ Yillik Eski Veri: {format_size(r['size'])}",
                     "description": f"{r['cnt']:,} dosya 3 yildir hic erisilmemis.",
