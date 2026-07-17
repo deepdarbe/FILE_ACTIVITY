@@ -55,6 +55,11 @@ class FileWatcher:
         self._usn_tailer = None
         self._usn_stop_event = None
         self._usn_thread = None
+        # #340 Faz 2 — resolves a USN record's parent FRN to a full path so
+        # delete/create/modify audit rows carry `E:\dir\file`, not a bare
+        # name. Created only in USN-tail mode; None → name-only floor.
+        self._frn_resolver = None
+        self._usn_volume_path = None
         self._running = False
         self._thread = None
         self._stats_lock = threading.Lock()
@@ -100,6 +105,11 @@ class FileWatcher:
                 self._usn_tailer.close()
             except Exception:
                 pass
+        if self._frn_resolver is not None:
+            try:
+                self._frn_resolver.close()
+            except Exception:
+                pass
         with _watchers_lock:
             _watchers.pop(self.source_id, None)
         logger.info("File watcher stopped for source %d", self.source_id)
@@ -120,6 +130,17 @@ class FileWatcher:
             if not volume_letter:
                 return False
             tailer = NtfsUsnTailer(self.db, self.config, self.source_id, volume_letter)
+            # #340 Faz 2 — full-path resolver over this volume. Best-effort:
+            # constructing it is cheap and can't fail on POSIX (all win32
+            # imports are lazy), and a failed resolve degrades to name-only.
+            try:
+                from src.scanner.backends.frn_resolver import FrnResolver
+                self._usn_volume_path = "\\\\.\\%s:" % volume_letter
+                self._frn_resolver = FrnResolver()
+            except Exception as e:
+                logger.debug("FrnResolver kurulamadı (kaynak %d): %s",
+                             self.source_id, e)
+                self._frn_resolver = None
             init_result = tailer.initialize()
             if init_result.get("gap_detected"):
                 logger.warning(
@@ -178,9 +199,27 @@ class FileWatcher:
         else:
             # Skip BASIC_INFO_CHANGE / SECURITY_CHANGE / CLOSE noise
             return
-        # USN gives us the file name, not full path. Best effort path is
-        # the volume root + name; the watcher doesn't reconstruct full
-        # parent path here (would require an MFT lookup).
+        # #340 Faz 2 — resolve the parent FRN to a full path so the audit row
+        # carries `E:\dir\file`, not a bare name. The parent directory
+        # survives the child's deletion, so this works for FILE_DELETE too.
+        # Best-effort: a None resolve (bad FRN, deleted parent, non-Windows,
+        # or the resolver having disabled itself after repeated failures)
+        # falls back to the name-only floor and MUST NOT stall USN tailing.
+        full_path = fname
+        resolver = self._frn_resolver
+        if resolver is not None and fname:
+            parent_frn = event.get("parent_frn_raw")
+            if parent_frn is None:
+                parent_frn = event.get("parent_frn")
+            if parent_frn is not None:
+                try:
+                    parent_path = resolver.resolve(self._usn_volume_path, parent_frn)
+                except Exception as e:
+                    logger.debug("USN parent FRN çözümleme hata: %s", e)
+                    parent_path = None
+                if parent_path:
+                    full_path = parent_path.rstrip("\\") + "\\" + fname
+
         with self._stats_lock:
             if etype == "create":
                 self.stats["new_files"] += 1
@@ -191,7 +230,7 @@ class FileWatcher:
             self.stats["total_changes"] += 1
             self.stats["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
-            self._record_audit(etype, fname, owner=None)
+            self._record_audit(etype, full_path, owner=None)
         except Exception as e:
             logger.debug("USN _on_usn_event audit hata: %s", e)
 

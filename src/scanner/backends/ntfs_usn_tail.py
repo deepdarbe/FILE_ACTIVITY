@@ -427,6 +427,10 @@ class NtfsUsnTailer:
                     "source_id": self.source_id,
                     "frn": rec.get("frn"),
                     "parent_frn": rec.get("parent_frn"),
+                    # Raw parent FRN (with the NTFS sequence number) so the
+                    # file_watcher's FrnResolver can OpenFileById the parent
+                    # directory for full-path resolution (#340 Faz 2).
+                    "parent_frn_raw": rec.get("parent_frn_raw"),
                     "usn": rec.get("usn"),
                     "file_name": rec.get("file_name"),
                     "attributes": rec.get("attributes"),
