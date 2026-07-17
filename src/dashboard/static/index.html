@@ -4924,7 +4924,7 @@ async function loadForensicDeletions() {
                     `<td><a href="#" onclick="loadUserDetail('${userEsc}');return false">${userEsc || '-'}</a></td>` +
                     `<td style="font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(e.file_path || '')}</td>` +
                     `<td style="white-space:nowrap">${ip}</td><td style="white-space:nowrap">${sz}</td><td>${det}</td>` +
-                    `<td id="rec-${escapeHtml(e.uid || '')}"><button class="btn btn-sm btn-outline" data-uid="${escapeHtml(e.uid || '')}" data-path="${escapeHtml(e.file_path || '')}" onclick="checkRecoverable(this)" title="VSS golge kopyada onceki surumu var mi?">🛡️ Kontrol</button></td>` +
+                    `<td id="rec-${escapeHtml(e.uid || '')}"><button class="btn btn-sm btn-outline" data-uid="${escapeHtml(e.uid || '')}" onclick="checkRecoverable(this)" title="VSS golge kopyada onceki surumu var mi?">🛡️ Kontrol</button></td>` +
                     `<td>${tag}</td></tr>`;
             }).join('') : '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-muted)">Silme olayi bulunamadi ✅ (Event Log toplayici kapaliysa yalniz USN gorunur — user_activity.enabled)</td></tr>'}</tbody>
         `);
@@ -4937,12 +4937,12 @@ async function loadForensicDeletions() {
 // #340 Faz 4 — on-demand VSS "kurtarilabilir mi?" check for one deleted file.
 // Windows-admin-gated + best-effort; null => bilinmiyor (VSS yok / admin yok).
 async function checkRecoverable(btn) {
-    const path = btn.getAttribute('data-path') || '';
-    const cellId = 'rec-' + (btn.getAttribute('data-uid') || '');
-    if (!path) { _setHtmlSafe(cellId, '<span style="color:var(--text-muted)">-</span>'); return; }
+    const uid = btn.getAttribute('data-uid') || '';
+    const cellId = 'rec-' + uid;
+    if (!uid) { _setHtmlSafe(cellId, '<span style="color:var(--text-muted)">-</span>'); return; }
     _setHtmlSafe(cellId, '<span style="color:var(--text-muted)">⏳ ...</span>');
     try {
-        const r = await api('/forensic/recoverable?path=' + encodeURIComponent(path), { silent: true });
+        const r = await api('/forensic/recoverable?uid=' + encodeURIComponent(uid), { silent: true });
         let html;
         if (r && r.recoverable === true) {
             const tip = escapeHtml((r.shadow_path || '') + (r.shadow_created ? ' @ ' + r.shadow_created : ''));

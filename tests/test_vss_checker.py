@@ -7,9 +7,16 @@ WMI/PowerShell subprocess is Windows-admin-only and validated on-box, not here.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 
+import pytest
+
 from src.scanner.vss_checker import VssChecker
+
+HAS_FASTAPI = importlib.util.find_spec("fastapi") is not None
+requires_fastapi = pytest.mark.skipif(
+    not HAS_FASTAPI, reason="fastapi not installed in this environment")
 
 _DEV = r"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy7"
 
@@ -69,3 +76,43 @@ def test_drive_match_is_case_insensitive(monkeypatch):
     monkeypatch.setattr(os.path, "exists", lambda p: True)
     r = VssChecker().find_recoverable(r"E:\x.txt", shadows=shadows)
     assert r["recoverable"] is True
+
+
+def test_traversal_is_refused(monkeypatch):
+    # Even with a matching shadow and exists()->True, a '..' segment must abort
+    # the lookup (defence in depth against path traversal / py/path-injection).
+    shadows = [{"device": _DEV, "drive": "E:"}]
+    monkeypatch.setattr(os.path, "exists", lambda p: True)
+    r = VssChecker().find_recoverable(r"E:\..\..\Windows\win.ini", shadows=shadows)
+    assert r["recoverable"] is None
+
+
+@requires_fastapi
+def test_endpoint_resolves_uid_from_db(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from src.dashboard.api import create_app
+    from src.storage.database import Database
+
+    db = Database({"path": str(tmp_path / "vss.db"),
+                   "retention": {"auto_cleanup_on_startup": False}})
+    db.connect()
+    with db.get_cursor() as cur:
+        cur.execute("INSERT INTO sources(name, unc_path) VALUES('e', 'x')")
+        cur.execute(
+            "INSERT INTO file_audit_events"
+            "(source_id, event_time, event_type, username, file_path, file_name) "
+            "VALUES(1, datetime('now'), 'delete', 'alice', ?, ?)",
+            (r"E:\ortak\a.xlsx", "a.xlsx"))
+    client = TestClient(create_app(db, {"dashboard": {"auth": {"enabled": False}}}))
+
+    # Valid uid resolves the DB path; on Linux (no VSS) recoverable is None but
+    # the endpoint shape + uid->path resolution are exercised.
+    r = client.get("/api/forensic/recoverable?uid=fae:1")
+    assert r.status_code == 200
+    assert set(r.json()) == {"recoverable", "shadow_path", "shadow_created"}
+    # Bad / unknown uid → unknown, never a 500.
+    assert client.get("/api/forensic/recoverable?uid=garbage").json()["recoverable"] is None
+    assert client.get("/api/forensic/recoverable?uid=fae:9999").json()["recoverable"] is None
+    assert client.get("/api/forensic/recoverable?uid=ual:abc").json()["recoverable"] is None
+    db.close()

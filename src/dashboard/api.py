@@ -3206,16 +3206,31 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             mass_delete_threshold=threshold)
 
     @app.get("/api/forensic/recoverable")
-    def forensic_recoverable(path: str):
+    def forensic_recoverable(uid: str):
         """#340 Faz 4 — is a deleted file still recoverable from a VSS snapshot?
 
-        Best-effort, Windows-admin-gated, on-demand (the UI calls it per row).
-        Returns ``{recoverable: true|false|null, shadow_path, shadow_created}``;
-        ``null`` = unknown (no VSS / no admin / non-Windows / UNC path), never a
-        false negative. No DB, no state change → read-only, no audit.
+        Takes the deletion feed's row ``uid`` (``'<src>:<id>'``) and resolves the
+        real ``file_path`` from the DB — a client-supplied string never becomes a
+        filesystem lookup (path-injection). Best-effort, Windows-admin-gated,
+        on-demand (the UI calls it per row). Returns ``{recoverable:
+        true|false|null, shadow_path, shadow_created}``; ``null`` = unknown (no
+        VSS / no admin / non-Windows / UNC path), never a false negative.
+        Read-only (get_read_cursor), no state change → no audit.
         """
+        unknown = {"recoverable": None, "shadow_path": None, "shadow_created": None}
+        src_tag, _, sid = (uid or "").partition(":")
+        # Fixed allowlist maps the uid prefix to a table name — never user text.
+        table = {"fae": "file_audit_events", "ual": "user_access_logs"}.get(src_tag)
+        if not table or not sid.isdigit():
+            return unknown
+        with db.get_read_cursor() as cur:
+            row = cur.execute(
+                f"SELECT file_path FROM {table} WHERE id = ?",  # noqa: S608 — table from fixed allowlist
+                (int(sid),)).fetchone()
+        if not row or not row["file_path"]:
+            return unknown
         from src.scanner.vss_checker import VssChecker
-        return VssChecker().find_recoverable(path)
+        return VssChecker().find_recoverable(row["file_path"])
 
     # --- AUDIT CHAIN API (issue #38) ---
 

@@ -25,6 +25,7 @@ dashboard the shadow list comes back empty and every check is reported as
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Optional
 
 logger = logging.getLogger("file_activity.scanner.vss_checker")
@@ -111,6 +112,11 @@ class VssChecker:
         drive = file_path[:2].upper()      # 'E:'
         rel = file_path[3:].lstrip("\\")   # 'dir\file'
         if not rel:
+            return result
+        # ``rel`` becomes a filesystem lookup below — reject traversal so it
+        # cannot escape the shadow-copy root (defence in depth; the endpoint
+        # already resolves the path from the DB, not the request).
+        if any(seg in ("..", ".") for seg in re.split(r"[\\/]+", rel)):
             return result
 
         try:
