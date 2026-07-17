@@ -2734,10 +2734,14 @@ class Database:
             """, (source_id, scan_id, file_path))
 
     def has_access_log_data(self) -> bool:
-        """Event log verisi var mi kontrolu."""
-        with self.get_cursor() as cur:
-            cur.execute("SELECT COUNT(*) as cnt FROM user_access_logs LIMIT 1")
-            return cur.fetchone()["cnt"] > 0
+        """Event log verisi var mi kontrolu (O(1) existence probe).
+
+        Called on every /api/users/overview load. ``COUNT(*) … LIMIT 1`` was a
+        full scan of user_access_logs (the LIMIT does nothing to a COUNT); a
+        ``SELECT 1 … LIMIT 1`` stops at the first row. Read pool (Rule 6)."""
+        with self.get_read_cursor() as cur:
+            cur.execute("SELECT 1 FROM user_access_logs LIMIT 1")
+            return cur.fetchone() is not None
 
     # ──────────────────────────────────────────────
     # File Audit Events
@@ -4806,7 +4810,10 @@ class Database:
             stats["db_size"] = db_size
             stats["wal_size"] = wal_size
             stats["total_disk"] = db_size + wal_size + shm_size
-            with self.get_cursor() as cur:
+            # Read pool (Rule 6): these COUNT(*)s must not contend with the
+            # writer connection while a scan is bulk-inserting (the stats page
+            # otherwise blocks behind the scan's transaction).
+            with self.get_read_cursor() as cur:
                 for table in ["scanned_files", "scan_runs", "archived_files", "user_access_logs", "sources"]:
                     try:
                         cur.execute(f"SELECT COUNT(*) as cnt FROM {table}")  # noqa: S608
