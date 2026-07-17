@@ -365,7 +365,27 @@ class MITNamingAnalyzer:
     def get_report(self) -> dict:
         """MIT uyum raporu olustur."""
         if self.total == 0:
-            return {"total": 0, "compliance_score": 100, "requirements": [], "best_practices": []}
+            # Return the SAME shape as the normal path (zeroed) so no consumer
+            # reads an undefined key. The old short shape omitted
+            # total_files_analyzed / *_compliance / all_* / summary, which a
+            # non-defensive reader would see as undefined (#366 audit).
+            return {
+                "total_files_analyzed": 0,
+                "compliance_score": 100,
+                "requirement_compliance": 100.0,
+                "full_compliance": 100.0,
+                "fully_compliant_count": 0,
+                "req_compliant_count": 0,
+                "requirements": [],
+                "best_practices": [],
+                "all_requirements": [],
+                "all_best_practices": [],
+                "summary": {
+                    "total_requirement_violations": 0,
+                    "total_bp_violations": 0,
+                    "top_issue": None,
+                },
+            }
 
         req_score = (self.req_compliant / self.total * 100) if self.total > 0 else 0
         full_score = (self.fully_compliant / self.total * 100) if self.total > 0 else 0

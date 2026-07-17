@@ -4393,7 +4393,10 @@ async function loadTreemap() {
         treemapData = buildTreeFromTypes(data.types || [], data.summary || {});
         treemapZoomPath = null;
         renderTreemap();
-    } catch(e) { console.error(e); }
+    } catch(e) {
+        console.error(e);
+        _setHtmlSafe('treemap-container', `<div style="padding:20px;color:var(--danger)">Treemap yuklenemedi: ${escapeHtml(e.message||'hata')}. Tarama suruyorsa bitince tekrar deneyin.</div>`);
+    }
 }
 
 
@@ -4664,7 +4667,10 @@ async function loadUsers() {
                     </td></tr>`; }).join('')}</tbody>
             `);
         }
-    } catch(e) { console.error(e); }
+    } catch(e) {
+        console.error(e);
+        _setHtmlSafe('user-cards', `<div style="padding:20px;color:var(--danger)">Kullanici verisi yuklenemedi: ${escapeHtml(e.message||'hata')}.</div>`);
+    }
 }
 
 function renderHeatmap(data) {
@@ -7231,7 +7237,11 @@ async function loadGrowth() {
                 creatorsTable.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:12px">Veri bulunamadi</div>';
             }
         }
-    } catch(e) { console.error('Growth load error:', e); }
+    } catch(e) {
+        console.error('Growth load error:', e);
+        // #366 audit: don't swallow the error into a silent blank page.
+        _setHtmlSafe('growth-summary-cards', `<div style="padding:20px;color:var(--danger)">Buyume raporu yuklenemedi: ${escapeHtml(e.message||'hata')}. Tarama suruyorsa bitince tekrar deneyin.</div>`);
+    }
 }
 
 // ═══════════════════════════════════════════════════
