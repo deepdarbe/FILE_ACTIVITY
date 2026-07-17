@@ -392,20 +392,21 @@ Set-Content "$InstallDir\start_dashboard.cmd" $dashCmd
 #
 # Branch'i koru: install.ps1 -Branch parametresi alir, scriptblock-Create
 # pattern ile thread eder (eski temp-file dance gerekmez).
-# #351: 2-3 GB'lik snapshot her update'te operator'i bekletiyordu. Artik
-# update.cmd basinda bir E/H sorusu var. GUVENLI VARSAYILAN: sadece
-# EXPLICIT "H" yedegi atlar; Enter / 30sn timeout / choice.exe eksikligi /
-# beklenmedik her hata GUVENLI tarafa (yedek AL) duser -> bu yuzden
-# `if "%errorlevel%"=="2"` (tam esitlik), `if errorlevel 2` DEGIL: ikincisi
-# choice.exe bulunamazsa donen 9009'u da yakalayip yanlislikla atlardi.
-# Snapshot zaten --skip-if-recent-minutes 30 ile son 30dk icinde alinmissa
-# kendiliginden ~aninda gecer; soru yine sorulur ama maliyeti dusuktur.
+# #351/#362: 2-3 GB'lik snapshot her update'te operator'i bekletiyordu. Artik
+# update.cmd basinda bir E/H sorusu var. HIZLI VARSAYILAN (operator talebi):
+# timeout (10sn) VE explicit "H" yedegi ATLAR; yedek istiyorsan "E" bas.
+# ONEMLI GUVENLIK RAYI KORUNDU: choice.exe bulunamazsa (errorlevel 9009) ya da
+# beklenmedik bir hata olursa yine YEDEK ALINIR -> `if "%errorlevel%"=="2"`
+# (tam esitlik), `if errorlevel 2` DEGIL: ikincisi 9009'u da yakalayip yedegi
+# atlardi (arac bozukken guvensiz yon). Yani "prompt calisiyorsa hizli-atla,
+# prompt bozuksa guvenli-yedekle". Snapshot zaten --skip-if-recent-minutes 30
+# ile son 30dk icinde alinmissa kendiliginden ~aninda gecer.
 $updateCmd = @"
 @echo off
 echo FILE ACTIVITY guncelleniyor ($Branch branch)...
 cd /d "$InstallDir"
 echo.
-choice /C EH /N /T 30 /D E /M "Update oncesi SQLite yedegi alinsin mi? (E=Evet [varsayilan, 30sn] / H=Hayir, atla): "
+choice /C EH /N /T 10 /D H /M "Update oncesi SQLite yedegi alinsin mi? (E=Evet, yedek al / H=Hayir, ATLA [varsayilan, 10sn]): "
 if "%errorlevel%"=="2" goto fa_skipbackup
 echo  - Pre-update SQLite snapshot aliniyor (son 30dk icindeyse atlanir)...
 "$InstallDir\.venv\Scripts\python.exe" -m src.storage.backup_manager snapshot --reason "update" --skip-if-recent-minutes 30
