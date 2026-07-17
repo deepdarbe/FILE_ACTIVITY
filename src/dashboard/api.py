@@ -859,15 +859,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     #
     # ``script-src`` allows ``'unsafe-inline'`` because index.html embeds
     # ~6k lines of inline JS. Tightening to nonces is a Phase 3 follow-up.
-    # ``cdn.jsdelivr.net`` is whitelisted because the dashboard pulls
-    # d3 + chart.js from there; remove this line if you self-host them.
+    # d3 + chart.js are self-hosted under ``/static/vendor/`` (no external
+    # CDN), so ``script-src`` stays ``'self'`` only — the dashboard renders
+    # its charts even on an air-gapped / firewalled customer box.
     # ─────────────────────────────────────────────────────────────────
     @app.middleware("http")
     async def _csp_middleware(request, call_next):
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; "
             "font-src 'self' data:; "
@@ -1382,6 +1383,16 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             html = html.replace(
                 'src="/static/components/view-toggle.js"',
                 f'src="/static/components/view-toggle.js?v={APP_VERSION}"',
+            )
+            # Self-hosted vendor libs (d3, chart.js) — cache-bust on deploy
+            # the same way so a re-vendored bundle never serves stale.
+            html = html.replace(
+                'src="/static/vendor/d3.min.js"',
+                f'src="/static/vendor/d3.min.js?v={APP_VERSION}"',
+            )
+            html = html.replace(
+                'src="/static/vendor/chart.umd.min.js"',
+                f'src="/static/vendor/chart.umd.min.js?v={APP_VERSION}"',
             )
             return HTMLResponse(content=html, headers=no_cache_headers)
         return HTMLResponse(
