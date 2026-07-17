@@ -3239,9 +3239,15 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                            end_seq: Optional[int] = None):
         """Verify the tamper-evident audit chain from since_seq onward.
 
-        Returns ``{verified, total, broken_at, broken_reason}``.
+        Returns ``{verified, total, broken_at, broken_reason, chain_enabled}``.
+        ``chain_enabled`` (#340 Faz 5, Rule 8) lets the UI distinguish "chain is
+        OFF — show the config gate" from "chain is on but empty".
         """
-        return db.verify_audit_chain(start_seq=since_seq, end_seq=end_seq)
+        res = db.verify_audit_chain(start_seq=since_seq, end_seq=end_seq)
+        res["chain_enabled"] = bool(
+            (config.get("audit") or {}).get("chain_enabled", False)
+            if isinstance(config, dict) else False)
+        return res
 
     @app.get("/api/audit/chain")
     def audit_chain(page: int = Query(1, ge=1),
