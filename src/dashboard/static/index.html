@@ -2762,11 +2762,15 @@ function _findSkeletonContainer(pageName) {
     for (const id of chartCandidates) {
         if (document.getElementById(id)) return { id, type: 'chart' };
     }
-    // Fallback: page root
-    const pageEl = document.getElementById('page-' + pageName);
-    if (pageEl && !pageEl.id.startsWith('skeleton-')) {
-        return { id: pageEl.id, type: 'cards' };
-    }
+    // NO page-root fallback. Rendering a skeleton into #page-<name> overwrites
+    // the page's real containers (source <select>, cards, tables, entity-list
+    // hosts) via innerHTML, and if the loader's fetch outlives the 5s skeleton
+    // timer (e.g. a cold mit-naming compute over millions of rows, 1-3 min) the
+    // skeleton is never torn down — the page is left stuck showing 4 grey
+    // skeleton cards with no data until a full reload (customer bug 2026-07-17,
+    // "Adlandirma Uyumu mokoko"). A page whose data container doesn't match the
+    // id conventions above simply gets NO skeleton (the loadWithProgress
+    // progress bar still shows) — no skeleton is safer than a destructive one.
     return null;
 }
 
@@ -5792,7 +5796,13 @@ async function loadNaming() {
         _attachNamingViewToggle();
     } catch(e) {
         console.error('MIT naming load error:', e);
-        _setHtmlSafe('naming-summary-cards', `<div style="padding:20px;color:var(--danger,#dc2626)">Adlandirma raporu yuklenemedi: ${escapeHtml(e.message||'hata')}. Tarama suruyorsa bitince tekrar deneyin.</div>`);
+        const _msg = `<div style="padding:20px;color:var(--danger,#dc2626)">Adlandirma raporu yuklenemedi: ${escapeHtml(e.message||'hata')}. Tarama suruyorsa bitince tekrar deneyin.</div>`;
+        _setHtmlSafe('naming-summary-cards', _msg);
+        // Also surface the error in the grid host (visible in Profesyonel mode
+        // where naming-summary-cards is hidden) and keep the toggle wired so the
+        // page never ends up in a mode with dead controls after a failed load.
+        _setHtmlSafe('mit-naming-container', _msg);
+        _attachNamingViewToggle();
     }
 }
 
@@ -8977,7 +8987,12 @@ function _renderChargebackGrid() {
     const g = document.getElementById('cb-grid-host');
     if (v) v.style.display = 'none';
     if (g) g.style.display = '';
+    // Empty-state so grid mode never shows a blank panel when no report is
+    // cached yet (fresh load, no source auto-selected). Mirrors the freq/dup
+    // grid renderers; the no-source hint otherwise lands in the hidden visual
+    // host and the user in Profesyonel mode sees nothing.
     if (_cbReport) _renderChargebackEntityList(_cbReport);
+    else _setHtmlSafe('cb-entity-container', '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>');
 }
 
 async function loadChargeback() {
@@ -9322,7 +9337,11 @@ function _renderForecastGrid() {
     const g = document.getElementById('fc-grid-host');
     if (v) v.style.display = 'none';
     if (g) g.style.display = '';
+    // Empty-state so grid mode never shows a blank panel when no forecast is
+    // cached yet (same class as chargeback); the no-source hint otherwise
+    // lands in the hidden visual host.
     if (_fcLastResult) _renderForecastEntityList(_fcLastResult);
+    else _setHtmlSafe('fc-entity-container', '<div style="padding:20px;color:var(--text-muted)">Once bir kaynak secin</div>');
 }
 
 async function loadForecast() {
