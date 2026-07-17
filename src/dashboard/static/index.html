@@ -989,6 +989,7 @@ body.sidebar-open { overflow: hidden; }
         </div>
     </div>
     <div class="cards" id="fdel-cards"></div>
+    <div class="cards" id="fdel-chain" style="margin:4px 0 12px"></div>
     <div class="table-wrap"><table id="fdel-table"></table></div>
 </div>
 
@@ -4928,9 +4929,33 @@ async function loadForensicDeletions() {
                     `<td>${tag}</td></tr>`;
             }).join('') : '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-muted)">Silme olayi bulunamadi ✅ (Event Log toplayici kapaliysa yalniz USN gorunur — user_activity.enabled)</td></tr>'}</tbody>
         `);
+        _loadForensicChain();   // delil zinciri durumu (bagimsiz, feed'i bloklamaz)
     } catch (e) {
         console.error(e);
         _setHtmlSafe('fdel-table', '<tbody><tr><td style="padding:24px;color:var(--text-muted)">Yuklenemedi</td></tr></tbody>');
+    }
+}
+
+// #340 Faz 5 — tamper-evident "delil zinciri" durumu. Rule 8: zincir kapaliysa
+// tam config anahtarini goster. verify_audit_chain SHA-256 ile file_audit_events
+// silme kayitlarinin sonradan degistirilmedigini dogrular.
+async function _loadForensicChain() {
+    try {
+        const v = await api('/audit/verify', { silent: true });
+        let html;
+        if (v && v.chain_enabled === false && !v.total) {
+            html = '<div class="card" style="border-left:3px solid var(--warning)"><div class="card-label">🔗 Delil Zinciri (tamper-evident)</div>' +
+                '<div style="font-size:12.5px;color:var(--text-secondary);margin-top:4px">Kapali — acmak icin <code>config.yaml → audit.chain_enabled: true</code>. Acikken her silme denetim kaydi SHA-256 zincire eklenir; sonradan degistirme/silme dogrulamada yakalanir.</div></div>';
+        } else if (v && v.verified) {
+            html = `<div class="card success"><div class="card-label">🔗 Delil Zinciri ✅ Dogrulandi</div><div class="card-value">${formatNum(v.total || 0)}</div><div class="card-sub">denetim kaydi — kurcalanmamis (SHA-256)</div></div>`;
+        } else if (v) {
+            html = `<div class="card danger"><div class="card-label">🔗 Delil Zinciri ❌ KIRIK</div><div class="card-sub">seq ${escapeHtml(String(v.broken_at || '?'))}: ${escapeHtml(v.broken_reason || '')}</div></div>`;
+        } else {
+            html = '';
+        }
+        _setHtmlSafe('fdel-chain', html);
+    } catch (e) {
+        _setHtmlSafe('fdel-chain', '');
     }
 }
 
