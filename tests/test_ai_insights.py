@@ -32,6 +32,7 @@ if REPO_ROOT not in sys.path:
 
 from src.analyzer.ai_insights import (  # noqa: E402
     VALID_INSIGHT_TYPES,
+    InsightsEngine,
     get_insight_files,
 )
 from src.storage.database import Database  # noqa: E402
@@ -227,3 +228,16 @@ def test_endpoint_known_insight_type_returns_200(seeded_db):
     assert body["insight_type"] == "all_files"
     assert body["total"] >= 1
     assert len(body["files"]) == body["total"] or body["total"] > body["page_size"]
+
+
+def test_stale_insights_carry_distinct_types(seeded_db):
+    """#362 regression: the 1-year and 3-year stale insights both had
+    category='stale' and no explicit insight_type, so the shared fallback set
+    BOTH to 'stale_1year' — clicking "3+ Yillik" opened the "1 Yildan Eski"
+    list. Each must now carry its own insight_type so the Incele button and the
+    modal title resolve correctly."""
+    result = InsightsEngine(seeded_db).generate_insights(1)
+    stale_types = {i["insight_type"] for i in result["insights"]
+                   if i.get("category") == "stale"}
+    assert "stale_1year" in stale_types
+    assert "stale_3year" in stale_types   # was collapsed to stale_1year pre-fix
