@@ -43,13 +43,27 @@ def _client(db):
 
 
 @requires_fastapi
-def test_stale_schema_cache_is_recomputed(db):
+def test_stale_cache_served_immediately_then_refreshed(db):
+    import time
+
     # Pre-#365 cache: no schema_version, a sentinel insight that must NOT survive.
     db.save_scan_insights(1, {"insights": [{"category": "stale",
                                             "title": "OLD-SENTINEL"}], "score": 0})
-    body = _client(db).get("/api/insights/1").json()
-    assert body.get("schema_version") == INSIGHTS_SCHEMA_VERSION
-    assert "OLD-SENTINEL" not in [i.get("title") for i in body.get("insights", [])]
+    # First read serves the stale cache IMMEDIATELY (no blocking) and kicks a
+    # single background refresh — flagged so the UI knows it's being updated.
+    first = _client(db).get("/api/insights/1").json()
+    assert first.get("refreshing") is True
+
+    # The background pass replaces the cache with the current schema.
+    deadline = time.time() + 10
+    refreshed = None
+    while time.time() < deadline:
+        refreshed = db.get_scan_insights(1)
+        if refreshed and refreshed.get("schema_version") == INSIGHTS_SCHEMA_VERSION:
+            break
+        time.sleep(0.1)
+    assert refreshed and refreshed.get("schema_version") == INSIGHTS_SCHEMA_VERSION
+    assert "OLD-SENTINEL" not in [i.get("title") for i in refreshed.get("insights", [])]
 
 
 @requires_fastapi
