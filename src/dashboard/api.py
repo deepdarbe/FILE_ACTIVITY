@@ -3276,11 +3276,18 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
         scan-in-progress banner shape instead of forcing a heavy
         InsightsEngine compute that would contend with the writer.
         """
-        from src.analyzer.ai_insights import InsightsEngine
+        from src.analyzer.ai_insights import (
+            INSIGHTS_SCHEMA_VERSION,
+            InsightsEngine,
+        )
         scan_id = db.get_latest_scan_id(source_id, include_running=False)
         if not refresh and scan_id:
             cached = db.get_scan_insights(scan_id)
-            if cached:
+            # Serve the cache ONLY if it was written by the current insight
+            # schema. A stale (older-schema) cache falls through and is
+            # recomputed+resaved below — otherwise an insight bug fix never
+            # reaches a box whose scan_id hasn't changed (#370).
+            if cached and cached.get("schema_version", 0) >= INSIGHTS_SCHEMA_VERSION:
                 cached["from_cache"] = True
                 return cached
 
