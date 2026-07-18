@@ -3882,7 +3882,7 @@ async function loadOverview() {
                         </div>
                         ${i.impact_size ? `<span style="font-size:12px;color:var(--text-muted);flex-shrink:0">${formatSize(i.impact_size)}</span>` : ''}
                         <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${escapeHtml(i.category||'')}', '${escapeHtml(i.insight_type||'')}', ${sid})" style="flex-shrink:0">Incele</button>
-                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${escapeHtml(i.category)}', ${sid})" style="flex-shrink:0">Uygula</button>` : ''}
+                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${escapeHtml(i.category)}', ${sid}, '${escapeHtml(i.insight_type||'')}', ${i.file_count||0}, ${i.impact_size||0})" style="flex-shrink:0">Uygula</button>` : ''}
                     </div>
                 `).join('');
             } else {
@@ -3895,7 +3895,7 @@ async function loadOverview() {
 // ═══════════════════════════════════════════════════
 // APPLY INSIGHT (Uygula butonu)
 // ═══════════════════════════════════════════════════
-async function applyInsight(category, sourceId) {
+async function applyInsight(category, sourceId, explicitType, totalCount, totalSize) {
     // Map category to insight_type
     const typeMap = {
         'stale': 'stale_1year',
@@ -3906,7 +3906,9 @@ async function applyInsight(category, sourceId) {
         'recommendation': 'stale_1year',
         'audit': 'temp_files'
     };
-    const insightType = typeMap[category] || 'stale_1year';
+    // Prefer the insight's own insight_type: "1 Yildan Eski" and "3+ Yillik" both
+    // have category 'stale', so the category map alone collapses them to stale_1year.
+    const insightType = explicitType || typeMap[category] || 'stale_1year';
 
     try {
         // Step 1: Preview
@@ -3936,12 +3938,15 @@ async function applyInsight(category, sourceId) {
             <div style="padding:20px">
                 <h3 style="margin:0 0 16px 0">Arsivleme Onaylama</h3>
                 <div class="cards" style="margin-bottom:16px">
-                    <div class="card accent"><div class="card-label">Dosya Sayisi</div><div class="card-value">${formatNum(preview.file_count)}</div></div>
-                    <div class="card warning"><div class="card-label">Toplam Boyut</div><div class="card-value">${preview.total_size_formatted}</div></div>
-                    <div class="card purple"><div class="card-label">Kategori</div><div class="card-value" style="font-size:14px">${escapeHtml(category)}</div></div>
+                    <div class="card accent"><div class="card-label">Eslesen Dosya</div><div class="card-value">${formatNum(totalCount || preview.file_count)}</div></div>
+                    <div class="card warning"><div class="card-label">Toplam Boyut</div><div class="card-value">${totalSize ? formatSize(totalSize) : (preview.total_size_formatted || '-')}</div></div>
+                    <div class="card purple"><div class="card-label">Tip</div><div class="card-value" style="font-size:14px">${escapeHtml(insightType)}</div></div>
                 </div>
+                ${(totalCount && totalCount > preview.file_count) ? `<div style="margin-bottom:14px;padding:10px 12px;background:rgba(245,158,11,0.12);border:1px solid var(--warning);border-radius:6px;font-size:12px">
+                    <strong>Not:</strong> Bu calistirma ilk <strong>${formatNum(preview.file_count)}</strong> dosyayi (${preview.total_size_formatted}) arsivler; toplam ${formatNum(totalCount)} eslesen dosyanin tamamini arsivlemek icin islemi tekrarlayin.
+                </div>` : ''}
                 ${dupRedirect}
-                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Tip: <strong>${escapeHtml(insightType)}</strong> | Tum dosyalar asagida listelenmistir (ilk ${allFiles.length} dosya)${preview.file_count > allFiles.length ? ` - toplam ${preview.file_count} dosya` : ''}</div>
+                <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">Ornek: ilk ${allFiles.length} dosya asagida listelendi.</div>
                 ${allFiles.length ? `
                 <div style="max-height:350px;overflow-y:auto;margin-bottom:16px;border:1px solid var(--border);border-radius:var(--radius)">
                     <table style="width:100%;font-size:12px">
@@ -5695,7 +5700,7 @@ async function loadInsights() {
                     ${i.file_count ? `<div style="font-size:11px;color:var(--text-muted)">${formatNum(i.file_count)} dosya</div>` : ''}
                     <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
                         <button class="btn btn-sm btn-accent" onclick="showInsightFilesByCategory('${escapeHtml(i.category||'')}', '${escapeHtml(i.insight_type||'')}', ${sid})">Incele</button>
-                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${escapeHtml(i.category)}', ${sid})">Uygula</button>` : ''}
+                        ${i.action ? `<button class="btn btn-sm btn-outline" onclick="applyInsight('${escapeHtml(i.category)}', ${sid}, '${escapeHtml(i.insight_type||'')}', ${i.file_count||0}, ${i.impact_size||0})">Uygula</button>` : ''}
                     </div>
                 </div>
             </div>
