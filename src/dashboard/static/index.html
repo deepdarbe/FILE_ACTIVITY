@@ -2791,10 +2791,16 @@ async function fetchAndDownload(url, signal, fallbackName) {
 }
 
 function formatSize(bytes) {
-    if (!bytes || bytes === 0) return '0 B';
-    const u = ['B','KB','MB','GB','TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + u[i];
+    bytes = Number(bytes);
+    if (!bytes || !isFinite(bytes)) return '0 B';   // 0 / NaN / Infinity / null / undefined
+    // Handle NEGATIVE sizes (e.g. a growth delta when a volume SHRANK): the old
+    // code fed a negative into Math.log -> NaN -> "NaN undefined" (customer:
+    // "NaN undefined son tarama"). Format the magnitude, keep the sign.
+    const neg = bytes < 0;
+    bytes = Math.abs(bytes);
+    const u = ['B','KB','MB','GB','TB','PB'];
+    const i = Math.min(u.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    return (neg ? '-' : '') + (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + u[i];
 }
 
 function formatNum(n) { return n ? n.toLocaleString('tr-TR') : '0'; }
