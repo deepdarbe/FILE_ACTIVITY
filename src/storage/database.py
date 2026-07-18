@@ -2029,6 +2029,14 @@ class Database:
     # confusing "no rows" with a 1-2 char query.
     _FTS_MIN_QUERY_LEN = 3
 
+    # Cap the FTS match set a single search materialises. A very common
+    # substring (e.g. an owner name on hundreds of thousands of files) would
+    # otherwise make COUNT(*) + ORDER BY file_size scan every match — minutes
+    # on a 9M-row / 33 GB index — and hang the search box on "Araniyor..."
+    # forever (#372). A normal, specific term matches far fewer than the cap so
+    # its results are exact; only a pathologically broad term is bounded.
+    _FTS_MATCH_CAP = 20000
+
     @staticmethod
     def _fts_phrase(query: str) -> str:
         """Wrap raw user input as a single FTS5 phrase token.
@@ -2130,41 +2138,40 @@ class Database:
 
         scope_frag, scope_params = owner_scope if owner_scope else ('', [])
 
-        where = "scanned_files_fts MATCH ?"
-        count_params: list = [phrase]
-        page_params: list = [phrase]
+        # Filters applied to scanned_files (sf) AFTER the capped FTS join.
+        sf_frags: list = []
+        filt_params: list = []
         if scan_id is not None:
-            where += " AND sf.scan_id = ?"
-            count_params.append(scan_id)
-            page_params.append(scan_id)
+            sf_frags.append("sf.scan_id = ?")
+            filt_params.append(scan_id)
         if scope_frag:
-            # Remap AND owner LIKE ? → AND sf.owner LIKE ? for the JOIN alias
-            scope_frag_fts = scope_frag.replace("AND owner LIKE ?", "AND sf.owner LIKE ?")
-            where += f" {scope_frag_fts}"
-            count_params.extend(scope_params)
-            page_params.extend(scope_params)
+            # 'AND owner LIKE ?' -> 'sf.owner LIKE ?' for the JOIN alias.
+            sf_frags.append(
+                scope_frag.replace("AND owner LIKE ?", "sf.owner LIKE ?").strip())
+            filt_params.extend(scope_params)
+        sf_where = (" AND " + " AND ".join(sf_frags)) if sf_frags else ""
 
-        # get_read_cursor: short-lived read-only connection — independent
-        # of the scanner's writer pool, never blocks WAL checkpoint.
+        # Materialise at most _FTS_MATCH_CAP hits from the FTS index (LIMIT
+        # inside the subquery lets FTS5 stop early), then COUNT/ORDER only that
+        # bounded set — so a broad term can never turn the search into a
+        # multi-minute scan. get_read_cursor: short-lived read-only connection,
+        # never blocks WAL checkpoint.
+        base = (
+            "FROM scanned_files sf "
+            "JOIN (SELECT rowid FROM scanned_files_fts "
+            "      WHERE scanned_files_fts MATCH ? LIMIT ?) f ON sf.id = f.rowid "
+            f"WHERE 1=1{sf_where}"
+        )
+        base_params = [phrase, self._FTS_MATCH_CAP] + filt_params
+
         with self.get_read_cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) AS cnt "
-                "FROM scanned_files_fts f "
-                "JOIN scanned_files sf ON sf.id = f.rowid "
-                f"WHERE {where}",  # noqa: S608 - where is built from literals only
-                count_params,
-            )
+            cur.execute(f"SELECT COUNT(*) AS cnt {base}", base_params)  # noqa: S608 - fragments are literal SQL; values bind via ?
             row = cur.fetchone()
             total = (row["cnt"] if row else 0) or 0
 
             cur.execute(
-                "SELECT sf.* "
-                "FROM scanned_files_fts f "
-                "JOIN scanned_files sf ON sf.id = f.rowid "
-                f"WHERE {where} "  # noqa: S608 - where is built from literals only
-                "ORDER BY sf.file_size DESC "
-                "LIMIT ? OFFSET ?",
-                page_params + [limit, offset],
+                f"SELECT sf.* {base} ORDER BY sf.file_size DESC LIMIT ? OFFSET ?",  # noqa: S608
+                base_params + [limit, offset],
             )
             files = [dict(r) for r in cur.fetchall()]
         return {"total": total, "files": files, "query": q}
