@@ -4620,16 +4620,17 @@ async function loadUsers() {
                 <thead><tr><th>Sahip</th><th>Dosya Sayisi</th><th>Toplam Boyut</th><th>Yuzde</th><th>Islem</th></tr></thead>
                 <tbody>${owners.length ? owners.map(o => {
                     const pct = totalSize > 0 ? ((o.total_size||0)/totalSize*100).toFixed(1) : '0';
-                    // owner is "DOMAIN\\user"; a raw backslash in a single-quoted
-                    // onclick JS string is swallowed (\\g -> g) so the lookup misses
-                    // and the file list comes back empty. Escape backslash + quote.
-                    const ownerJs = (o.owner || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-                    const sid = parseInt(defaultSid) || 0;
-                    return `<tr class="clickable-row" onclick="drilldownOwner('${ownerJs}', '${defaultSid}')">
+                    // owner is "DOMAIN\\user"; carry it in a data-* attribute
+                    // (escapeHtml is correct there) and read it back via dataset in
+                    // the handler, so a quote/backslash in the name can never break
+                    // out of an inline JS-string arg (stored-XSS class fix).
+                    const ownerAttr = escapeHtml(o.owner || '');
+                    const sidAttr = escapeHtml(String(defaultSid));
+                    return `<tr class="clickable-row" data-owner="${ownerAttr}" data-sid="${sidAttr}" onclick="drilldownOwner(this.dataset.owner, this.dataset.sid)">
                         <td><strong>${escapeHtml(o.owner || 'Bilinmiyor')}</strong></td>
                         <td>${formatNum(o.file_count)}</td><td>${formatSize(o.total_size)}</td>
                         <td><div style="display:flex;align-items:center;gap:8px"><div style="flex:1;background:var(--bg-primary);border-radius:3px;height:6px;overflow:hidden"><div style="width:${pct}%;height:100%;background:var(--accent);border-radius:3px"></div></div><span style="font-size:11px">${pct}%</span></div></td>
-                        <td style="display:flex;gap:4px"><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();drilldownOwner('${ownerJs}', '${defaultSid}')">Dosyalar</button><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();showDrilldown('Arsivle: ${ownerJs}', '/drilldown/owner/${defaultSid}?owner=${encodeURIComponent(o.owner||'')}', {source_id:${sid}, filter_type:'owner', owner:'${ownerJs}'})">Arsivle</button></td>
+                        <td style="display:flex;gap:4px"><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();drilldownOwner(this.closest('tr').dataset.owner, this.closest('tr').dataset.sid)">Dosyalar</button><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();archiveOwnerDrilldown(this)">Arsivle</button></td>
                     </tr>`;
                 }).join('') : '<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--text-muted)">Sahiplik verisi bulunamadi. config.yaml dosyasinda read_owner: true yapin.</td></tr>'}</tbody>
             `);
@@ -4668,8 +4669,8 @@ async function loadUsers() {
                 <thead><tr><th>Kullanici</th><th>Erisim</th><th>Islem</th></tr></thead>
                 <tbody>${topUsers.slice(0,20).map(u => { const userEsc = escapeHtml(u.username||''); return `<tr><td><strong>${userEsc}</strong></td><td>${formatNum(u.access_count||u.count||0)}</td>
                     <td style="display:flex;gap:4px">
-                        <button class="btn btn-sm btn-outline" onclick="loadUserDetail('${userEsc}')">Detay</button>
-                        <button class="btn btn-sm btn-outline" style="border-color:var(--accent);color:var(--accent)" onclick="loadUserEfficiency('${userEsc}')">Verimlilik</button>
+                        <button class="btn btn-sm btn-outline" data-user="${userEsc}" onclick="loadUserDetail(this.dataset.user)">Detay</button>
+                        <button class="btn btn-sm btn-outline" style="border-color:var(--accent);color:var(--accent)" data-user="${userEsc}" onclick="loadUserEfficiency(this.dataset.user)">Verimlilik</button>
                     </td></tr>`; }).join('')}</tbody>
             `);
         }
@@ -4938,7 +4939,7 @@ async function loadForensicDeletions() {
                 const sz = (e.file_size != null && e.file_size > 0) ? formatSize(e.file_size) : '-';
                 const tag = e.severity === 'high' ? '<span class="badge badge-danger">toplu</span>' : '';
                 return `<tr${rowStyle}><td style="white-space:nowrap">${escapeHtml(e.ts || '')}</td>` +
-                    `<td><a href="#" onclick="loadUserDetail('${userEsc}');return false">${userEsc || '-'}</a></td>` +
+                    `<td><a href="#" data-user="${userEsc}" onclick="loadUserDetail(this.dataset.user);return false">${userEsc || '-'}</a></td>` +
                     `<td style="font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(e.file_path || '')}</td>` +
                     `<td style="white-space:nowrap">${ip}</td><td style="white-space:nowrap">${sz}</td><td>${det}</td>` +
                     `<td id="rec-${escapeHtml(e.uid || '')}"><button class="btn btn-sm btn-outline" data-uid="${escapeHtml(e.uid || '')}" onclick="checkRecoverable(this)" title="VSS golge kopyada onceki surumu var mi?">🛡️ Kontrol</button></td>` +
@@ -5404,14 +5405,14 @@ function renderDrilldownData() {
                 const fp = f.file_path || '';
                 const checked = ddSelectedFiles.has(fp) ? 'checked' : '';
                 return `<tr>
-                <td class="col-check"><input type="checkbox" ${checked} onchange="ddToggleRow('${escapeHtml(fp).replace(/'/g, "\\'")}')"></td>
+                <td class="col-check"><input type="checkbox" ${checked} data-fp="${escapeHtml(fp)}" onchange="ddToggleRow(this.dataset.fp)"></td>
                 <td title="${escapeHtml(fp)}">${escapeHtml(f.file_name||'')}</td>
                 <td title="${escapeHtml(_extractFolder(fp))}">${escapeHtml(_extractFolder(fp))}</td>
                 <td class="col-size">${formatSize(f.file_size||0)}</td>
                 <td class="col-date">${escapeHtml((f.last_access_time||'').substring(0,16))}</td>
                 <td class="col-date">${escapeHtml((f.last_modify_time||'').substring(0,16))}</td>
                 <td>${escapeHtml(f.owner||'-')}</td>
-                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml(((f.directory||_extractFolder(f.file_path))||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
+                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" data-dir="${escapeHtml((f.directory||_extractFolder(f.file_path))||'')}" onclick="openFolder(this.dataset.dir)">Konuma Git</button></td>
             </tr>`;
             }).join('') : '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
         `);
@@ -5420,7 +5421,7 @@ function renderDrilldownData() {
             <tbody>${files.length ? files.map(f => `<tr style="display:block;margin-bottom:8px;padding:12px;border:1px solid var(--border);border-radius:8px;">
                 <td style="display:block;font-weight:600;margin-bottom:4px;" title="${escapeHtml(f.file_path||'')}">${escapeHtml(f.file_name||'')}</td>
                 <td style="display:block;font-size:11px;color:var(--text-muted)">${escapeHtml(_extractFolder(f.file_path))} | ${formatSize(f.file_size||0)} | ${escapeHtml((f.last_access_time||'').substring(0,10))} | ${escapeHtml(f.owner||'-')}</td>
-                <td style="display:block;margin-top:6px"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml(((f.directory||_extractFolder(f.file_path))||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
+                <td style="display:block;margin-top:6px"><button class="btn btn-sm btn-outline" data-dir="${escapeHtml((f.directory||_extractFolder(f.file_path))||'')}" onclick="openFolder(this.dataset.dir)">Konuma Git</button></td>
             </tr>`).join('') : '<tr><td style="text-align:center;padding:30px;color:var(--text-muted)">Dosya bulunamadi</td></tr>'}</tbody>
         `);
     }
@@ -5519,6 +5520,19 @@ function drilldownOwner(owner, sourceId) {
         filter_type: 'owner',
         owner: owner
     });
+}
+
+// Reads owner/sid from the row dataset (set as escaped data-* attributes) so the
+// owner name never rides inside an inline JS-string arg. Replaces the old
+// ownerJs-in-onclick pattern in the users-overview owner table (stored-XSS fix).
+function archiveOwnerDrilldown(btn) {
+    const tr = btn && btn.closest('tr');
+    if (!tr) return;
+    const owner = tr.dataset.owner || '';
+    const sid = tr.dataset.sid || '0';
+    showDrilldown(`Arsivle: ${owner}`,
+        `/drilldown/owner/${encodeURIComponent(sid)}?owner=${encodeURIComponent(owner)}`,
+        { source_id: parseInt(sid) || 0, filter_type: 'owner', owner: owner });
 }
 
 // ═══════════════════════════════════════════════════
@@ -6027,7 +6041,7 @@ async function showNamingFiles(code, sourceId) {
                 <td style="max-width:300px;word-break:break-all;font-size:11px" title="${escapeHtml(f.file_path)}">${escapeHtml(f.file_path)}</td>
                 <td>${escapeHtml(f.file_size_formatted || formatSize(f.file_size))}</td>
                 <td>${escapeHtml(f.owner || '-')}</td>
-                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" onclick="openFolder('${escapeHtml((f.directory||'').replace(/\\/g,'\\\\\\\\'))}')">Konuma Git</button></td>
+                <td style="white-space:nowrap"><button class="btn btn-sm btn-outline" data-dir="${escapeHtml(f.directory||'')}" onclick="openFolder(this.dataset.dir)">Konuma Git</button></td>
             </tr>
         `).join('') : '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">Dosya bulunamadi</td></tr>';
 
@@ -9071,7 +9085,7 @@ async function loadChargeback() {
                         <td>${formatNum(r.file_count)}</td>
                         <td>${Number(r.total_gb || 0).toFixed(3)}</td>
                         <td>
-                            <select onchange="cbAssignUnmapped('${_cbEsc(r.owner).replace(/'/g, "\\'")}', this.value, this)" style="font-size:11px">
+                            <select data-owner="${_cbEsc(r.owner)}" onchange="cbAssignUnmapped(this.dataset.owner, this.value, this)" style="font-size:11px">
                                 <option value="">Cost center sec...</option>
                                 ${(_cbCenters || []).map(c =>
                                     `<option value="${c.id}">${_cbEsc(c.name)}</option>`
@@ -9120,12 +9134,12 @@ async function _loadChargebackCenters() {
                     <td>${(c.owner_patterns || []).length}</td>
                     <td style="font-size:11px;font-family:monospace;color:var(--text-secondary)">
                         ${(c.owner_patterns || []).slice(0, 5).map(p =>
-                            `<span style="display:inline-block;padding:2px 6px;background:var(--bg-secondary);border-radius:3px;margin:1px">${_cbEsc(p)} <a href="#" onclick="cbRemoveOwner(${c.id}, '${_cbEsc(p).replace(/'/g, "\\'")}', event)" style="color:var(--danger);text-decoration:none;margin-left:3px">×</a></span>`
+                            `<span style="display:inline-block;padding:2px 6px;background:var(--bg-secondary);border-radius:3px;margin:1px">${_cbEsc(p)} <a href="#" data-pattern="${_cbEsc(p)}" onclick="cbRemoveOwner(${c.id}, this.dataset.pattern, event)" style="color:var(--danger);text-decoration:none;margin-left:3px">×</a></span>`
                         ).join(' ')}
                         ${(c.owner_patterns || []).length > 5 ? `+${(c.owner_patterns || []).length - 5} daha` : ''}
                     </td>
                     <td>
-                        <button class="btn btn-sm btn-outline" onclick="openChargebackOwnerModal(${c.id}, '${_cbEsc(c.name).replace(/'/g, "\\'")}')">+ Owner</button>
+                        <button class="btn btn-sm btn-outline" data-name="${_cbEsc(c.name)}" onclick="openChargebackOwnerModal(${c.id}, this.dataset.name)">+ Owner</button>
                         <button class="btn btn-sm btn-outline" style="color:var(--danger)" onclick="cbRemoveCenter(${c.id})">Sil</button>
                     </td>
                 </tr>
