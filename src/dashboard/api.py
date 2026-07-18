@@ -3265,6 +3265,38 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
 
     # --- INSIGHTS API ---
 
+    # A stale-schema insights cache is refreshed in the BACKGROUND (at most one
+    # recompute per scan_id) instead of synchronously in the request. Recomputing
+    # inline made the Overview AI widget hang while generate_insights ground over
+    # ~2.9M rows, and every concurrent/repeated page load spawned another heavy
+    # recompute — a thundering herd that pinned every core (#370 follow-up). The
+    # guard collapses those to a single background pass; the next load reads the
+    # fresh, current-schema cache.
+    _insights_refresh_running: set = set()
+    _insights_refresh_lock = threading.Lock()
+
+    def _kick_insights_refresh(scan_id: int, source_id: int) -> None:
+        with _insights_refresh_lock:
+            if scan_id in _insights_refresh_running:
+                return
+            _insights_refresh_running.add(scan_id)
+
+        def _run():
+            from src.analyzer.ai_insights import InsightsEngine
+            try:
+                res = InsightsEngine(db).generate_insights(source_id)
+                db.save_scan_insights(scan_id, res)
+                logger.info("insights background refresh done (scan_id=%s)", scan_id)
+            except Exception as e:  # pragma: no cover - best-effort
+                logger.warning("insights background refresh failed (scan_id=%s): %s",
+                               scan_id, e)
+            finally:
+                with _insights_refresh_lock:
+                    _insights_refresh_running.discard(scan_id)
+
+        threading.Thread(target=_run, name=f"insights-refresh-{scan_id}",
+                         daemon=True).start()
+
     @app.get("/api/insights/{source_id}")
     def get_insights(source_id: int, refresh: bool = False):
         """AI Insights: son scan icin cached sonucu doner, yoksa hesaplar.
@@ -3289,6 +3321,15 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             # reaches a box whose scan_id hasn't changed (#370).
             if cached and cached.get("schema_version", 0) >= INSIGHTS_SCHEMA_VERSION:
                 cached["from_cache"] = True
+                return cached
+            if cached:
+                # Stale-schema cache: serve it IMMEDIATELY (the Overview widget
+                # never hangs) and refresh it ONCE in the background. The next
+                # load reads the fresh, current-schema set. Avoids the blocking
+                # recompute + thundering herd (#370 follow-up).
+                _kick_insights_refresh(scan_id, source_id)
+                cached["from_cache"] = True
+                cached["refreshing"] = True
                 return cached
 
         # No cache. If a scan is running, return the partial snapshot
