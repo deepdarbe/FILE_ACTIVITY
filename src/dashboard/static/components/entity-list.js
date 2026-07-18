@@ -163,8 +163,18 @@
                 let parsed = null;
                 try { parsed = txt ? JSON.parse(txt) : null; } catch (e) {}
                 if (!resp.ok) {
-                    const msg = (parsed && (parsed.detail || parsed.message))
-                        || ('HTTP ' + resp.status);
+                    // Flatten a FastAPI 422 detail (array of {msg}) / object detail
+                    // so the Error message is readable, not "[object Object]".
+                    const _d = parsed && parsed.detail;
+                    let msg;
+                    if (Array.isArray(_d)) {
+                        msg = _d.map(function (x) {
+                            return (x && (x.msg || x.message)) || (typeof x === 'string' ? x : JSON.stringify(x));
+                        }).filter(Boolean).join('; ');
+                    } else if (_d && typeof _d === 'object') {
+                        msg = _d.msg || _d.message || JSON.stringify(_d);
+                    }
+                    if (!msg) msg = (parsed && (typeof _d === 'string' ? _d : parsed.message)) || ('HTTP ' + resp.status);
                     const err = new Error(msg);
                     err.status = resp.status;
                     err.body = parsed;
