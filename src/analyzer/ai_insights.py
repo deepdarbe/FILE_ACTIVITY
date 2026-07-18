@@ -12,6 +12,17 @@ from src.utils.size_formatter import format_size
 logger = logging.getLogger("file_activity.insights")
 
 
+# Bump when the shape/content of a generated insight changes so a scan's CACHED
+# insights (db.save_scan_insights, keyed on scan_id and never otherwise
+# invalidated) are transparently recomputed on the next read instead of serving
+# a stale shape forever. v2 (#370): stale insights now carry a distinct
+# insight_type (stale_1year / stale_3year, #365). A v1 cache lacks it, so the
+# Incele button fell back to category='stale' -> stale_1year for BOTH insights,
+# opening the "1 Yildan Eski" list from the "3+ Yillik" insight even after #365
+# shipped (customer 2026-07-18: "3 yildan eskiler tiklaninca 1 yildan eski").
+INSIGHTS_SCHEMA_VERSION = 2
+
+
 class InsightsEngine:
     def __init__(self, db: Database):
         self.db = db
@@ -56,7 +67,8 @@ class InsightsEngine:
             "insights": insights,
             "score": score,
             "generated_at": datetime.now().isoformat(),
-            "scan_id": scan_id
+            "scan_id": scan_id,
+            "schema_version": INSIGHTS_SCHEMA_VERSION,
         }
 
     def _storage_efficiency(self, source_id, scan_id):
