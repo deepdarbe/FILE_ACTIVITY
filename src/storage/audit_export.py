@@ -20,8 +20,16 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Optional
+
+# Date tags feed a filename, so restrict them to the characters a SQL date
+# actually uses (YYYY-MM-DD[ HH:MM:SS] → digits + dash). Anything else — path
+# separators, "..", spaces — is stripped so a raw start_date/end_date query
+# param can never traverse out of worm_export_dir (CodeQL py/path-injection,
+# alerts #24/#25/#26).
+_DATE_TAG_RE = re.compile(r"[^0-9-]")
 
 logger = logging.getLogger("file_activity.audit_export")
 
@@ -113,15 +121,25 @@ class AuditExporter:
 
         rows = self.db.get_audit_chain_for_export(start_date, end_date)
 
-        # Filename — fall back to "all" tags when bound missing.
+        # Filename — fall back to "all" tags when bound missing. Strip the tag
+        # down to date characters BEFORE it reaches the path so a crafted
+        # start_date/end_date (e.g. "..\\..\\..") cannot escape out_dir.
         def _tag(d):
             if not d:
                 return "all"
-            # take YYYY-MM-DD prefix
-            return d[:10]
+            # keep only YYYY-MM-DD characters, then take the date prefix
+            safe = _DATE_TAG_RE.sub("", d)[:10]
+            return safe or "all"
 
         fname = f"audit-{_tag(start_date)}-to-{_tag(end_date)}.jsonl"
         file_path = os.path.join(out_dir, fname)
+
+        # Defense-in-depth: even with the tag whitelist, refuse to write outside
+        # the configured export dir (belt-and-suspenders against traversal).
+        _root = os.path.realpath(out_dir)
+        if os.path.realpath(file_path) != _root and not \
+                os.path.realpath(file_path).startswith(_root + os.sep):
+            raise ValueError("audit export path escaped worm_export_dir")
 
         with open(file_path, "w", encoding="utf-8") as f:
             # Header line carries export metadata; verifiers should skip it
