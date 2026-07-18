@@ -2313,6 +2313,24 @@ function downloadFile(url) {
     document.body.removeChild(a);
 }
 
+// Flatten a FastAPI/Starlette error body to a readable string so toasts never
+// show "[object Object]". FastAPI shapes: 422 -> {detail:[{loc,msg,type},...]},
+// HTTPException -> {detail:"..."} (or occasionally {detail:{...}}); some handlers
+// return {message:"..."} or {error:"..."}. Falls back to the HTTP status.
+function _extractApiError(body, status) {
+    const d = body && body.detail;
+    if (typeof d === 'string' && d) return d;
+    if (Array.isArray(d)) {
+        const msgs = d.map(x => (x && (x.msg || x.message)) || (typeof x === 'string' ? x : JSON.stringify(x)))
+                      .filter(Boolean);
+        if (msgs.length) return msgs.join('; ');
+    }
+    if (d && typeof d === 'object') return d.msg || d.message || JSON.stringify(d);
+    const m = body && (body.message || body.error);
+    if (typeof m === 'string' && m) return m;
+    return (status != null) ? `HTTP ${status}` : 'Bilinmeyen hata';
+}
+
 async function api(path, opts = {}) {
     // Issue #79: track in-flight calls so the global progress widget can
     // expose "Loading X/Y endpoints..." as a breadcrumb.
@@ -2322,7 +2340,7 @@ async function api(path, opts = {}) {
     _renderApiCallBreadcrumb();
     try {
         const r = await fetch(API + path, { headers: {'Content-Type':'application/json'}, ...opts });
-        if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.detail || `HTTP ${r.status}`); }
+        if (!r.ok) { const body = await r.json().catch(()=>({})); throw new Error(_extractApiError(body, r.status)); }
         return r.json();
     } catch(e) { if (!opts.silent) notify(e.message, 'error'); throw e; }
     finally {
@@ -3552,7 +3570,7 @@ function showUpdateDialog() {
             if (ok) {
                 alert(data.message || 'Guncelleme baslatildi.');
             } else {
-                alert('Guncelleme baslatilamadi: ' + (data.detail || 'bilinmeyen hata'));
+                alert('Guncelleme baslatilamadi: ' + _extractApiError(data));
             }
         })
         .catch(e => alert('Ag hatasi: ' + e));
@@ -6135,7 +6153,7 @@ function openFolder(path) {
     }).then(async (r) => {
         if (!r.ok) {
             let detail = '';
-            try { const e = await r.json(); detail = e.detail || ''; } catch (_) {}
+            try { const e = await r.json(); detail = e.detail ? _extractApiError(e, r.status) : ''; } catch (_) {}
             notify('Dizin acilamadi (' + r.status + (detail ? ': ' + detail : '') + '). Yol panoya kopyalandi: ' + path, 'error');
             return;
         }
@@ -7421,7 +7439,7 @@ async function submitLegalHoldForm(btn) {
         });
         if (!r.ok) {
             const err = await r.json().catch(() => ({}));
-            throw new Error(err.detail || ('HTTP ' + r.status));
+            throw new Error(_extractApiError(err, r.status));
         }
         const d = await r.json().catch(() => ({}));
         notify('Legal hold olusturuldu: #' + (d.id ?? '?'), 'success');
@@ -7488,7 +7506,7 @@ async function standardsDownloadLineage() {
         const r = await fetch('/api/compliance/lineage/file.jsonld?path=' + encodeURIComponent(path));
         if (!r.ok) {
             const err = await r.json().catch(() => ({}));
-            throw new Error(err.detail || ('HTTP ' + r.status));
+            throw new Error(_extractApiError(err, r.status));
         }
         const blob = await r.blob();
         const safe = path.replace(/[^A-Za-z0-9]/g, '_').slice(0, 80);
@@ -7505,7 +7523,7 @@ async function standardsDownloadCatalog() {
         const r = await fetch('/api/compliance/dcat/catalog.jsonld');
         if (!r.ok) {
             const err = await r.json().catch(() => ({}));
-            throw new Error(err.detail || ('HTTP ' + r.status));
+            throw new Error(_extractApiError(err, r.status));
         }
         const blob = await r.blob();
         const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -7684,7 +7702,7 @@ async function submitRetentionPolicyForm(btn) {
         });
         if (!r.ok) {
             const err = await r.json().catch(() => ({}));
-            throw new Error(err.detail || ('HTTP ' + r.status));
+            throw new Error(_extractApiError(err, r.status));
         }
         notify('Retention policy olusturuldu: ' + name, 'success');
         closeModal('modal-retention-policy');
@@ -7943,7 +7961,7 @@ async function createSnapshot(btn) {
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok || !d.ok) {
-            notify('Snapshot olusturulamadi: ' + (d.detail || d.error || `HTTP ${r.status}`), 'error');
+            notify('Snapshot olusturulamadi: ' + _extractApiError(d, r.status), 'error');
             return;
         }
         notify(`Snapshot olusturuldu: ${d.id} (${formatSize(d.size_bytes || 0)})`, 'success');
@@ -7981,7 +7999,7 @@ async function executeRestore(btn) {
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) {
-            notify('Restore basarisiz: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            notify('Restore basarisiz: ' + _extractApiError(d, r.status), 'error');
             return;
         }
         notify(`Snapshot geri yuklendi: ${d.restored || id}`, 'success');
@@ -8150,7 +8168,7 @@ async function approveApproval(id, btn) {
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) {
-            notify('Onaylanamadi: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            notify('Onaylanamadi: ' + _extractApiError(d, r.status), 'error');
             return;
         }
         notify('Onaylandi: #' + id, 'success');
@@ -8176,7 +8194,7 @@ async function rejectApproval(id, reason) {
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) {
-            notify('Reddedilemedi: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            notify('Reddedilemedi: ' + _extractApiError(d, r.status), 'error');
             return;
         }
         notify('Reddedildi: #' + id, 'success');
@@ -8197,7 +8215,7 @@ async function executeApproval(id, btn) {
         });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) {
-            notify('Calistirma basarisiz: ' + (d.detail || `HTTP ${r.status}`), 'error');
+            notify('Calistirma basarisiz: ' + _extractApiError(d, r.status), 'error');
             return;
         }
         notify('Islem calistirildi: #' + id, 'success');
@@ -10196,7 +10214,7 @@ function openTotpSetupModal() {
         .then(r => r.json())
         .then(data => {
             if (data.error || !data.uri) {
-                _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">TOTP kullanilamaz: ' + escapeHtml(data.error || data.detail || 'Bilinmeyen hata') + '</p>');
+                _setHtmlSafe('totp-qr-area', '<p style="color:var(--danger,#dc2626)">TOTP kullanilamaz: ' + escapeHtml(_extractApiError(data)) + '</p>');
                 return;
             }
             // QR is rendered on-box (server-side segno SVG) so the shared secret
@@ -10237,7 +10255,7 @@ function totpVerifyAndEnable() {
     })
         .then(r => r.json().then(d => ({ ok: r.ok, data: d })))
         .then(({ ok, data }) => {
-            if (!ok) { errEl.textContent = data.detail || 'Gecersiz kod.'; errEl.style.display = 'block'; return; }
+            if (!ok) { errEl.textContent = data.detail ? _extractApiError(data) : 'Gecersiz kod.'; errEl.style.display = 'block'; return; }
             closeModal('modal-totp-setup');
             notify('TOTP etkinlestirildi. Girislerde artik authenticator kodunuz istenecek.', 'success');
         })

@@ -5267,9 +5267,8 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- ARCHIVE BY INSIGHT API ---
 
     @app.post("/api/archive/by-insight")
-    async def archive_by_insight(request):
+    async def archive_by_insight(request: Request):
         """Archive files based on AI insight recommendation."""
-        from starlette.requests import Request
         body = await request.json()
         insight_type = body.get("type")  # "stale_1year", "stale_3year", "temp_files", "large_files", "duplicates"
         source_id = body.get("source_id")
@@ -5515,7 +5514,7 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # --- TOPLU GERI YUKLEME ---
 
     @app.post("/api/restore/bulk")
-    async def bulk_restore(request):
+    async def bulk_restore(request: Request):
         """Toplu geri yukleme - onizleme veya gercek."""
         from src.archiver.restore_engine import RestoreEngine
         from src.utils.size_formatter import format_size
