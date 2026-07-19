@@ -48,47 +48,71 @@ when the week began.
 
 ---
 
-## 🔖 SESSION HANDOFF — read this first when resuming (as of master `6376b86`, 2026-07-17)
+## 🔖 SESSION HANDOFF — read this first when resuming (as of master `b6fbba7`, 2026-07-19)
 
-The 2026-07-17 session continued the stability + customer-request wave and
-**completed forensic Faz 1–5** (the full customer deletion-forensics ask).
-Root-caused the recurring "buttons/pages disappear after deploy" as a **browser
-stale-tab** problem (the served HTML always had the features; the fix is a fresh
-load — `#350` now self-heals it). 13 PRs shipped across the two-day wave:
-**#341–344** (batched startup retention, archive_dest editable, top_creators +
-O(1) health, forensic Faz 1), **#348** (completed scan overrides stale partial
-scan_state), **#350** (stale-tab reload banner), **#352** (E/H skip pre-update
-snapshot), **#354** (self-host d3+chart.js), **#346** (Faz 2), **#356** (Faz 3),
-**#358** (Faz 4 VSS recoverability), **#360** (Faz 5 evidence-chain surface),
-**#359** (perf: O(1) access-log probe + read-pool db_stats), **#357** (handoff).
-burculogo is at `20775e9` (has #341–344 only; bridge-confirmed 2026-07-17:
-`user_activity.enabled=false`, pii on, index.html mtime 07-16, no Faz3 page / no
-vendor d3) — **the newer fixes are NOT on it yet**. Deploy runbook:
-`docs/DEPLOY-2026-07-17-burculogo.md` (see NEXT SESSION #1).
+The 2026-07-19 session was a live customer bug-fix + feature marathon — all shipped
+AND deployed to burculogo. **6 PRs + a full new feature:**
+- **Security wave:** **#378** (audit-export path-traversal — `_tag` `[0-9-]`
+  whitelist + realpath containment), **#379** (dashboard **stored-XSS class** — the
+  escapeHtml-inside-a-JS-string "dead-escape" bug, killed across ~11 inline handlers
+  via `data-*` attribute + `this.dataset`). Then a **CodeQL triage workflow** (18
+  agents, adversarial): 264 open alerts → only **2 real** (the two above); **14
+  non-real high/critical dismissed** with reasons; the sole "critical" LDAP-injection
+  is a false positive (`_escape_ldap` is a correct RFC-4515 escape). See
+  [[codeql-triage-and-dead-escape-xss]].
+- **Insight "Uygula" fixes:** **#380** (the `[object Object]` toast — two
+  `async def handler(request):` routes missing the `: Request` annotation → FastAPI
+  422; + a repo-wide `_extractApiError` that flattens a FastAPI 422 `detail` array,
+  applied to ~14 hand-rolled fetch sites), **#381** (3-year insight ran `stale_1year`
+  — category→type collision; the Uygula button now passes `i.insight_type`, and the
+  modal shows the real matched total + an honest per-batch note).
+- **NEW FEATURE — background "archive ALL matching for an insight" (#382 backend +
+  #383 frontend).** Resumable/cancellable daemon that drains the full matching set
+  (e.g. `stale_3year` = 1.7M files / 11.3 TB) in batches, past the 10k `LIMIT`.
+  Designed by two Plan agents (impl + adversarial data-safety); every P0/P1 guardrail
+  is implemented: **keyset cursor** on `scanned_files.id` (no infinite loop / poison
+  starvation), **stall-guard** (zero-progress batch → fail, not loop), verify-checksum
+  required, dest disk/reachability check, **one snapshot per job**
+  (`archive_files(skip_snapshot=)`), WAL-safe short cursor, single-flight (partial
+  unique index), completed-scan pin. New: `src/archiver/insight_queries.py` (shared
+  predicates), `src/archiver/archive_job_worker.py`, `archive_jobs` table, endpoints
+  `POST /api/archive/by-insight/all` + `GET /api/archive/jobs[/{id}]` +
+  `POST /api/archive/jobs/{id}/cancel`. **SHIPS DISABLED** — a job archives for real
+  only when `archiving.dry_run=false` AND `archiving.allow_bulk_daemon=true` AND the
+  caller passes a typed confirm (`confirm=true` + `acknowledge_count == match`);
+  otherwise it's a safe dry-run (nothing moved).
 
-**BRIDGE GOTCHA (burculogo):** heavy/long bridge-spawned **detached** child procs
-get killed mid-op (NOT OOM — 128 GB RAM). Validate heavy things post-deploy, not
-via bridge probes; quick reads / small UPDATEs are fine.
-**RUNTIME GOTCHA:** currently running as **manual `python main.py … dashboard`**
-(2 procs, one inert stub) — NOT the NSSM service (Stopped) despite the 2026-06-28
-note. Deploy needs the manual proc stopped + restarted; bridge can't drive
-`update.cmd` reliably (interactive Read-Host prompts + snapshot + child-kill) →
-operator runs it on the box (RDP). **App reads `config\config.yaml` (subdir), NOT
-root `config.yaml`.** compliance.pii.enabled is TRUE there (set 2026-06-14).
-**STARTUP:** as of #341 retention cleanup no longer blocks port bind — but the
-FIRST boot after an interrupted giant-txn still checkpoints the leftover multi-GB
-WAL (minutes, one-time). WAL_MB climbing 0→5.9GB during that boot is the old
-cleanup finishing; #341 makes subsequent boots bind in seconds.
+**burculogo is now at `b6fbba7`** (fully deployed 2026-07-19, bridge-driven, in
+stages). `archive_jobs` + `ux_af_active_original`/`ux_aj_active_per_source` created
+clean on the 33 GB DB; the "Hepsini Arsivle" button is live in **dry-run** mode.
+
+**RUNTIME (CHANGED 2026-07-19):** the app runs via a **Scheduled Task
+`FileActivityDash`** (SYSTEM, venv python) — **the NSSM `FileActivity` service is
+BROKEN since 2026-05-19** (`Start-Service` → "Cannot start service"; its logs froze
+05-19; that is WHY it was run manually). Restart = Stop-Process the *main.py*
+pythons + Stop-ScheduledTask + Start-ScheduledTask (gate-free). Caveat: `/sc ONCE`
+→ **no reboot auto-start** (fix NSSM or add a boot trigger to survive reboot).
+**GATE CORRECTION:** the bridge destructive gate is NARROWER than the old note —
+`Get-Service`/`Get-Process`/`Stop-Process`/`Register-ScheduledTask`/`Copy-Item`/
+`Expand-Archive` run unattended; only **outbound HTTP** (`Invoke-WebRequest`/
+`WebClient`) + `git` + `Remove-Item` trip it, and **approvals DO surface + work**
+(operator approves at root.siberwise.co; run a gated cmd ONCE, don't re-run — a
+re-run spawns a duplicate approval). **Deploy is now bridge-driven** (zip download →
+Copy-Item the changed files → restart the Task); full recipe + gotchas
+(`Remove-Item` gated → use a fresh `Expand-Archive` dir; copies + a heavy `& python`
+app-import in one command die → keep them separate) in [[burculogo-prod-box-bridge]].
+**App reads `config\config.yaml` (subdir), NOT root.** compliance.pii.enabled TRUE.
 
 **▶ NEXT SESSION — start here:**
-1. **Deploy the newer fixes to burculogo + verify** (PRIORITY). Full runbook:
-   **`docs/DEPLOY-2026-07-17-burculogo.md`**. Box has #341–344 (`20775e9`); NOT
-   #348/#350/#352/#354/#346/#356/#358/#360/#359. Operator runs `update.cmd` (RDP;
-   #352 E/H prompt — H skips the 2–3 GB snapshot, safe default = backup). Then ONE
-   fresh load (`http://localhost:8085/?yeni=1`) arms the #350 banner. Verify via
-   bridge (**pure file reads only** — HTTP/Get-Service/git hit the destructive
-   gate): index.html has `fdel-table` (#356) + `/static/vendor/d3` (#354) +
-   `_loadForensicChain` (#360).
+1. **Arm archive-all for the real 11.3 TB run (deliberate, operator-gated):** confirm
+   `\\10.0.70.200\ortak_arsiv` has ≥11.3 TB free, set `archiving.allow_bulk_daemon:
+   true` in `config\config.yaml` + restart the Task, then the "Hepsini Arsivle"
+   button's typed confirm starts the real batched job (progress panel + cancel; it
+   resumes after a restart via the keyset cursor + `NOT EXISTS archived_files`). Run
+   the **dry-run** first (works today). Deferred: `duplicates` insight not yet
+   bulk-archivable (needs a materialized victim table); optional job-level (vs 1.7M-
+   row) audit; **doc/diagram refresh** — `docs/project-diagram.html` (v1.0) +
+   `ROADMAP.md` (last wave 2026-05-22) don't reflect forensic Faz 1–5 or archive-all.
 2. **Forensic Faz 1–5 SHIPPED** (#344/#346/#356/#358/#360). Faz 1 collector
    wire-up; Faz 2 4656↔4660 full-path + 4624→IP + FrnResolver; Faz 3 unified
    `/api/forensic/file-deletions` + "Dosya Silme Olaylari" page (MAX-per-source
