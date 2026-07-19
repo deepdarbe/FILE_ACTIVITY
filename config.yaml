@@ -326,6 +326,19 @@ archiving:
   # after they have inspected the dry-run report.
   dry_run: true               # taşımadan sadece raporla
   cleanup_empty_dirs: true    # boş dizinleri temizle
+  # Background "archive ALL matching for an insight" job. SHIPS DISABLED:
+  # a job archives for real only when dry_run=false AND allow_bulk_daemon=true
+  # AND the API caller passes confirm + acknowledge_count (typed confirm).
+  # Otherwise it runs as a safe dry-run (nothing moved). 11 TB moves are
+  # irreversible — arm this deliberately, in a maintenance window, with the
+  # archive dest free-space confirmed.
+  allow_bulk_daemon: false
+  background_jobs:
+    batch_size: 1000                     # files per batch (small => fast cancel)
+    sleep_between_batches_seconds: 1.0    # politeness between batches
+    max_batches: 100000                  # hard safety bound
+    min_free_margin: 1.05                # require 105% of total_size free at dest
+    resume_on_startup: true              # re-attach a job interrupted by a restart
 
 reports:
   output_dir: "reports"           # rapor çıktı dizini

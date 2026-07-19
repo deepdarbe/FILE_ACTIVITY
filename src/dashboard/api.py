@@ -5414,6 +5414,113 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
             logger.warning("audit emit failed for archive_by_insight_run: %s", e)
         return result
 
+    # --- BULK BACKGROUND ARCHIVE (archive ALL matching for an insight) ---
+
+    class ArchiveAllBody(BaseModel):
+        type: str
+        source_id: int
+        confirm: bool = False
+        acknowledge_count: Optional[int] = None
+
+    @app.post("/api/archive/by-insight/all")
+    def archive_by_insight_all(body: ArchiveAllBody):
+        """Start a background job that archives EVERY matching file for an
+        insight (not just the 10k preview batch).
+
+        Ships DISABLED: a job only archives for real when BOTH
+        ``archiving.dry_run=false`` AND ``archiving.allow_bulk_daemon=true`` are
+        set AND the caller passes ``confirm=true`` with ``acknowledge_count``
+        equal to the server-computed match count (typed confirm). Otherwise the
+        job runs as a safe dry-run (nothing is moved) so the pipeline can be
+        validated. Irreversible at scale — see the data-safety guardrails in
+        src/archiver/archive_job_worker.py."""
+        import sqlite3
+        from src.utils.size_formatter import format_size
+        from src.archiver.insight_queries import (
+            insight_where, SUPPORTED_BULK_INSIGHTS)
+        from src.archiver.archive_job_worker import spawn_archive_job
+
+        if body.type not in SUPPORTED_BULK_INSIGHTS:
+            raise HTTPException(400, f"Bulk arsiv desteklenmiyor: {body.type}")
+        src = _get_source(db, body.source_id)
+        if not src.archive_dest:
+            raise HTTPException(400, "Arsiv hedefi tanimli degil")
+        # Pin to the latest COMPLETED scan so a scan started mid-job can't
+        # shift the target set.
+        scan_id = db.get_latest_scan_id(src.id, include_running=False)
+        if not scan_id:
+            raise HTTPException(400, "Tamamlanmis tarama bulunamadi")
+        if db.get_active_archive_job(src.id):
+            raise HTTPException(409, "Bu kaynak icin zaten aktif bir arsiv isi var")
+
+        where_frag, extra = insight_where(body.type)
+        matched, size = db.count_insight_unarchived(
+            src.id, scan_id, where_frag, extra)
+        if matched == 0:
+            raise HTTPException(400, "Arsivlenecek eslesen dosya yok")
+
+        arch_cfg = config.get("archiving") or {}
+        config_dry = arch_cfg.get("dry_run", True)
+        allow = bool(arch_cfg.get("allow_bulk_daemon", False))
+        # Rule 8: surface exactly which gate keeps this a safe no-op.
+        reason = ("archiving.dry_run=true" if config_dry
+                  else ("archiving.allow_bulk_daemon=false" if not allow else None))
+        # A job archives for real only when config allows AND the caller
+        # confirms; otherwise it is forced to dry-run.
+        effective_dry = bool(config_dry or not allow)
+        if not effective_dry:
+            if not body.confirm:
+                raise HTTPException(400, "Gercek arsivleme icin confirm=true gerekli")
+            if body.acknowledge_count != matched:
+                raise HTTPException(
+                    400, f"acknowledge_count ({body.acknowledge_count}) eslesen "
+                         f"sayiyla ({matched}) ayni olmali")
+
+        try:
+            job_id = db.create_archive_job(
+                src.id, body.type, scan_id, src.archive_dest,
+                effective_dry, matched, size, created_by="operator")
+        except sqlite3.IntegrityError:      # lost the race to ux_aj_active_per_source
+            raise HTTPException(409, "Bu kaynak icin zaten aktif bir arsiv isi var")
+
+        db.insert_audit_event_simple(
+            source_id=src.id, event_type="archive_job_created",
+            username="operator", file_path=None,
+            details=(f"job_id={job_id};type={body.type};scan_id={scan_id};"
+                     f"matched={matched};total_size={size};dry_run={effective_dry}"))
+        spawn_archive_job(db, config, job_id)
+        return {"job_id": job_id, "status": "queued", "insight_type": body.type,
+                "total_matched": matched, "total_size": size,
+                "total_size_formatted": format_size(size),
+                "dry_run": effective_dry, "feature_disabled_reason": reason}
+
+    @app.get("/api/archive/jobs")
+    def list_archive_jobs(source_id: int = None):
+        # archive_jobs is a tiny table; return the most recent jobs unpaginated.
+        return {"items": db.get_archive_jobs(source_id, 200, 0)}
+
+    @app.get("/api/archive/jobs/{job_id}")
+    def get_archive_job_status(job_id: int):
+        job = db.get_archive_job(job_id)
+        if not job:
+            raise HTTPException(404, "Is bulunamadi")
+        return job
+
+    @app.post("/api/archive/jobs/{job_id}/cancel")
+    def cancel_archive_job(job_id: int):
+        job = db.get_archive_job(job_id)
+        if not job:
+            raise HTTPException(404, "Is bulunamadi")
+        if job["status"] not in ("queued", "running"):
+            raise HTTPException(
+                409, f"Is '{job['status']}' durumunda, iptal edilemez")
+        db.request_archive_job_cancel(job_id)
+        db.insert_audit_event_simple(
+            source_id=job["source_id"],
+            event_type="archive_job_cancel_requested",
+            username="operator", file_path=None, details=f"job_id={job_id}")
+        return {"job_id": job_id, "cancel_requested": True}
+
     # --- ARCHIVE OPERATIONS API ---
 
     @app.get("/api/archive/operations")
@@ -8968,5 +9075,14 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
                 "Content-Disposition": f"attachment; filename={filename}",
             },
         )
+
+    # Crash recovery: respawn any bulk-archive job left 'running'/'queued' by a
+    # restart (gated by archiving.background_jobs.resume_on_startup). Never
+    # blocks app startup.
+    try:
+        from src.archiver.archive_job_worker import resume_running_archive_jobs
+        resume_running_archive_jobs(db, config)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("archive job resume failed", exc_info=True)
 
     return app

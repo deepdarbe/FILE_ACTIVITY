@@ -820,6 +820,56 @@ class Database:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ao_status ON archive_operations(status)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_ao_started ON archive_operations(started_at)")
 
+        # Bulk background archive jobs — "archive ALL matching files for an
+        # insight", processed in batches by a daemon worker. Progress is driven
+        # by a keyset cursor (last_file_id on scanned_files.id) so a file that
+        # fails to archive can never stall the loop or starve the rest.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS archive_jobs (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id         INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+                insight_type      TEXT    NOT NULL,
+                scan_id           INTEGER NOT NULL,
+                archive_dest      TEXT    NOT NULL,
+                status            TEXT    NOT NULL DEFAULT 'queued',
+                dry_run           INTEGER NOT NULL DEFAULT 1,
+                total_matched     INTEGER DEFAULT 0,
+                archived          INTEGER DEFAULT 0,
+                failed            INTEGER DEFAULT 0,
+                total_size        INTEGER DEFAULT 0,
+                last_file_id      INTEGER DEFAULT 0,
+                cancel_requested  INTEGER DEFAULT 0,
+                error             TEXT,
+                created_by        TEXT    DEFAULT 'operator',
+                started_at        TEXT,
+                updated_at        TEXT    DEFAULT (datetime('now','localtime')),
+                completed_at      TEXT,
+                CHECK (status IN ('queued','running','completed','failed','cancelled'))
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_aj_source_status ON archive_jobs(source_id, status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_aj_status ON archive_jobs(status)")
+        # At most one active (queued|running) job per source — enforced at the
+        # DB layer so it holds across processes; a 2nd active INSERT raises
+        # IntegrityError which the endpoint maps to HTTP 409.
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_aj_active_per_source
+            ON archive_jobs(source_id) WHERE status IN ('queued','running')
+        """)
+        # A file may have at most one non-restored archive row — a duplicate
+        # archive insert then fails loudly instead of silently doubling. Guarded
+        # so legacy DBs with pre-existing dup original_paths don't break startup.
+        try:
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_af_active_original
+                ON archived_files(original_path) WHERE restored_at IS NULL
+            """)
+        except sqlite3.Error as e:  # pragma: no cover - legacy-data defensive
+            logger.warning(
+                "ux_af_active_original not created (%s) — double-archive "
+                "guard degraded; dedupe archived_files.original_path to enable", e
+            )
+
         # Content-hash duplicate detection (issue #35).
         # Tiered pipeline persistuje: size -> prefix hash -> full SHA-256.
         # duplicate_hash_groups = gercek icerik kopyalarinin ozeti,
@@ -1929,6 +1979,144 @@ class Database:
                 ORDER BY last_access_time ASC
                 LIMIT ?
             """, params)  # noqa: S608
+            return cur.fetchall()
+
+    # ── Bulk background archive jobs (archive_jobs) ──────────────────────
+    # See src/archiver/archive_job_worker.py for the worker that drains a job.
+
+    def create_archive_job(self, source_id: int, insight_type: str,
+                           scan_id: int, archive_dest: str, dry_run: bool,
+                           total_matched: int, total_size: int,
+                           created_by: str = "operator") -> int:
+        """Create a queued bulk-archive job. Raises sqlite3.IntegrityError
+        (ux_aj_active_per_source) if the source already has an active job."""
+        with self.get_cursor() as cur:
+            cur.execute(
+                """INSERT INTO archive_jobs
+                     (source_id, insight_type, scan_id, archive_dest, status,
+                      dry_run, total_matched, total_size, created_by, started_at)
+                   VALUES (?,?,?,?, 'queued', ?,?,?,?,
+                           datetime('now','localtime'))""",
+                (source_id, insight_type, scan_id, archive_dest,
+                 1 if dry_run else 0, total_matched, total_size, created_by))
+            return cur.lastrowid
+
+    def get_archive_job(self, job_id: int) -> Optional[dict]:
+        with self.get_read_cursor() as cur:
+            cur.execute("SELECT * FROM archive_jobs WHERE id = ?", (job_id,))
+            return cur.fetchone()
+
+    def get_archive_jobs(self, source_id: Optional[int], limit: int,
+                         offset: int) -> list:
+        with self.get_read_cursor() as cur:
+            if source_id is not None:
+                cur.execute(
+                    "SELECT * FROM archive_jobs WHERE source_id = ? "
+                    "ORDER BY id DESC LIMIT ? OFFSET ?",
+                    (source_id, limit, offset))
+            else:
+                cur.execute(
+                    "SELECT * FROM archive_jobs "
+                    "ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset))
+            return cur.fetchall()
+
+    def count_archive_jobs(self, source_id: Optional[int]) -> int:
+        with self.get_read_cursor() as cur:
+            if source_id is not None:
+                cur.execute("SELECT COUNT(*) AS c FROM archive_jobs "
+                            "WHERE source_id = ?", (source_id,))
+            else:
+                cur.execute("SELECT COUNT(*) AS c FROM archive_jobs")
+            return int(cur.fetchone()["c"])
+
+    def get_active_archive_job(self, source_id: int) -> Optional[dict]:
+        with self.get_read_cursor() as cur:
+            cur.execute(
+                "SELECT * FROM archive_jobs WHERE source_id = ? "
+                "AND status IN ('queued','running') LIMIT 1", (source_id,))
+            return cur.fetchone()
+
+    def list_resumable_archive_jobs(self) -> list:
+        with self.get_read_cursor() as cur:
+            cur.execute("SELECT * FROM archive_jobs "
+                        "WHERE status IN ('queued','running')")
+            return cur.fetchall()
+
+    def update_archive_job_progress(self, job_id: int, *, archived_delta: int,
+                                    failed_delta: int, size_delta: int,
+                                    last_file_id: int) -> None:
+        self._execute_write_with_retry(
+            "archive_job_progress",
+            """UPDATE archive_jobs SET
+                 archived = archived + ?, failed = failed + ?,
+                 total_size = total_size + ?, last_file_id = ?,
+                 updated_at = datetime('now','localtime')
+               WHERE id = ?""",
+            (archived_delta, failed_delta, size_delta, last_file_id, job_id))
+
+    def set_archive_job_status(self, job_id: int, status: str,
+                               error: Optional[str] = None) -> None:
+        completed = 1 if status in ("completed", "failed", "cancelled") else 0
+        self._execute_write_with_retry(
+            "archive_job_status",
+            """UPDATE archive_jobs SET
+                 status = ?, error = COALESCE(?, error),
+                 updated_at = datetime('now','localtime'),
+                 completed_at = CASE WHEN ? THEN datetime('now','localtime')
+                                     ELSE completed_at END
+               WHERE id = ?""",
+            (status, error, completed, job_id))
+
+    def request_archive_job_cancel(self, job_id: int) -> bool:
+        n = self._execute_write_with_retry(
+            "archive_job_cancel",
+            "UPDATE archive_jobs SET cancel_requested = 1, "
+            "updated_at = datetime('now','localtime') "
+            "WHERE id = ? AND status IN ('queued','running')", (job_id,))
+        return (n or 0) > 0
+
+    def is_archive_job_cancelled(self, job_id: int) -> bool:
+        with self.get_read_cursor() as cur:
+            cur.execute("SELECT cancel_requested FROM archive_jobs WHERE id = ?",
+                        (job_id,))
+            row = cur.fetchone()
+            return bool(row and row["cancel_requested"])
+
+    def count_insight_unarchived(self, source_id: int, scan_id: int,
+                                 where_frag: str, extra_params: list) -> tuple:
+        """(count, total_size) of matching files not already archived."""
+        with self.get_read_cursor() as cur:
+            cur.execute(
+                f"""SELECT COUNT(*) AS c, COALESCE(SUM(file_size),0) AS s
+                    FROM scanned_files sf
+                    WHERE source_id = ? AND scan_id = ? AND ({where_frag})
+                      AND NOT EXISTS (SELECT 1 FROM archived_files af
+                                      WHERE af.original_path = sf.file_path
+                                        AND af.restored_at IS NULL)""",  # noqa: S608
+                [source_id, scan_id] + list(extra_params))
+            r = cur.fetchone()
+            return (int(r["c"]), int(r["s"]))
+
+    def fetch_insight_batch(self, source_id: int, scan_id: int,
+                            where_frag: str, extra_params: list,
+                            after_id: int, batch_size: int) -> list:
+        """Next batch of matching, not-yet-archived files with sf.id > after_id.
+
+        Keyset scan on idx_sf_source_scan (== source_id, scan_id, rowid) so the
+        cursor ALWAYS advances past a file that fails to archive. The read cursor
+        is fully drained into a list and closed before the caller archives —
+        never held across archive_files (WAL-safe, rule 6)."""
+        with self.get_read_cursor() as cur:
+            cur.execute(
+                f"""SELECT * FROM scanned_files sf
+                    WHERE source_id = ? AND scan_id = ? AND sf.id > ?
+                      AND ({where_frag})
+                      AND NOT EXISTS (SELECT 1 FROM archived_files af
+                                      WHERE af.original_path = sf.file_path
+                                        AND af.restored_at IS NULL)
+                    ORDER BY sf.id ASC LIMIT ?""",  # noqa: S608
+                [source_id, scan_id, after_id]
+                + list(extra_params) + [batch_size])
             return cur.fetchall()
 
     # ──────────────────────────────────────────────
