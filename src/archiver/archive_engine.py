@@ -37,7 +37,8 @@ class ArchiveEngine:
                        archived_by: str = "manual",
                        dry_run: bool = None,
                        trigger_type: str = "manual",
-                       trigger_detail: str = None) -> dict:
+                       trigger_detail: str = None,
+                       skip_snapshot: bool = False) -> dict:
         """Dosya listesini arşivle.
 
         Args:
@@ -60,7 +61,10 @@ class ArchiveEngine:
         # is true. Failure NEVER aborts the archive — we log + continue
         # because losing a backup is much less bad than blocking the
         # operator's archive batch on a transient backup error.
-        if not is_dry_run:
+        # skip_snapshot lets the bulk background worker take ONE snapshot for
+        # the whole job instead of one per batch (a 1.7M-file job = ~1700
+        # batches = ~1700 multi-GB snapshots otherwise).
+        if not is_dry_run and not skip_snapshot:
             self._maybe_pre_apply_snapshot(reason="pre-archive")
 
         # Arsiv islemi kaydi olustur
