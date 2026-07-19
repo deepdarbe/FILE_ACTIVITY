@@ -3955,9 +3955,10 @@ async function applyInsight(category, sourceId, explicitType, totalCount, totalS
                     </table>
                     ${preview.file_count > allFiles.length ? `<div style="text-align:center;padding:8px;color:var(--text-muted);font-size:11px">ve ${preview.file_count - allFiles.length} dosya daha arsivlenecek...</div>` : ''}
                 </div>` : ''}
-                <div style="display:flex;gap:12px;justify-content:flex-end">
+                <div style="display:flex;gap:12px;justify-content:flex-end;flex-wrap:wrap">
                     <button class="btn btn-outline" onclick="closeModal('modal-insight-confirm')">Iptal</button>
                     <button class="btn btn-primary" onclick="confirmInsightArchive('${escapeHtml(insightType)}', ${sourceId})" style="background:var(--danger)">Onayla ve Arsivle (${formatNum(preview.file_count)} dosya)</button>
+                    ${['stale_1year','stale_3year','temp_files','large_files'].includes(insightType) && (totalCount || 0) > preview.file_count ? `<button class="btn btn-outline" style="border-color:var(--danger);color:var(--danger)" onclick="startBulkArchive('${escapeHtml(insightType)}', ${sourceId}, ${totalCount || 0}, ${totalSize || 0})">Hepsini Arsivle (${formatNum(totalCount)}) — arka planda</button>` : ''}
                 </div>
             </div>
         `;
@@ -3999,6 +4000,88 @@ async function confirmInsightArchive(insightType, sourceId) {
     } catch(e) {
         notify('Arsivleme hatasi: ' + (e.message || e), 'error');
     }
+}
+
+// Bulk background archive: archive ALL matching files for an insight (not just
+// the 10k preview batch). Real runs are gated server-side (dry_run +
+// allow_bulk_daemon + this typed confirm); a dry-run job is a safe no-op.
+async function startBulkArchive(insightType, sourceId, totalCount, totalSize) {
+    closeModal('modal-insight-confirm');
+    const typed = prompt(
+        'TUM eslesen dosyalar arka planda arsivlenecek:\n\n' +
+        formatNum(totalCount) + ' dosya (' + formatSize(totalSize) + ')\n\n' +
+        'Bu geri alinamaz. Onaylamak icin dosya sayisini yazin:');
+    if (typed === null) return;
+    if (String(typed).replace(/[.\s,]/g, '') !== String(totalCount)) {
+        notify('Sayi eslesmedi — islem iptal edildi.', 'warning');
+        return;
+    }
+    try {
+        const r = await api('/archive/by-insight/all', {
+            method: 'POST',
+            body: JSON.stringify({ type: insightType, source_id: sourceId,
+                                   confirm: true, acknowledge_count: totalCount })
+        });
+        if (r.feature_disabled_reason) {
+            notify('DENEME (dry-run) modu — gercek arsivleme kapali: config.yaml -> '
+                   + r.feature_disabled_reason + '. Hicbir dosya tasinmadi.', 'warning');
+        } else {
+            notify('Arka plan arsivleme basladi.', 'success');
+        }
+        _showArchiveJobPanel(r.job_id);
+    } catch (e) { /* api() already surfaced a real error message */ }
+}
+
+let _archiveJobPoll = null;
+function _showArchiveJobPanel(jobId) {
+    let panel = document.getElementById('archive-job-panel');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'archive-job-panel';
+        panel.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:9999;'
+            + 'background:var(--bg-card);border:1px solid var(--border);border-radius:10px;'
+            + 'padding:16px 18px;min-width:300px;max-width:360px;'
+            + 'box-shadow:0 8px 30px rgba(0,0,0,.4)';
+        document.body.appendChild(panel);
+    }
+    panel.style.display = 'block';
+    if (_archiveJobPoll) clearInterval(_archiveJobPoll);
+    const statusTr = { queued: 'sirada', running: 'calisiyor', completed: 'tamamlandi',
+                       failed: 'hata', cancelled: 'iptal edildi' };
+    const tick = async () => {
+        let j;
+        try { j = await api('/archive/jobs/' + jobId, { silent: true }); }
+        catch (e) { return; }
+        const pct = j.total_matched ? Math.min(100, Math.round(j.archived / j.total_matched * 100)) : 0;
+        const done = ['completed', 'failed', 'cancelled'].includes(j.status);
+        _setHtmlSafe('archive-job-panel',
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+            + '<strong>Arsivleme ' + (j.dry_run ? '(DENEME)' : '') + '</strong>'
+            + '<span style="font-size:11px;color:var(--text-muted)">#' + j.id + ' &middot; '
+            + escapeHtml(statusTr[j.status] || j.status) + '</span></div>'
+            + '<div style="height:8px;background:var(--bg-primary);border-radius:4px;overflow:hidden;margin-bottom:8px">'
+            + '<div style="height:100%;width:' + pct + '%;background:'
+            + (j.status === 'failed' ? 'var(--danger)' : 'var(--accent)') + ';transition:width .3s"></div></div>'
+            + '<div style="font-size:12px;color:var(--text-secondary)">' + formatNum(j.archived) + ' / '
+            + formatNum(j.total_matched) + ' dosya' + (j.failed ? ' &middot; ' + formatNum(j.failed) + ' hata' : '') + '</div>'
+            + (j.error ? '<div style="font-size:11px;color:var(--danger);margin-top:6px;word-break:break-word">'
+                + escapeHtml(j.error) + '</div>' : '')
+            + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'
+            + (done ? '' : '<button class="btn btn-sm btn-outline" style="color:var(--danger)" onclick="cancelArchiveJob('
+                + j.id + ')">Iptal</button>')
+            + '<button class="btn btn-sm btn-outline" onclick="document.getElementById(\'archive-job-panel\').style.display=\'none\'">'
+            + (done ? 'Kapat' : 'Gizle') + '</button></div>');
+        if (done) { clearInterval(_archiveJobPoll); _archiveJobPoll = null; loadOverview(); }
+    };
+    tick();
+    _archiveJobPoll = setInterval(tick, 3000);
+}
+
+async function cancelArchiveJob(jobId) {
+    try {
+        await api('/archive/jobs/' + jobId + '/cancel', { method: 'POST' });
+        notify('Iptal istendi.', 'info');
+    } catch (e) { /* api() surfaced the error */ }
 }
 
 // ═══════════════════════════════════════════════════
