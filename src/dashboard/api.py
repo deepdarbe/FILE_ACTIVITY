@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+
+from src.utils import backup_access
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -175,7 +177,7 @@ def open_folder_impl(
             "acilabilir.",
         )
 
-    if not (os.path.isdir(folder) or os.path.isfile(folder)):
+    if not (backup_access.is_dir(folder) or backup_access.is_file(folder)):
         # The scanned path no longer exists — common for old files whose
         # folders were reorganised/deleted since the scan. Instead of a bare
         # 404, offer the nearest still-existing ancestor (within the source
@@ -204,9 +206,9 @@ def open_folder_impl(
 
     # Yerel istemci: dosya/dizine gore Explorer'i acar.
     # shell=False ile argv listesi kullanilarak komut enjeksiyonu onlenir.
-    if os.path.isdir(folder):
+    if backup_access.is_dir(folder):
         popen(["explorer", folder], shell=False)
-    else:  # os.path.isfile(folder)
+    else:  # is_file
         popen(["explorer", "/select,", folder], shell=False)
     return {"success": True, "mode": "native", "path": folder}
 
@@ -678,6 +680,11 @@ def create_app(db, config, analytics=None, ad_lookup=None, email_notifier=None,
     # WAL file unowned. After a successful restore we re-call connect()
     # so downstream init talks to the salvaged DB.
     # ─────────────────────────────────────────────────────────────────
+    # Enable SeBackupPrivilege so ACL-restricted folders on the file share stay
+    # readable (backup-semantics; no change to the customer's NTFS ACLs).
+    # Best-effort — a no-op when the account lacks the privilege / non-Windows.
+    backup_access.enable_backup_privilege()
+
     last_restore_result = None
     backup_cfg = (config or {}).get("backup") or {}
     if backup_cfg.get("enabled", True):
