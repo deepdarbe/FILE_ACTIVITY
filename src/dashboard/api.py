@@ -91,6 +91,35 @@ def _phase_progress_pct(phase: str, file_count: int) -> int:
     return 0
 
 
+def _nearest_existing_ancestor(path: str, allowed_roots: list | None):
+    """Deepest still-existing directory at/above ``path`` that stays within a
+    configured source root. ``None`` if none qualifies.
+
+    Used when a scanned path no longer exists (old files whose folders were
+    reorganised/deleted since the scan) so the operator can navigate from the
+    nearest surviving parent instead of hitting a dead end. Confined to the
+    source roots so a tokenless localhost caller can't be handed a path above
+    them (mirrors the #278 scope gate).
+    """
+    roots = [os.path.realpath(r) for r in (allowed_roots or []) if r]
+
+    def _within(p: str) -> bool:
+        return (not roots) or any(
+            p == r or p.startswith(r + os.sep) for r in roots)
+
+    cur = os.path.dirname(path)
+    depth = 0
+    while cur and depth < 64:
+        if os.path.isdir(cur):
+            return cur if _within(cur) else None
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+        depth += 1
+    return None
+
+
 def open_folder_impl(
     body: dict,
     client_host: str,
@@ -147,7 +176,20 @@ def open_folder_impl(
         )
 
     if not (os.path.isdir(folder) or os.path.isfile(folder)):
-        raise HTTPException(404, f"Dizin bulunamadi: {folder}")
+        # The scanned path no longer exists — common for old files whose
+        # folders were reorganised/deleted since the scan. Instead of a bare
+        # 404, offer the nearest still-existing ancestor (within the source
+        # scope) so the operator can navigate from there.
+        nearest = _nearest_existing_ancestor(folder, allowed_roots)
+        if is_local and nearest:
+            try:
+                popen(["explorer", nearest], shell=False)
+                return {"success": True, "mode": "native_nearest",
+                        "path": folder, "opened": nearest}
+            except Exception:  # pragma: no cover - Popen defensive
+                pass
+        return {"success": False, "mode": "not_found",
+                "path": folder, "nearest_existing": nearest}
 
     if not is_local:
         return {
