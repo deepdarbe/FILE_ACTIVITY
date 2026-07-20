@@ -6248,6 +6248,16 @@ function openFolder(path) {
         const data = await r.json().catch(() => ({}));
         if (data && data.success === true && data.mode === 'native') {
             notify('Explorer acildi: ' + path, 'success');
+        } else if (data && data.mode === 'native_nearest') {
+            notify('Orijinal klasor artik yok; en yakin mevcut klasor acildi: ' + (data.opened || ''), 'info');
+        } else if (data && data.mode === 'not_found') {
+            // Eski dosya: klasor taramadan bu yana tasinmis/silinmis olabilir.
+            // En yakin mevcut ust klasoru (varsa) panoya kopyala.
+            const near = data.nearest_existing;
+            if (near) copyPathFallback(near);
+            notify('Klasor sunucuda bulunamadi (dosya son taramadan bu yana tasinmis/silinmis olabilir). '
+                + (near ? ('En yakin mevcut klasor panoya kopyalandi: ' + near)
+                        : ('Yol panoya kopyalandi: ' + path)), 'warning');
         } else if (data && data.success === false && data.mode === 'remote_client') {
             // Uzak istemci: daha gorunur ve uzun sureli bildirim.
             const el = document.createElement('div');

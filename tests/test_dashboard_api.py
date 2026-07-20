@@ -8,7 +8,8 @@ Covers the dual-behaviour `/api/system/open-folder` endpoint:
   ``{"success": False, "mode": "remote_client"}`` so the frontend can copy
   the path to the user's clipboard instead of opening a window on the
   (invisible) server.
-* Missing path -> HTTP 404, preserving the previous behaviour.
+* Missing path -> 200 with the nearest existing ancestor (local opens it,
+  remote returns it) so a moved/old file's dead folder doesn't dead-end.
 
 Rather than spin up the full `create_app(...)` factory (which wants a real
 Database, AnalyticsEngine, etc.), these tests exercise the module-level
@@ -134,26 +135,41 @@ def test_open_folder_remote_client_skips_subprocess(monkeypatch, tmp_folder):
     )
 
 
-def test_open_folder_404_on_missing_path(monkeypatch):
-    """Missing path -> HTTP 404, regardless of client locality."""
-    def fake_popen(argv, shell=False):  # pragma: no cover - should never run
-        raise AssertionError("Popen must not be called for a missing path")
-
+def test_open_folder_missing_path_offers_nearest_local(monkeypatch):
+    """Missing path -> 200 (not 404). A LOCAL client opens the nearest existing
+    ancestor so a moved/old file's dead folder path doesn't dead-end."""
+    opened: list = []
     import subprocess
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        subprocess, "Popen",
+        lambda argv, shell=False: opened.append(tuple(argv)))
 
     missing = os.path.join(
-        tempfile.gettempdir(), "file_activity_does_not_exist_82_bug1"
-    )
-    # Make sure it really doesn't exist.
+        tempfile.gettempdir(), "file_activity_gone_82_bug1", "deeper")
     assert not os.path.exists(missing)
 
-    app = _build_app()
-    client = TestClient(app)
-    resp = client.post("/api/system/open-folder", json={"path": missing})
+    app = _build_app(force_client_host="127.0.0.1")
+    resp = TestClient(app).post("/api/system/open-folder", json={"path": missing})
 
-    assert resp.status_code == 404, resp.text
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["mode"] == "native_nearest"
+    assert data["opened"] == os.path.realpath(tempfile.gettempdir())
+    assert opened  # explorer launched at the nearest existing ancestor
+
+
+def test_open_folder_impl_missing_path_remote_returns_nearest(tmp_folder):
+    """A REMOTE client gets mode=not_found + the nearest existing ancestor
+    (never spawns Explorer on the server)."""
+    called: list = []
+    sub = os.path.join(tmp_folder, "gone", "deeper")
+    data = open_folder_impl(
+        {"path": sub}, client_host="192.168.1.50",
+        popen=lambda argv, shell=False: called.append(argv))
+    assert data["success"] is False
+    assert data["mode"] == "not_found"
+    assert data["nearest_existing"] == os.path.realpath(tmp_folder)
+    assert called == []
 
 
 def test_open_folder_impl_direct_remote_client(tmp_folder):
